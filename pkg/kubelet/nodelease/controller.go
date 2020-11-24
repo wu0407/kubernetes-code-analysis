@@ -74,8 +74,8 @@ func NewController(clock clock.Clock, client clientset.Interface, holderIdentity
 		client:                     client,
 		leaseClient:                leaseClient,
 		holderIdentity:             holderIdentity,
-		leaseDurationSeconds:       leaseDurationSeconds,
-		renewInterval:              time.Duration(float64(leaseDuration) * renewIntervalFraction),
+		leaseDurationSeconds:       leaseDurationSeconds, //默认为40s
+		renewInterval:              time.Duration(float64(leaseDuration) * renewIntervalFraction), //默认为40 * 0.25 = 10s
 		clock:                      clock,
 		onRepeatedHeartbeatFailure: onRepeatedHeartbeatFailure,
 	}

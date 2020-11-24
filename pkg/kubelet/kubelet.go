@@ -1422,7 +1422,9 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 
 	if kl.kubeClient != nil {
 		// Start syncing node status immediately, this may set up things the runtime needs to run.
+		//周期性的更新node的status，包括capabilities，镜像、cidr等
 		go wait.Until(kl.syncNodeStatus, kl.nodeStatusUpdateFrequency, wait.NeverStop)
+		//这里面也会调用kl.updateRuntimeUp和kl.syncNodeStatus()，只执行一次
 		go kl.fastStatusUpdateOnce()
 
 		// start syncing lease
@@ -2166,6 +2168,7 @@ func (kl *Kubelet) LatestLoopEntryTime() time.Time {
 // the runtime dependent modules when the container runtime first comes up,
 // and returns an error if the status check fails.  If the status check is OK,
 // update the container runtime uptime in the kubelet runtimeState.
+//去访问docker获取cni的配置正确和docker是否存活等状态
 func (kl *Kubelet) updateRuntimeUp() {
 	kl.updateRuntimeMux.Lock()
 	defer kl.updateRuntimeMux.Unlock()
@@ -2194,6 +2197,7 @@ func (kl *Kubelet) updateRuntimeUp() {
 	// information in RuntimeReady condition will be propagated to NodeReady condition.
 	runtimeReady := s.GetRuntimeCondition(kubecontainer.RuntimeReady)
 	// If RuntimeReady is not set or is false, report an error.
+	//只是查询了docker info
 	if runtimeReady == nil || !runtimeReady.Status {
 		err := fmt.Errorf("Container runtime not ready: %v", runtimeReady)
 		klog.Error(err)

@@ -192,6 +192,7 @@ func NewKubeGenericRuntimeManager(
 		logReduction:        logreduction.NewLogReduction(identicalErrorDelay),
 	}
 
+	//cri grpc server version info
 	typedVersion, err := kubeRuntimeManager.getTypedVersion()
 	if err != nil {
 		klog.Errorf("Get runtime version failed: %v", err)
@@ -972,6 +973,7 @@ func (m *kubeGenericRuntimeManager) GarbageCollect(gcPolicy kubecontainer.Contai
 
 // UpdatePodCIDR is just a passthrough method to update the runtimeConfig of the shim
 // with the podCIDR supplied by the kubelet.
+//发送grpc给--container-runtime-endpoint监听的grpc docker_service，让它更新cni配置的cidr
 func (m *kubeGenericRuntimeManager) UpdatePodCIDR(podCIDR string) error {
 	// TODO(#35531): do we really want to write a method on this manager for each
 	// field of the config?

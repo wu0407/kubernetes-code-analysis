@@ -303,7 +303,7 @@ func (tc *NoExecuteTaintManager) PodUpdated(oldPod *v1.Pod, newPod *v1.Pod) {
 		nodeName:     nodeName,
 	}
 
-	tc.podUpdateQueue.Add(updateItem)
+	tc.podUpdateQueue.Add(updateItem) //pod删除也会添加进
 }
 
 // NodeUpdated is used to notify NoExecuteTaintManager about Node changes.
@@ -328,7 +328,7 @@ func (tc *NoExecuteTaintManager) NodeUpdated(oldNode *v1.Node, newNode *v1.Node)
 		nodeName: nodeName,
 	}
 
-	tc.nodeUpdateQueue.Add(updateItem)
+	tc.nodeUpdateQueue.Add(updateItem) //删除node也会添加进
 }
 
 func (tc *NoExecuteTaintManager) cancelWorkWithEvent(nsName types.NamespacedName) {
@@ -352,6 +352,7 @@ func (tc *NoExecuteTaintManager) processPodOnNode(
 		klog.V(2).Infof("Not all taints are tolerated after update for Pod %v on %v", podNamespacedName.String(), nodeName)
 		// We're canceling scheduled work (if any), as we're going to delete the Pod right away.
 		tc.cancelWorkWithEvent(podNamespacedName)
+		//taintEvictionQueue里面包含了定时器，定时器触发执行处理函数，所以不需要其他func来处理这个队列
 		tc.taintEvictionQueue.AddWork(NewWorkArgs(podNamespacedName.Name, podNamespacedName.Namespace), time.Now(), time.Now())
 		return
 	}
@@ -367,9 +368,11 @@ func (tc *NoExecuteTaintManager) processPodOnNode(
 	scheduledEviction := tc.taintEvictionQueue.GetWorkerUnsafe(podNamespacedName.String())
 	if scheduledEviction != nil {
 		startTime = scheduledEviction.CreatedAt
+		//startTime在现在之前，代表work在过去创建的，之前触发驱逐， 合法不做任何操作，保留原来的work
 		if startTime.Add(minTolerationTime).Before(triggerTime) {
 			return
 		}
+		//work创建时间在未来/现在，取消原来的work，新建一个work
 		tc.cancelWorkWithEvent(podNamespacedName)
 	}
 	tc.taintEvictionQueue.AddWork(NewWorkArgs(podNamespacedName.Name, podNamespacedName.Namespace), startTime, triggerTime)
@@ -414,7 +417,7 @@ func (tc *NoExecuteTaintManager) handlePodUpdate(podUpdate podUpdateItem) {
 	}
 	tc.processPodOnNode(podNamespacedName, nodeName, pod.Spec.Tolerations, taints, time.Now())
 }
-
+//执行驱逐node上面的pod--不能容忍node的tains
 func (tc *NoExecuteTaintManager) handleNodeUpdate(nodeUpdate nodeUpdateItem) {
 	node, err := tc.getNode(nodeUpdate.nodeName)
 	if err != nil {

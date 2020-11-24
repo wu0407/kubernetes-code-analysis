@@ -413,6 +413,7 @@ func (ds *dockerService) Start() error {
 			}
 		}()
 	}
+	//调整dockerd和docker-contained进程在正确的cgroup上(--cgroup-root),调整pid的oom值
 	return ds.containerManager.Start()
 }
 

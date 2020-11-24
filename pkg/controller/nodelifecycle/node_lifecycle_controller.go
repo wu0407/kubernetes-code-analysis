@@ -287,10 +287,13 @@ type Controller struct {
 	// evictorLock protects zonePodEvictor and zoneNoExecuteTainter.
 	// TODO(#83954): API calls shouldn't be executed under the lock.
 	evictorLock     sync.Mutex
-	nodeEvictionMap *nodeEvictionMap
 	// workers that evicts pods from unresponsive nodes.
+	//未启用taints manager  存放node上pod是否已经驱逐了， 从这读取node eviction的状态是evicted、tobeeviced
+	nodeEvictionMap *nodeEvictionMap
+	//未启用taints manage， zone的需要pod evictor的node列表
 	zonePodEvictor map[string]*scheduler.RateLimitedTimedQueue
 	// workers that are responsible for tainting nodes.
+	//启用taints manage ，node unready 需要更新taint的node列表
 	zoneNoExecuteTainter map[string]*scheduler.RateLimitedTimedQueue
 
 	nodesToRetry sync.Map
@@ -351,6 +354,7 @@ type Controller struct {
 	// tainted nodes, if they're not tolerated.
 	runTaintManager bool
 
+	//用来更新node的taint-弄scheduler的队列
 	nodeUpdateQueue workqueue.Interface
 	podUpdateQueue  workqueue.RateLimitingInterface
 }
@@ -395,24 +399,24 @@ func NewNodeLifecycleController(
 		kubeClient:                  kubeClient,
 		now:                         metav1.Now,
 		knownNodeSet:                make(map[string]*v1.Node),
-		nodeHealthMap:               newNodeHealthMap(),
+		nodeHealthMap:               newNodeHealthMap(), //存放发现的node的health数据
 		nodeEvictionMap:             newNodeEvictionMap(),
 		recorder:                    recorder,
-		nodeMonitorPeriod:           nodeMonitorPeriod,
-		nodeStartupGracePeriod:      nodeStartupGracePeriod,
-		nodeMonitorGracePeriod:      nodeMonitorGracePeriod,
+		nodeMonitorPeriod:           nodeMonitorPeriod, //默认为5s
+		nodeStartupGracePeriod:      nodeStartupGracePeriod, //默认一分钟
+		nodeMonitorGracePeriod:      nodeMonitorGracePeriod, //默认40s
 		zonePodEvictor:              make(map[string]*scheduler.RateLimitedTimedQueue),
 		zoneNoExecuteTainter:        make(map[string]*scheduler.RateLimitedTimedQueue),
 		nodesToRetry:                sync.Map{},
-		zoneStates:                  make(map[string]ZoneState),
-		podEvictionTimeout:          podEvictionTimeout,
-		evictionLimiterQPS:          evictionLimiterQPS,
-		secondaryEvictionLimiterQPS: secondaryEvictionLimiterQPS,
-		largeClusterThreshold:       largeClusterThreshold,
-		unhealthyZoneThreshold:      unhealthyZoneThreshold,
-		runTaintManager:             runTaintManager,
-		nodeUpdateQueue:             workqueue.NewNamed("node_lifecycle_controller"),
-		podUpdateQueue:              workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "node_lifecycle_controller_pods"),
+		zoneStates:                  make(map[string]ZoneState), //存放每个zone的状态
+		podEvictionTimeout:          podEvictionTimeout, //默认为5分钟
+		evictionLimiterQPS:          evictionLimiterQPS, //默认为0.1
+		secondaryEvictionLimiterQPS: secondaryEvictionLimiterQPS, //默认为0.01
+		largeClusterThreshold:       largeClusterThreshold, //默认为50
+		unhealthyZoneThreshold:      unhealthyZoneThreshold, //默认为0.55
+		runTaintManager:             runTaintManager, //默认为true
+		nodeUpdateQueue:             workqueue.NewNamed("node_lifecycle_controller"), //node变更时候，会加入队列，然后进行taint添加、更新
+		podUpdateQueue:              workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), "node_lifecycle_controller_pods"), //有队列和限速，pod变更时候，会加入队列，用来将pod进行驱逐/或者pod condition 改为ready false
 	}
 
 	nc.enterPartialDisruptionFunc = nc.ReducedQPSFunc
@@ -457,6 +461,7 @@ func NewNodeLifecycleController(
 		},
 	})
 	nc.podInformerSynced = podInformer.Informer().HasSynced
+	//sharedinformer中添加新的indexers
 	podInformer.Informer().AddIndexers(cache.Indexers{
 		nodeNameKeyIndex: func(obj interface{}) ([]string, error) {
 			pod, ok := obj.(*v1.Pod)
@@ -550,6 +555,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 		return
 	}
 
+	//pod是否能够toleration上的tains，不能就进行驱逐pod
 	if nc.runTaintManager {
 		go nc.taintManager.Run(stopCh)
 	}
@@ -592,6 +598,7 @@ func (nc *Controller) Run(stopCh <-chan struct{}) {
 	<-stopCh
 }
 
+//更新node的taint-NoSchedule和label
 func (nc *Controller) doNodeProcessingPassWorker() {
 	for {
 		obj, shutdown := nc.nodeUpdateQueue.Get()
@@ -615,6 +622,7 @@ func (nc *Controller) doNodeProcessingPassWorker() {
 	}
 }
 
+//根据node里condition更新node的taints
 func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 	node, err := nc.nodeLister.Get(nodeName)
 	if err != nil {
@@ -659,7 +667,7 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 		_, found := taintKeyToNodeConditionMap[t.Key]
 		return found
 	})
-	taintsToAdd, taintsToDel := taintutils.TaintSetDiff(taints, nodeTaints)
+	taintsToAdd, taintsToDel := taintutils.TaintSetDiff(taints, nodeTaints) //condition生成的taints，node.specs.Taints,以ondition生成的taints为主
 	// If nothing to add not delete, return true directly.
 	if len(taintsToAdd) == 0 && len(taintsToDel) == 0 {
 		return nil
@@ -670,6 +678,7 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 	return nil
 }
 
+//根据node的ready condition，来更新node的taints--noexcute，消费zoneNoExecuteTainter
 func (nc *Controller) doNoExecuteTaintingPass() {
 	nc.evictorLock.Lock()
 	defer nc.evictorLock.Unlock()
@@ -714,6 +723,8 @@ func (nc *Controller) doNoExecuteTaintingPass() {
 	}
 }
 
+//删除node上的pod，不更新node taints，更新nodeEvictionMap标记node为evicted,消费zonePodEvictor
+//加入到zonePodEvictor的node都是unready 状态超过pod-evicted-timeout。所以不用判断时间
 func (nc *Controller) doEvictionPass() {
 	nc.evictorLock.Lock()
 	defer nc.evictorLock.Unlock()
@@ -856,11 +867,12 @@ func (nc *Controller) monitorNodeHealth() error {
 		}
 		nc.nodesToRetry.Delete(node.Name)
 	}
+	
 	nc.handleDisruption(zoneToNodeConditions, nodes)
-
 	return nil
 }
 
+//已经有taint就更新node上的taint，没有就添加到zoneNoExecuteTainter队列,等待处理加taint
 func (nc *Controller) processTaintBaseEviction(node *v1.Node, observedReadyCondition *v1.NodeCondition) {
 	decisionTimestamp := nc.now()
 	// Check eviction timeout against decisionTimestamp
@@ -902,6 +914,7 @@ func (nc *Controller) processTaintBaseEviction(node *v1.Node, observedReadyCondi
 	}
 }
 
+//执行没有taint的node上的pod驱逐
 func (nc *Controller) processNoTaintBaseEviction(node *v1.Node, observedReadyCondition *v1.NodeCondition, gracePeriod time.Duration, pods []*v1.Pod) error {
 	decisionTimestamp := nc.now()
 	nodeHealthData := nc.nodeHealthMap.getDeepCopy(node.Name)
@@ -987,6 +1000,7 @@ func legacyIsMasterNode(nodeName string) bool {
 	return false
 }
 
+//更新nc.nodehealth，如果超过gracePeriod未更新probeTimestamp(有可能kubelet未更新status、或者更新lease)，则把node的condition改为unknown
 // tryUpdateNodeHealth checks a given node's conditions and tries to update it. Returns grace period to
 // which given node is entitled, state of current and last observed Ready Condition, and an error if it occurred.
 func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.NodeCondition, *v1.NodeCondition, error) {
@@ -1155,6 +1169,7 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 	return gracePeriod, observedReadyCondition, currentReadyCondition, nil
 }
 
+//处理node挂掉不同数量，不同的驱逐速度
 func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.NodeCondition, nodes []*v1.Node) {
 	newZoneStates := map[string]ZoneState{}
 	allAreFullyDisrupted := true
@@ -1222,6 +1237,7 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 			return
 		}
 		// We're exiting full disruption mode
+		//从full disruption mode恢复会其他状态，过去是full disruption
 		if allWasFullyDisrupted {
 			klog.V(0).Info("Controller detected that some Nodes are Ready. Exiting master disruption mode.")
 			// When exiting disruption mode update probe timestamps on all Nodes.
@@ -1263,6 +1279,8 @@ func (nc *Controller) podUpdated(oldPod, newPod *v1.Pod) {
 	}
 }
 
+//node unready把pod的ready condition改为false，更新时间
+//没有启用TaintManager node为unready 则该pod驱逐，将node添加到zonePodEvictor
 func (nc *Controller) doPodProcessingWorker() {
 	for {
 		obj, shutdown := nc.podUpdateQueue.Get()
@@ -1277,6 +1295,9 @@ func (nc *Controller) doPodProcessingWorker() {
 	}
 }
 
+//如果pod的node ready 为非true，
+//1. 没有启用taint-manager--则这个node 在nodeEvictionMap，则对这个pod进行eviced--经过一定时间pod-evicted-timeout时间。 node不在nodeEvictionMap，标记为tobeevicted。添加node到zonePodEvictor，
+//2. 标记pod为ready为false
 // processPod is processing events of assigning pods to nodes. In particular:
 // 1. for NodeReady=true node, taint eviction for this pod will be cancelled
 // 2. for NodeReady=false or unknown node, taint eviction of pod will happen and pod will be marked as not ready

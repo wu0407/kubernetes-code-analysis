@@ -476,7 +476,7 @@ func GetMatchingTolerations(taints []v1.Taint, tolerations []v1.Toleration) (boo
 		return false, []v1.Toleration{}
 	}
 	result := []v1.Toleration{}
-	for i := range taints {
+	for i := range taints { //只要一个tains不能容忍，就返回false,[]v1.Toleration{}, 所有tains都能容忍，返回true和所有toleration
 		tolerated := false
 		for j := range tolerations {
 			if tolerations[j].ToleratesTaint(&taints[i]) {

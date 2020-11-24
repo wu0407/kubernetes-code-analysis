@@ -250,6 +250,7 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 	// After updated, new pod will be stored in the pod cache *pods*.
 	// Notice that *pods* and *oldPods* could be the same cache.
 	updatePodsFunc := func(newPods []*v1.Pod, oldPods, pods map[types.UID]*v1.Pod) {
+		//过滤重复的pod，返回没有重复的pod
 		filtered := filterInvalidPods(newPods, source, s.recorder)
 		for _, ref := range filtered {
 			// Annotate the pod with the source before any comparison.
@@ -301,6 +302,7 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 
 	case kubetypes.SET:
 		klog.V(4).Infof("Setting pods for source %s", source)
+		//添加已经发现的source
 		s.markSourceSet(source)
 		// Clear the old map entries by just creating a new map
 		oldPods := pods
@@ -415,6 +417,7 @@ func recordFirstSeenTime(pod *v1.Pod) {
 
 // updateAnnotations returns an Annotation map containing the api annotation map plus
 // locally managed annotations
+// 更新existing的annotation为ref的annotation加上原有的LocalAnnotation
 func updateAnnotations(existing, ref *v1.Pod) {
 	annotations := make(map[string]string, len(ref.Annotations)+len(localAnnotations))
 	for k, v := range ref.Annotations {
@@ -445,6 +448,8 @@ func podsDifferSemantically(existing, ref *v1.Pod) bool {
 //   * if ref makes no meaningful change, but changes the pod status, returns needReconcile=true
 //   * else return all false
 //   Now, needUpdate, needGracefulDelete and needReconcile should never be both true
+//  如果除了status以外属性相同，status相同，则返回都是false。status不同则更新existing.status为ref.status、返回needReconcile为true
+//  如果属性不同，则更新existing属性=ref属性，如果ref.DeletionTimestamp存在，则返回needGracefulDelete为true。否则needUpdate为true
 func checkAndUpdatePod(existing, ref *v1.Pod) (needUpdate, needReconcile, needGracefulDelete bool) {
 
 	// 1. this is a reconcile
