@@ -186,12 +186,12 @@ func (c *threadSafeMap) ByIndex(indexName, indexedValue string) ([]interface{}, 
 		return nil, fmt.Errorf("Index with name %s does not exist", indexName)
 	}
 
-	index := c.indices[indexName]
+	index := c.indices[indexName] //历史类
 
-	set := index[indexedValue]
+	set := index[indexedValue] //清代
 	list := make([]interface{}, 0, set.Len())
-	for key := range set {
-		list = append(list, c.items[key])
+	for key := range set { //康熙 乾隆
+		list = append(list, c.items[key]) //书架上 书
 	}
 
 	return list, nil

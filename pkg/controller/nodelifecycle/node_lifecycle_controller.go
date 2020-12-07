@@ -781,6 +781,7 @@ func (nc *Controller) monitorNodeHealth() error {
 	added, deleted, newZoneRepresentatives := nc.classifyNodes(nodes)
 
 	for i := range newZoneRepresentatives {
+		//设置新添加的zone的token ratelimit队列--需要执行pod驱逐的node的速率
 		nc.addPodEvictorForNewZone(newZoneRepresentatives[i])
 	}
 
@@ -843,6 +844,8 @@ func (nc *Controller) monitorNodeHealth() error {
 				}
 				continue
 			}
+			//为什么要用observedReadyCondition 而不用currentReadyCondition，比如node挂了currentReadyCondition变为unknown，而observedReadyCondition为ready
+			//这样明显有问题
 			if nc.runTaintManager {
 				nc.processTaintBaseEviction(node, &observedReadyCondition)
 			} else {
@@ -1023,6 +1026,7 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 			LastTransitionTime: node.CreationTimestamp,
 		}
 		gracePeriod = nc.nodeStartupGracePeriod
+		//无论原来的nodehealth是否存在，都将nodeHealth.status设为现在的，nodeHealth.status里的ReadyCondition是nil
 		if nodeHealth != nil {
 			nodeHealth.status = &node.Status
 		} else {
@@ -1065,13 +1069,14 @@ func (nc *Controller) tryUpdateNodeHealth(node *v1.Node) (time.Duration, v1.Node
 			probeTimestamp:           nc.now(),
 			readyTransitionTimestamp: nc.now(),
 		}
-	} else if savedCondition == nil && currentReadyCondition != nil {
+	} else if savedCondition == nil && currentReadyCondition != nil { //这里savedCondition == nil && currentReadyCondition == nil不做任何动作
 		klog.V(1).Infof("Creating timestamp entry for newly observed Node %s", node.Name)
 		nodeHealth = &nodeHealthData{
 			status:                   &node.Status,
 			probeTimestamp:           nc.now(),
 			readyTransitionTimestamp: nc.now(),
 		}
+	//不会发生，因为上面currentReadyCondition为nil，则nodeHealth会被设置 !=nil且nodeHealth.status设置成node.status，savedCondition一定为nil
 	} else if savedCondition != nil && currentReadyCondition == nil {
 		klog.Errorf("ReadyCondition was removed from Status of Node %s", node.Name)
 		// TODO: figure out what to do in this case. For now we do the same thing as above.
@@ -1279,7 +1284,7 @@ func (nc *Controller) podUpdated(oldPod, newPod *v1.Pod) {
 	}
 }
 
-//node unready把pod的ready condition改为false，更新时间
+//node unready把pod的ready condition改为false，更新transitionTimestamp时间
 //没有启用TaintManager node为unready 则该pod驱逐，将node添加到zonePodEvictor
 func (nc *Controller) doPodProcessingWorker() {
 	for {
