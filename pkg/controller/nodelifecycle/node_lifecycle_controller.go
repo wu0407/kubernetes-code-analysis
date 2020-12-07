@@ -844,8 +844,9 @@ func (nc *Controller) monitorNodeHealth() error {
 				}
 				continue
 			}
-			//为什么要用observedReadyCondition 而不用currentReadyCondition，比如node挂了currentReadyCondition变为unknown，而observedReadyCondition为ready
-			//这样明显有问题
+			//为什么要用observedReadyCondition 而不用currentReadyCondition，observedReadyCondition和currentReadyCondition不一定一样
+			//比如node挂了currentReadyCondition变为unknown，而observedReadyCondition为ready
+			//这样明显有问题，这一周期不会做驱逐或taint，下一周期observedReadyCondition和currentReadyCondition都为unknown 一定会驱逐或taint
 			if nc.runTaintManager {
 				nc.processTaintBaseEviction(node, &observedReadyCondition)
 			} else {
