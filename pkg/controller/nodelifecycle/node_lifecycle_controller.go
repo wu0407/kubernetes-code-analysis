@@ -354,7 +354,7 @@ type Controller struct {
 	// tainted nodes, if they're not tolerated.
 	runTaintManager bool
 
-	//用来更新node的taint-弄scheduler的队列
+	// 不限速的workqueue
 	nodeUpdateQueue workqueue.Interface
 	podUpdateQueue  workqueue.RateLimitingInterface
 }
@@ -656,6 +656,7 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 	// Get exist taints of node.
 	nodeTaints := taintutils.TaintSetFilter(node.Spec.Taints, func(t *v1.Taint) bool {
 		// only NoSchedule taints are candidates to be compared with "taints" later
+		//只选择effect为NoSchedule的taint
 		if t.Effect != v1.TaintEffectNoSchedule {
 			return false
 		}
@@ -667,7 +668,8 @@ func (nc *Controller) doNoScheduleTaintingPass(nodeName string) error {
 		_, found := taintKeyToNodeConditionMap[t.Key]
 		return found
 	})
-	taintsToAdd, taintsToDel := taintutils.TaintSetDiff(taints, nodeTaints) //condition生成的taints，node.specs.Taints,以ondition生成的taints为主
+	//这个周期根据condition生成的taints，与node上个周期根据condition生成的NoSchedule taint--node.specs.Taints过滤出来，计算出需要移除的和添加的
+	taintsToAdd, taintsToDel := taintutils.TaintSetDiff(taints, nodeTaints) 
 	// If nothing to add not delete, return true directly.
 	if len(taintsToAdd) == 0 && len(taintsToDel) == 0 {
 		return nil
@@ -885,9 +887,11 @@ func (nc *Controller) processTaintBaseEviction(node *v1.Node, observedReadyCondi
 		// We want to update the taint straight away if Node is already tainted with the UnreachableTaint
 		if taintutils.TaintExists(node.Spec.Taints, UnreachableTaintTemplate) {
 			taintToAdd := *NotReadyTaintTemplate
+			//立即执行更新，不需要队列
 			if !nodeutil.SwapNodeControllerTaint(nc.kubeClient, []*v1.Taint{&taintToAdd}, []*v1.Taint{UnreachableTaintTemplate}, node) {
 				klog.Errorf("Failed to instantly swap UnreachableTaint to NotReadyTaint. Will try again in the next cycle.")
 			}
+		// 加入加taint 队列zoneNoExecuteTainter
 		} else if nc.markNodeForTainting(node) {
 			klog.V(2).Infof("Node %v is NotReady as of %v. Adding it to the Taint queue.",
 				node.Name,
@@ -908,6 +912,7 @@ func (nc *Controller) processTaintBaseEviction(node *v1.Node, observedReadyCondi
 			)
 		}
 	case v1.ConditionTrue:
+		// 立即执行更新，不需要队列
 		removed, err := nc.markNodeAsReachable(node)
 		if err != nil {
 			klog.Errorf("Failed to remove taints from node %v. Will retry in next iteration.", node.Name)
@@ -918,7 +923,8 @@ func (nc *Controller) processTaintBaseEviction(node *v1.Node, observedReadyCondi
 	}
 }
 
-//执行没有taint的node上的pod驱逐
+//在没有启用taint manager，node为unready 持续时间超过了podEvictionTimeout，对提供的pod执行驱逐
+// 根据nodeEvictionMap里node驱逐状态，如果是evicted 立即执行删除pod；否则将node加入相应的队列等待执行加taint或驱逐上面所有pod
 func (nc *Controller) processNoTaintBaseEviction(node *v1.Node, observedReadyCondition *v1.NodeCondition, gracePeriod time.Duration, pods []*v1.Pod) error {
 	decisionTimestamp := nc.now()
 	nodeHealthData := nc.nodeHealthMap.getDeepCopy(node.Name)
@@ -1184,10 +1190,12 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 		unhealthy, newState := nc.computeZoneStateFunc(v)
 		zoneHealth.WithLabelValues(k).Set(float64(100*(len(v)-unhealthy)) / float64(len(v)))
 		unhealthyNodes.WithLabelValues(k).Set(float64(unhealthy))
+		// 只要有一个zone的状态（现在提供的）不是stateFullDisruption，则allAreFullyDisrupted（现在为全挂）为false
 		if newState != stateFullDisruption {
 			allAreFullyDisrupted = false
 		}
 		newZoneStates[k] = newState
+		// 这个应该不会发生，因为前面对node进行分类已经把所有的zone都存进去了。
 		if _, had := nc.zoneStates[k]; !had {
 			klog.Errorf("Setting initial state for unseen zone: %v", k)
 			nc.zoneStates[k] = stateInitial
@@ -1196,6 +1204,7 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 
 	allWasFullyDisrupted := true
 	for k, v := range nc.zoneStates {
+		// 不在zoneToNodeConditions提供的列表里zone，不去判断它在zoneStates保存的状态--忽略它的状态，比如zone是isNodeExcludedFromDisruptionChecks
 		if _, have := zoneToNodeConditions[k]; !have {
 			zoneSize.WithLabelValues(k).Set(0)
 			zoneHealth.WithLabelValues(k).Set(100)
@@ -1203,6 +1212,7 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 			delete(nc.zoneStates, k)
 			continue
 		}
+		// 只要有一个zone不是stateFullDisruption，则allWasFullyDisrupted--（过去状态为全挂）为false
 		if v != stateFullDisruption {
 			allWasFullyDisrupted = false
 			break
@@ -1216,15 +1226,18 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 	//   - unless all zones in the cluster are in "fullDisruption" - in that case we stop all evictions.
 	if !allAreFullyDisrupted || !allWasFullyDisrupted {
 		// We're switching to full disruption mode
+		// 之前zone未全挂，现在所有zone全挂，设置所有node为正常状态
 		if allAreFullyDisrupted {
 			klog.V(0).Info("Controller detected that all Nodes are not-Ready. Entering master disruption mode.")
 			for i := range nodes {
+				// 启用taint manager--移除相关taint--更新node，从zoneNoExecuteTainter队列中移除
 				if nc.runTaintManager {
 					_, err := nc.markNodeAsReachable(nodes[i])
 					if err != nil {
 						klog.Errorf("Failed to remove taints from Node %v", nodes[i].Name)
 					}
 				} else {
+					// 从zonePodEvictor队列中移除，nodeEvictionMap设置状态为unmarked，如果node还在nodeEvictionMap
 					nc.cancelPodEviction(nodes[i])
 				}
 			}
@@ -1236,6 +1249,7 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 					nc.zonePodEvictor[k].SwapLimiter(0)
 				}
 			}
+			// 将所有的zone 状态更新为stateFullDisruption全挂
 			for k := range nc.zoneStates {
 				nc.zoneStates[k] = stateFullDisruption
 			}
@@ -1243,7 +1257,7 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 			return
 		}
 		// We're exiting full disruption mode
-		//从full disruption mode恢复会其他状态，过去是full disruption
+		//从full disruption mode恢复到其他状态，过去是full disruption
 		if allWasFullyDisrupted {
 			klog.V(0).Info("Controller detected that some Nodes are Ready. Exiting master disruption mode.")
 			// When exiting disruption mode update probe timestamps on all Nodes.
@@ -1263,6 +1277,9 @@ func (nc *Controller) handleDisruption(zoneToNodeConditions map[string][]*v1.Nod
 		}
 		// We know that there's at least one not-fully disrupted so,
 		// we can use default behavior for rate limiters
+		// 之前状态allAreFullyDisrupted和现在状态allWasFullyDisrupted都为false--没有发生集群所有zone全挂
+		// 但是zone的状态有可能会发生变化，比如zone从statePartialDisruption到stateNormal，stateNormal到statePartialDisruption，原来是stateInitial到其他状态、stateFullDisruption到stateNormal、stateFullDisruption到statePartialDisruption
+		// 更新zone的安排node执行驱逐/设置node taint速率，更新存储的zone状态
 		for k, v := range nc.zoneStates {
 			newState := newZoneStates[k]
 			if v == newState {
@@ -1285,7 +1302,7 @@ func (nc *Controller) podUpdated(oldPod, newPod *v1.Pod) {
 	}
 }
 
-//node unready把pod的ready condition改为false，更新transitionTimestamp时间
+//pod绑定的node unready，如果pod的ready condition不为false，把pod的ready condition改为false，ready condition LastTransitionTime时间为现在
 //没有启用TaintManager node为unready 则该pod驱逐，将node添加到zonePodEvictor
 func (nc *Controller) doPodProcessingWorker() {
 	for {
@@ -1302,8 +1319,8 @@ func (nc *Controller) doPodProcessingWorker() {
 }
 
 //如果pod的node ready 为非true，
-//1. 没有启用taint-manager--则这个node 在nodeEvictionMap，则对这个pod进行eviced--经过一定时间pod-evicted-timeout时间。 node不在nodeEvictionMap，标记为tobeevicted。添加node到zonePodEvictor，
-//2. 标记pod为ready为false
+//1. 如果没有启用taint-manager--则如果这个node 在nodeEvictionMap里且状态为evicted，则对这个pod进行删除--经过一定时间pod-evicted-timeout时间。 否则node不在nodeEvictionMap或状态不为evictd，在nodeEvictionMap里标记node为tobeevicted，同时添加node到zonePodEvictor。
+//2. 标记pod的ready为false
 // processPod is processing events of assigning pods to nodes. In particular:
 // 1. for NodeReady=true node, taint eviction for this pod will be cancelled
 // 2. for NodeReady=false or unknown node, taint eviction of pod will happen and pod will be marked as not ready
@@ -1367,12 +1384,14 @@ func (nc *Controller) processPod(podItem podUpdateItem) {
 func (nc *Controller) setLimiterInZone(zone string, zoneSize int, state ZoneState) {
 	switch state {
 	case stateNormal:
+		// 设置为普通 安排node执行驱逐速率/设置taint速率
 		if nc.runTaintManager {
 			nc.zoneNoExecuteTainter[zone].SwapLimiter(nc.evictionLimiterQPS)
 		} else {
 			nc.zonePodEvictor[zone].SwapLimiter(nc.evictionLimiterQPS)
 		}
 	case statePartialDisruption:
+		// 如果zone里的总node数量大于largeClusterThreshold（默认为50），设置为第二级安排node执行驱逐速率/设置taint速率。否则驱逐执行速率设置为0
 		if nc.runTaintManager {
 			nc.zoneNoExecuteTainter[zone].SwapLimiter(
 				nc.enterPartialDisruptionFunc(zoneSize))
@@ -1381,6 +1400,7 @@ func (nc *Controller) setLimiterInZone(zone string, zoneSize int, state ZoneStat
 				nc.enterPartialDisruptionFunc(zoneSize))
 		}
 	case stateFullDisruption:
+		//因为不是所有zone为全挂，所以这个zone如果是全挂，则设置为普通的安排node执行驱逐速率/设置taint速率
 		if nc.runTaintManager {
 			nc.zoneNoExecuteTainter[zone].SwapLimiter(
 				nc.enterFullDisruptionFunc(zoneSize))
