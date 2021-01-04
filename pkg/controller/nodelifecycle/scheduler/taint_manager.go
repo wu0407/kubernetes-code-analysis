@@ -351,6 +351,7 @@ func (tc *NoExecuteTaintManager) processPodOnNode(
 	if !allTolerated {
 		klog.V(2).Infof("Not all taints are tolerated after update for Pod %v on %v", podNamespacedName.String(), nodeName)
 		// We're canceling scheduled work (if any), as we're going to delete the Pod right away.
+		// 先在taintEvictionQueue移除该podNamespacedName，因为AddWork中会判断如果在队列中，不能再添加了，我们要重置create time， fired time。
 		tc.cancelWorkWithEvent(podNamespacedName)
 		//taintEvictionQueue里面包含了定时器，定时器触发执行处理函数，所以不需要其他func来处理这个队列
 		tc.taintEvictionQueue.AddWork(NewWorkArgs(podNamespacedName.Name, podNamespacedName.Namespace), time.Now(), time.Now())
