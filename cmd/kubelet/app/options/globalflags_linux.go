@@ -37,6 +37,7 @@ import (
 // addCadvisorFlags adds flags from cadvisor
 func addCadvisorFlags(fs *pflag.FlagSet) {
 	// lookup flags in global flag set and re-register the values with our flagset
+	// 所有上面引用模块的都有定义全局变量，比如flag.String()，而flag.String()是放在flag.CommandLine全局变量下
 	global := flag.CommandLine
 	local := pflag.NewFlagSet(os.Args[0], pflag.ExitOnError)
 

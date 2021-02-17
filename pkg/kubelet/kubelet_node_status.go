@@ -444,6 +444,9 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 	kl.setNodeStatus(node)
 
 	now := kl.clock.Now()
+	// NodeStatusReportFrequency's default value is
+	// set to NodeStatusUpdateFrequency if NodeStatusUpdateFrequency is set
+	// explicitly. else NodeStatusReportFrequency is 5min
 	if now.Before(kl.lastStatusReportTime.Add(kl.nodeStatusReportFrequency)) {
 		if !podCIDRChanged && !nodeStatusHasChanged(&originalNode.Status, &node.Status) {
 			// We must mark the volumes as ReportedInUse in volume manager's dsw even

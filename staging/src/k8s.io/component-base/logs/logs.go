@@ -52,7 +52,9 @@ func (writer KlogWriter) Write(data []byte) (n int, err error) {
 
 // InitLogs initializes logs the way we want for kubernetes.
 func InitLogs() {
+	// 兼容使用log来记录，实际还是使用klog
 	log.SetOutput(KlogWriter{})
+	// 设置log输出格式为空，日志格式由klog决定
 	log.SetFlags(0)
 	// The default glog flush interval is 5 seconds.
 	go wait.Forever(klog.Flush, *logFlushFreq)

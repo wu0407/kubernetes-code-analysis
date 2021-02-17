@@ -175,6 +175,7 @@ HTTP server: The kubelet can also listen for HTTP and respond to a simple API
 			}
 
 			// short-circuit on verflag
+			// 访问 --version
 			verflag.PrintAndExitIfRequested()
 			utilflag.PrintFlags(cleanFlagSet)
 
@@ -201,6 +202,9 @@ HTTP server: The kubelet can also listen for HTTP and respond to a simple API
 				// We must enforce flag precedence by re-parsing the command line into the new object.
 				// This is necessary to preserve backwards-compatibility across binary upgrades.
 				// See issue #56171 for more details.
+				// 重新解析args，命令行选项覆盖kubeletConfig里的选项
+				// 其中FeatureGates为合并
+				// 忽略Credential、klog、cadvisor选项--这些选项不在kubeletConfig里
 				if err := kubeletConfigFlagPrecedence(kubeletConfig, args); err != nil {
 					klog.Fatal(err)
 				}
