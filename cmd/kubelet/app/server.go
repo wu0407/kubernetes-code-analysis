@@ -203,7 +203,7 @@ HTTP server: The kubelet can also listen for HTTP and respond to a simple API
 				// This is necessary to preserve backwards-compatibility across binary upgrades.
 				// See issue #56171 for more details.
 				// 重新解析args，命令行选项覆盖kubeletConfig里的选项
-				// 其中FeatureGates为合并
+				// 其中FeatureGates为合并，如果出现冲突，则命令行会覆盖kubeletConfig
 				// 忽略Credential、klog、cadvisor选项--这些选项不在kubeletConfig里
 				if err := kubeletConfigFlagPrecedence(kubeletConfig, args); err != nil {
 					klog.Fatal(err)
@@ -334,6 +334,7 @@ func kubeletConfigFlagPrecedence(kc *kubeletconfiginternal.KubeletConfiguration,
 	// register new KubeletConfiguration
 	options.AddKubeletConfigFlags(fs, kc)
 	// Remember original feature gates, so we can merge with flag gates later
+	// 由于Parse时候kc.FeatureGates值会被会被覆盖，所以要保留原始值。由于cliflag.NewMapStringBool的set方法
 	original := kc.FeatureGates
 	// re-parse flags
 	if err := fs.Parse(args); err != nil {

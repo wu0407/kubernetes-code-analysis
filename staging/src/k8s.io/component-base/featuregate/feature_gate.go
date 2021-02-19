@@ -64,6 +64,7 @@ var (
 
 type FeatureSpec struct {
 	// Default is the default enablement state for the feature
+	// 默认是否启用
 	Default bool
 	// LockToDefault indicates that the feature is locked to its default and cannot be changed
 	LockToDefault bool
@@ -122,6 +123,7 @@ type featureGate struct {
 	// known holds a map[Feature]FeatureSpec
 	known *atomic.Value
 	// enabled holds a map[Feature]bool
+	// 只有明确的设置feature才会在enable里保存
 	enabled *atomic.Value
 	// closed is set to true when AddFlag is called, and prevents subsequent calls to Add
 	closed bool
@@ -216,15 +218,18 @@ func (f *featureGate) SetFromMap(m map[string]bool) error {
 
 	for k, v := range m {
 		k := Feature(k)
+		// 判断是否是已知的featureSpec,不是已知的,直接报错
 		featureSpec, ok := known[k]
 		if !ok {
 			return fmt.Errorf("unrecognized feature gate: %s", k)
 		}
+		// 如果是锁定的featureSpec，不允许修改成其他值
 		if featureSpec.LockToDefault && featureSpec.Default != v {
 			return fmt.Errorf("cannot set feature gate %v to %v, feature is locked to %v", k, v, featureSpec.Default)
 		}
 		enabled[k] = v
 		// Handle "special" features like "all alpha gates"
+		// 遇到AllAlpha或AllBeta将enable值改为v
 		if fn, found := f.special[k]; found {
 			fn(known, enabled, v)
 		}
