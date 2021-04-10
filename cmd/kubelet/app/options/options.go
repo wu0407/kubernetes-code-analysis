@@ -233,6 +233,24 @@ func ValidateKubeletFlags(f *KubeletFlags) error {
 		return fmt.Errorf("invalid configuration: NodeStatusMaxImages (--node-status-max-images) must be -1 or greater")
 	}
 
+	// 以下label是允许的
+	// 1. 普通label--非kubernetes.io
+	// 2. label在下面列表中：
+	// kubernetes.io/hostname 
+	// topology.kubernetes.io/zone
+	// topology.kubernetes.io/region
+	// failure-domain.beta.kubernetes.io/zone
+	// failure-domain.beta.kubernetes.io/region
+	// beta.kubernetes.io/instance-type
+	// node.kubernetes.io/instance-type
+	// kubernetes.io/os
+	// kubernetes.io/arch
+	// beta.kubernetes.io/os
+	// beta.kubernetes.io/arch
+	//
+	// 3. 或label域或子域在列表中：
+	// kubelet.kubernetes.io
+	// node.kubernetes.io
 	unknownLabels := sets.NewString()
 	for k := range f.NodeLabels {
 		if isKubernetesLabel(k) && !kubeletapis.IsKubeletLabel(k) {
