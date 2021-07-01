@@ -59,17 +59,21 @@ type Converter struct {
 
 	// This is a map from a source field type and name, to a list of destination
 	// field type and name.
+	// 源字段名和类型 目标类型和对应字段名列表，一个源字段可能对应多个目标字段
 	structFieldDests map[typeNamePair][]typeNamePair
 
 	// Allows for the opposite lookup of structFieldDests. So that SourceFromDest
 	// copy flag also works. So this is a map of destination field name, to potential
 	// source field name and type to look for.
+	// 一个目标字段名和类型，可能对应多个源字段
 	structFieldSources map[typeNamePair][]typeNamePair
 
 	// Map from an input type to a function which can apply a key name mapping
+	// 一个类型值与对应映射函数--类型映射为源和目标值，根据source tag和dest tag进行转换为源值和目标值
 	inputFieldMappingFuncs map[reflect.Type]FieldMappingFunc
 
 	// Map from an input type to a set of default conversion flags.
+	// 设置类型的转换flag，设置转换策略，比如源字段不存在或目标字段不存在如何处理
 	inputDefaultFlags map[reflect.Type]FieldMatchingFlags
 
 	// If non-nil, will be called to print helpful debugging info. Quite verbose.
@@ -78,6 +82,7 @@ type Converter struct {
 	// nameFunc is called to retrieve the name of a type; this name is used for the
 	// purpose of deciding whether two types match or not (i.e., will we attempt to
 	// do a conversion). The default returns the go type name.
+	// 获取类型的名字的函数
 	nameFunc func(t reflect.Type) string
 }
 
@@ -389,10 +394,12 @@ const (
 	// destination field will be ignored. If SourceToDest is
 	// specified, this flag is ignored. If neither is specified,
 	// or no flags are passed, this flag is the default.
+	// 以目标类型为主，依次从源查找匹配的字段，复制其值
 	DestFromSource FieldMatchingFlags = 0
 	// Loop through source fields, search for matching dest field
 	// to copy it into. Destination fields with no corresponding
 	// source field will be ignored.
+	// 以源类型为主，依次从目标中查找匹配的字段，复制其值
 	SourceToDest FieldMatchingFlags = 1 << iota
 	// Don't treat it as an error if the corresponding source or
 	// dest field can't be found.

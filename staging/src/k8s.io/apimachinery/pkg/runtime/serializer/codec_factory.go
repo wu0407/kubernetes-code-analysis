@@ -48,6 +48,7 @@ type serializerType struct {
 	StreamSerializer runtime.Serializer
 }
 
+// 创建json、yaml、protobuf的serializerType集合
 func newSerializersForScheme(scheme *runtime.Scheme, mf json.MetaFactory, options CodecFactoryOptions) []serializerType {
 	jsonSerializer := json.NewSerializerWithOptions(
 		mf, scheme, scheme,
@@ -85,6 +86,7 @@ func newSerializersForScheme(scheme *runtime.Scheme, mf json.MetaFactory, option
 			FileExtensions:     []string{"yaml"},
 			EncodesAsText:      true,
 			Serializer:         yamlSerializer,
+			// yaml没有Framer和StreamSerializer
 		},
 		{
 			AcceptContentTypes: []string{runtime.ContentTypeProtobuf},

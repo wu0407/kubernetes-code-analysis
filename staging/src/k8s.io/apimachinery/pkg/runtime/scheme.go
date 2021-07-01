@@ -47,26 +47,32 @@ import (
 type Scheme struct {
 	// versionMap allows one to figure out the go type of an object with
 	// the given version and name.
+	// 一个groupversionkind对应一种go type，多种groupversionkind可能对应一种go type
 	gvkToType map[schema.GroupVersionKind]reflect.Type
 
 	// typeToGroupVersion allows one to find metadata for a given go object.
 	// The reflect.Type we index by should *not* be a pointer.
+	// 一种go type对应多种groupversionkind
 	typeToGVK map[reflect.Type][]schema.GroupVersionKind
 
 	// unversionedTypes are transformed without conversion in ConvertToVersion.
+	// unversionedTypes 是go type对应一种特殊的groupversionkind，不需要执行ConvertToVersion
 	unversionedTypes map[reflect.Type]schema.GroupVersionKind
 
 	// unversionedKinds are the names of kinds that can be created in the context of any group
 	// or version
 	// TODO: resolve the status of unversioned types.
+	// kind 对应的go type
 	unversionedKinds map[string]reflect.Type
 
 	// Map from version and resource to the corresponding func to convert
 	// resource field labels in that version to internal version.
+	// groupversionkind与转换lable到internal version的func
 	fieldLabelConversionFuncs map[schema.GroupVersionKind]FieldLabelConversionFunc
 
 	// defaulterFuncs is an array of interfaces to be called with an object to provide defaulting
 	// the provided object must be a pointer.
+	// defaulterFuncs保存go type与设置对象的默认值函数
 	defaulterFuncs map[reflect.Type]func(interface{})
 
 	// converter stores all registered conversion functions. It also has
@@ -75,6 +81,7 @@ type Scheme struct {
 
 	// versionPriority is a map of groups to ordered lists of versions for those groups indicating the
 	// default priorities of these versions as registered in the scheme
+	// group对应的版本列表--对应版本的优先级
 	versionPriority map[string][]string
 
 	// observedVersions keeps track of the order we've seen versions during type registration

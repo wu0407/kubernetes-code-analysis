@@ -810,6 +810,8 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 	go daemon.SdNotify(false, "READY=1")
 
 	select {
+	// 这里的done chan是当锁文件LockFilePath被打开或者被自己删除，就会收到消息
+	// 对应watchForLockfileContention操作
 	case <-done:
 		break
 	case <-stopCh:
