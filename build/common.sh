@@ -537,6 +537,7 @@ function kube::build::run_build_command_ex() {
     "--name=${container_name}"
     "--user=$(id -u):$(id -g)"
     "--hostname=${HOSTNAME}"
+    "--network=host"
     "${DOCKER_MOUNT_ARGS[@]}"
   )
 
@@ -573,6 +574,7 @@ function kube::build::run_build_command_ex() {
     --env "GOFLAGS=${GOFLAGS:-}"
     --env "GOGCFLAGS=${GOGCFLAGS:-}"
     --env "SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-}"
+    --env "GOPROXY=https://goproxy.io,direct"
   )
 
   # use GOLDFLAGS only if it is set explicitly.
@@ -638,14 +640,15 @@ function kube::build::start_rsyncd_container() {
   V=3 kube::log::status "Starting rsyncd container"
   kube::build::run_build_command_ex \
     "${KUBE_RSYNC_CONTAINER_NAME}" -p 127.0.0.1:"${KUBE_RSYNC_PORT}":"${KUBE_CONTAINER_RSYNC_PORT}" -d \
-    -e ALLOW_HOST="$(${IPTOOL} | grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' | grep -v '127.0.0.1')" \
+    -e ALLOW_HOST="$(${IPTOOL}| grep -Eo 'inet (addr:)?([0-9]*\.){3}[0-9]*' | grep -Eo '([0-9]*\.){3}[0-9]*' |xargs)" \
     -- /rsyncd.sh >/dev/null
 
   local mapped_port
-  if ! mapped_port=$("${DOCKER[@]}" port "${KUBE_RSYNC_CONTAINER_NAME}" ${KUBE_CONTAINER_RSYNC_PORT} 2> /dev/null | cut -d: -f 2) ; then
-    kube::log::error "Could not get effective rsync port"
-    return 1
-  fi
+  mapped_port=${KUBE_CONTAINER_RSYNC_PORT}
+  #if ! mapped_port=$("${DOCKER[@]}" port "${KUBE_RSYNC_CONTAINER_NAME}" ${KUBE_CONTAINER_RSYNC_PORT} 2> /dev/null | cut -d: -f 2) ; then
+  #  kube::log::error "Could not get effective rsync port"
+  #  return 1
+  #fi
 
   local container_ip
   container_ip=$("${DOCKER[@]}" inspect --format '{{ .NetworkSettings.IPAddress }}' "${KUBE_RSYNC_CONTAINER_NAME}")
