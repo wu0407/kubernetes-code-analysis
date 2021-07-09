@@ -245,6 +245,8 @@ func updateSystemdCgroupInfo(cgroupConfig *libcontainerconfigs.Cgroup, cgroupNam
 // Exists checks if all subsystem cgroups already exist
 func (m *cgroupManagerImpl) Exists(name CgroupName) bool {
 	// Get map of all cgroup paths on the system for the particular cgroup
+	// 如果的name--rootCgroup为 "/"，在cgroup driver为systemd情况下，则cgroupPaths为各个子系统在系统中的挂载，比如cpu-->/sys/fs/cgroup/cpu,cpuacct
+	// 如果是name是system，在cgroup driver为systemd情况下，则cgroupPaths里 cpu挂载-->/sys/fs/cgroup/cpu,cpuacct/system.slice
 	cgroupPaths := m.buildCgroupPaths(name)
 
 	// the presence of alternative control groups not known to runc confuses

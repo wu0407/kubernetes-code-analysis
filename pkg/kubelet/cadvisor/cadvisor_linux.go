@@ -27,6 +27,9 @@ import (
 	"time"
 
 	// Register supported container handlers.
+	// 在原始的cdvisor是在https://github.com/google/cadvisor/cadvisor.go里import
+	// "github.com/google/cadvisor/container/install"包来注册所有handler
+	// "github.com/google/cadvisor/container/install"包会比这里多import "github.com/google/cadvisor/container/mesos/install"
 	_ "github.com/google/cadvisor/container/containerd/install"
 	_ "github.com/google/cadvisor/container/crio/install"
 	_ "github.com/google/cadvisor/container/docker/install"

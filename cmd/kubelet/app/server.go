@@ -389,7 +389,7 @@ func UnsecuredDependencies(s *options.KubeletServer, featureGate featuregate.Fea
 			ImagePullProgressDeadline: s.ImagePullProgressDeadline.Duration,
 		}
 	}
-
+	// 在cmd\kubelet\app\plugins.go 包含所有支持的存储插件且会注册内置的cloud provider
 	plugins, err := ProbeVolumePlugins(featureGate)
 	if err != nil {
 		return nil, err
@@ -409,6 +409,7 @@ func UnsecuredDependencies(s *options.KubeletServer, featureGate featuregate.Fea
 		OOMAdjuster:         oom.NewOOMAdjuster(),
 		OSInterface:         kubecontainer.RealOS{},
 		VolumePlugins:       plugins,
+		// flexvolume插件动态发现
 		DynamicPluginProber: GetDynamicPluginProber(s.VolumePluginDir, pluginRunner),
 		TLSOptions:          tlsOptions}, nil
 }
@@ -547,10 +548,13 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 		}
 	}
 
+	// 如果HostnameOverride为空 则取去除空格之后的主机名的小写
+	// 如果HostnameOverride不为空，则使用HostnameOverride
 	hostName, err := nodeutil.GetHostname(s.HostnameOverride)
 	if err != nil {
 		return err
 	}
+	// cloud provider不为空决定最终的nodeName，否则就是上面的hostName
 	nodeName, err := getNodeName(kubeDeps.Cloud, hostName)
 	if err != nil {
 		return err
@@ -613,9 +617,17 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 		runAuthenticatorCAReload(stopCh)
 	}
 
+	// 在cadvisor中manager的rawContainerCgroupPathPrefixWhiteList
 	var cgroupRoots []string
-
+	// 默认s.CgroupRoot为空，如果CgroupDriver是systemd，则cgroupRoots为[]string{"/kubepods.slice"}
+	// 如果CgroupDriver是cgroupfs，则cgroupRoots为[]string{"/kubepods"}
+	// 
+	// 如果s.CgroupRoot不为空，cgrouproots为 
+	// systemd --- s.CgroupRoot后面append "/kubepods.slice"
+	// cgroupfs --- s.CgroupRoot后面append "/kubepods"
 	cgroupRoots = append(cgroupRoots, cm.NodeAllocatableRoot(s.CgroupRoot, s.CgroupDriver))
+	// 如果指定了s.KubeletCgroups，则kubeletCgroup为s.KubeletCgroups
+	// 否则从/proc/{kubelet pid}/cgroup里获取name=systemd的cgroup路径，用systemd启动的是/system.slice/kubelet.service
 	kubeletCgroup, err := cm.GetKubeletContainer(s.KubeletCgroups)
 	if err != nil {
 		klog.Warningf("failed to get the kubelet's cgroup: %v.  Kubelet system container metrics may be missing.", err)
@@ -623,6 +635,8 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 		cgroupRoots = append(cgroupRoots, kubeletCgroup)
 	}
 
+	// 如果s.ContainerRuntime为docker，则从/var/run/docker.pid获取dockerd的pid，再从/proc/{dockerd pid}/cgroup里获取name=systemd的cgroup路径，默认为/system.slice/docker.service
+	// 如果s.ContainerRuntime不为docker，则runtimeCgroup为s.RuntimeCgroups，默认的s.RuntimeCgroups为空
 	runtimeCgroup, err := cm.GetRuntimeContainer(s.ContainerRuntime, s.RuntimeCgroups)
 	if err != nil {
 		klog.Warningf("failed to get the container runtime's cgroup: %v. Runtime system container metrics may be missing.", err)
@@ -653,6 +667,8 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 			s.CgroupRoot = "/"
 		}
 
+		// 如果指定--reserved-cpus，则不能设置 --system-reserved或--kube-reserved，这个在pkg\kubelet\apis\config\validation\validation.go里ValidateKubeletConfiguration会校验
+		// 且会设置覆盖s.SystemReserved里cpu保留
 		var reservedSystemCPUs cpuset.CPUSet
 		var errParse error
 		if s.ReservedSystemCPUs != "" {
@@ -710,6 +726,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 				return err
 			}
 		}
+		// 从request中保留内存比例，默认s.QOSReserved为0
 		experimentalQOSReserved, err := cm.ParseQOSReserved(s.QOSReserved)
 		if err != nil {
 			return err

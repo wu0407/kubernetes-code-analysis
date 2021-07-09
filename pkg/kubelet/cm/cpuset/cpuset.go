@@ -166,6 +166,7 @@ func (s CPUSet) UnionAll(s2 []CPUSet) CPUSet {
 // Intersection returns a new CPU set that contains all of the elements
 // that are present in both this set and the supplied set, without mutating
 // either source set.
+// 交集
 func (s CPUSet) Intersection(s2 CPUSet) CPUSet {
 	return s.Filter(func(cpu int) bool { return s2.Contains(cpu) })
 }
@@ -173,12 +174,14 @@ func (s CPUSet) Intersection(s2 CPUSet) CPUSet {
 // Difference returns a new CPU set that contains all of the elements that
 // are present in this set and not the supplied set, without mutating either
 // source set.
+// 差集 在s中但是不在s2
 func (s CPUSet) Difference(s2 CPUSet) CPUSet {
 	return s.FilterNot(func(cpu int) bool { return s2.Contains(cpu) })
 }
 
 // ToSlice returns a slice of integers that contains all elements from
 // this set.
+// slice会根据id从小到大排序
 func (s CPUSet) ToSlice() []int {
 	result := []int{}
 	for cpu := range s.elems {

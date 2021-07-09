@@ -110,6 +110,9 @@ func (cm *containerManagerImpl) enforceNodeAllocatableCgroups() error {
 	// Now apply kube reserved and system reserved limits if required.
 	if nc.EnforceNodeAllocatable.Has(kubetypes.SystemReservedEnforcementKey) {
 		klog.V(2).Infof("Enforcing System reserved on cgroup %q with limits: %+v", nc.SystemReservedCgroupName, nc.SystemReserved)
+		// 在cgroupdriver是systemd情况下，无论SystemReservedCgroupName配置/a/b/system.slice还是/system.slice，enforceExistingCgroup只使用最后一个路径--即SystemReservedCgroupName的basename
+		// 也就是说无所谓命令行参数  --system-reserved-cgroup设置正确与否，只要最后一个的文件路径配对了即可
+		// 由于CgroupName(nc.SystemReservedCgroupName) 只取路径的basename
 		if err := enforceExistingCgroup(cm.cgroupManager, cm.cgroupManager.CgroupName(nc.SystemReservedCgroupName), nc.SystemReserved); err != nil {
 			message := fmt.Sprintf("Failed to enforce System Reserved Cgroup Limits on %q: %v", nc.SystemReservedCgroupName, err)
 			cm.recorder.Event(nodeRef, v1.EventTypeWarning, events.FailedNodeAllocatableEnforcement, message)
@@ -119,6 +122,9 @@ func (cm *containerManagerImpl) enforceNodeAllocatableCgroups() error {
 	}
 	if nc.EnforceNodeAllocatable.Has(kubetypes.KubeReservedEnforcementKey) {
 		klog.V(2).Infof("Enforcing kube reserved on cgroup %q with limits: %+v", nc.KubeReservedCgroupName, nc.KubeReserved)
+		// 在cgroupdriver是systemd情况下，无论KubeReservedCgroupName配置/a/b/system.slice还是/system.slice，enforceExistingCgroup只使用最后一个路径--即KubeReservedCgroupName的basename
+		// 也就是说无所谓命令行参数  --system-reserved-cgroup设置正确与否，只要最后一个的文件路径配对了即可
+		// 由于CgroupName(nc.SystemReservedCgroupName) 只取路径的basename
 		if err := enforceExistingCgroup(cm.cgroupManager, cm.cgroupManager.CgroupName(nc.KubeReservedCgroupName), nc.KubeReserved); err != nil {
 			message := fmt.Sprintf("Failed to enforce Kube Reserved Cgroup Limits on %q: %v", nc.KubeReservedCgroupName, err)
 			cm.recorder.Event(nodeRef, v1.EventTypeWarning, events.FailedNodeAllocatableEnforcement, message)
@@ -208,7 +214,10 @@ func (cm *containerManagerImpl) getNodeAllocatableInternalAbsolute() v1.Resource
 }
 
 // GetNodeAllocatableReservation returns amount of compute or storage resource that have to be reserved on this node from scheduling.
+// 保留资源只有memory和ephemeral-storage是三个累加的--hardeviction、kubereserverd、SystemReserved
+// 其他类型保留资源是kubereserverd、SystemReserved相加
 func (cm *containerManagerImpl) GetNodeAllocatableReservation() v1.ResourceList {
+	// 返回hardeviction thresholds里memory和ephemeral-storage
 	evictionReservation := hardEvictionReservation(cm.HardEvictionThresholds, cm.capacity)
 	result := make(v1.ResourceList)
 	for k := range cm.capacity {

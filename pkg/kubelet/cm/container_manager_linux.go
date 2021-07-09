@@ -199,6 +199,8 @@ func validateSystemRequirements(mountUtil mount.Interface) (features, error) {
 // Takes the absolute name of the specified containers.
 // Empty container name disables use of the specified container.
 func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.Interface, nodeConfig NodeConfig, failSwapOn bool, devicePluginEnabled bool, recorder record.EventRecorder) (ContainerManager, error) {
+	// 系统所有cgroup子系统的在主机的挂载点，比如cpu在/sys/fs/cgroup/cpu,cpuacct
+	// 包括挂载点的root根路径、挂载点、子系统名字
 	subsystems, err := GetCgroupSubsystems()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get mounted cgroup subsystems: %v", err)
@@ -235,6 +237,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	if err != nil {
 		return nil, err
 	}
+	// 包括cpu、内存、hugepage
 	capacity := cadvisor.CapacityFromMachineInfo(machineInfo)
 	for k, v := range capacity {
 		internalCapacity[k] = v
@@ -247,6 +250,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	}
 
 	// Turn CgroupRoot from a string (in cgroupfs path format) to internal CgroupName
+	// 默认nodeConfig.CgroupRoot为 "/"，则cgroupRoot这里为空
 	cgroupRoot := ParseCgroupfsToCgroupName(nodeConfig.CgroupRoot)
 	cgroupManager := NewCgroupManager(subsystems, nodeConfig.CgroupDriver)
 	// Check if Cgroup-root actually exists on the node
@@ -266,6 +270,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 		klog.Infof("container manager verified user specified cgroup-root exists: %v", cgroupRoot)
 		// Include the top level cgroup for enforcing node allocatable into cgroup-root.
 		// This way, all sub modules can avoid having to understand the concept of node allocatable.
+		// 这里cgroupRoot变成["kubepods.slice"]
 		cgroupRoot = NewCgroupName(cgroupRoot, defaultNodeAllocatableCgroupName)
 	}
 	klog.Infof("Creating Container Manager object based on Node Config: %+v", nodeConfig)
@@ -282,7 +287,9 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 		subsystems:          subsystems,
 		cgroupManager:       cgroupManager,
 		capacity:            capacity,
+		// 包括cpu 内存、hugepage、pid
 		internalCapacity:    internalCapacity,
+		// 默认CgroupsPerQOS是true，所以就变成["kubepods"]
 		cgroupRoot:          cgroupRoot,
 		recorder:            recorder,
 		qosContainerManager: qosContainerManager,
@@ -474,6 +481,7 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 		})
 	}
 
+	// 如果配置了--system-cgroups或配置文件systemCgroups，则将非内核pid或非init进程的pid移动到指定的cgroup路径中
 	if cm.SystemCgroupsName != "" {
 		if cm.SystemCgroupsName == "/" {
 			return fmt.Errorf("system container cannot be root (\"/\")")
@@ -485,6 +493,8 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 		systemContainers = append(systemContainers, cont)
 	}
 
+	// 设置kubelet进程的oom_score_adj为-999
+	// 如果配置了--kubelet-cgroups或配置文件KubeletCgroups，则将kubelet进程移动到指定的cgroup路径中
 	if cm.KubeletCgroupsName != "" {
 		cont := newSystemCgroups(cm.KubeletCgroupsName)
 		allowAllDevices := true
@@ -840,6 +850,8 @@ func EnsureDockerInContainer(dockerAPIVersion *utilversion.Version, oomScoreAdj 
 	return utilerrors.NewAggregate(errs)
 }
 
+// 如果manager不为空，则会将kubelet进程移动到manager.Cgroups.Name为路径的cgroup，否则跳过
+// 然后设置kubelet的oom_score_adj为-999
 func ensureProcessInContainerWithOOMScore(pid int, oomScoreAdj int, manager *fs.Manager) error {
 	if runningInHost, err := isProcessRunningInHost(pid); err != nil {
 		// Err on the side of caution. Avoid moving the docker daemon unless we are able to identify its context.
@@ -926,6 +938,7 @@ func getContainer(pid int) (string, error) {
 // The reason of leaving kernel threads at root cgroup is that we don't want to tie the
 // execution of these threads with to-be defined /system quota and create priority inversions.
 //
+// 将非内核pid或非init进程的pid移动到指定的cgroup中
 func ensureSystemCgroups(rootCgroupPath string, manager *fs.Manager) error {
 	// Move non-kernel PIDs to the system container.
 	// Only keep errors on latest attempt.

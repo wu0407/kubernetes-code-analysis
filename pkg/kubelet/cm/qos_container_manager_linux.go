@@ -69,6 +69,7 @@ func NewQOSContainerManager(subsystems *CgroupSubsystems, cgroupRoot CgroupName,
 		subsystems:    subsystems,
 		cgroupManager: cgroupManager,
 		cgroupRoot:    cgroupRoot,
+		// 默认为0
 		qosReserved:   nodeConfig.QOSReserved,
 	}, nil
 }

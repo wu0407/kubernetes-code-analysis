@@ -90,6 +90,7 @@ var _ Policy = &staticPolicy{}
 func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reservedCPUs cpuset.CPUSet, affinity topologymanager.Store) (Policy, error) {
 	allCPUs := topology.CPUDetails.CPUs()
 	var reserved cpuset.CPUSet
+	// 如果已经指定保留cpu的列表，通过命令行--reserved-cpus指定
 	if reservedCPUs.Size() > 0 {
 		reserved = reservedCPUs
 	} else {
@@ -98,6 +99,14 @@ func NewStaticPolicy(topology *topology.CPUTopology, numReservedCPUs int, reserv
 		//
 		// For example: Given a system with 8 CPUs available and HT enabled,
 		// if numReservedCPUs=2, then reserved={0,4}
+		// 
+		// 4 CPUs available and HT enabled
+		// topology=&{NumCPUs:4 NumCores:2 NumSockets:1 CPUDetails:map[0:{NUMANodeID:0 SocketID:0 CoreID:0} 1:{NUMANodeID:0 SocketID:0 CoreID:1} 2:{NUMANodeID:0 SocketID:0 CoreID:0} 3:{NUMANodeID:0 SocketID:0 CoreID:1}]}
+		// topo感知分配
+		// 优先id从小到大
+		// 优先同一socket
+		// 优先同一物理核心
+		// 剩下cpu 亲和已分配的socket和物理核心
 		reserved, _ = takeByTopology(topology, allCPUs, numReservedCPUs)
 	}
 

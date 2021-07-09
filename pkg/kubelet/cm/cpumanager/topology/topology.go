@@ -31,6 +31,7 @@ import (
 type NUMANodeInfo map[int]cpuset.CPUSet
 
 // CPUDetails is a map from CPU ID to Core ID, Socket ID, and NUMA ID.
+// key是逻辑cpu id
 type CPUDetails map[int]CPUInfo
 
 // CPUTopology contains details of node cpu, where :
@@ -38,9 +39,13 @@ type CPUDetails map[int]CPUInfo
 // Core - physical CPU, cadvisor - Core
 // Socket - socket, cadvisor - Node
 type CPUTopology struct {
+	// 总的逻辑cpu个数
 	NumCPUs    int
+	// 物理cpu数量，一个socket里面可能会有多个物理cpu
 	NumCores   int
+	// 插槽数量
 	NumSockets int
+	// cpu的详细信息--cpu逻辑id编号、位于那个socket、cpu核id
 	CPUDetails CPUDetails
 }
 
@@ -64,12 +69,17 @@ func (topo *CPUTopology) CPUsPerSocket() int {
 
 // CPUInfo contains the NUMA, socket, and core IDs associated with a CPU.
 type CPUInfo struct {
+	// numa node的编号从0开始，从/sys/devices/system/node/online获得有numa node列表
+	// 从/sys/devices/system/node/node%d/cpulist 获得cpu列表
 	NUMANodeID int
+	// 插槽id
 	SocketID   int
+	// 物理cpu得id，用cpu下的最小的逻辑cpu id表示
 	CoreID     int
 }
 
 // KeepOnly returns a new CPUDetails object with only the supplied cpus.
+// 交集
 func (d CPUDetails) KeepOnly(cpus cpuset.CPUSet) CPUDetails {
 	result := CPUDetails{}
 	for cpu, info := range d {
@@ -229,6 +239,7 @@ func Discover(machineInfo *cadvisorapi.MachineInfo, numaNodeInfo NUMANodeInfo) (
 	for _, socket := range machineInfo.Topology {
 		numPhysicalCores += len(socket.Cores)
 		for _, core := range socket.Cores {
+			// 获取socket里某个物理cpu的线程中最小的cpu线程id
 			if coreID, err := getUniqueCoreID(core.Threads); err == nil {
 				for _, cpu := range core.Threads {
 					numaNodeID := 0

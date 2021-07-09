@@ -34,6 +34,8 @@ type Factory func(config io.Reader) (Interface, error)
 // All registered cloud providers.
 var (
 	providersMutex           sync.Mutex
+	// 在kubelet中 在cmd\kubelet\app\plugins.go里会将内嵌的provider写入到providers
+	// 通过k8s.io/kubernetes/pkg/cloudprovider/providers里的分别执行各个内置provider init
 	providers                = make(map[string]Factory)
 	deprecatedCloudProviders = []struct {
 		name     string
@@ -76,6 +78,7 @@ func IsCloudProvider(name string) bool {
 // was known but failed to initialize. The config parameter specifies the
 // io.Reader handler of the configuration file for the cloud provider, or nil
 // for no configuration.
+// 执行对应provider注册的factory，返回cloud provier
 func GetCloudProvider(name string, config io.Reader) (Interface, error) {
 	providersMutex.Lock()
 	defer providersMutex.Unlock()
