@@ -334,6 +334,7 @@ func PreInitRuntimeService(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	nonMasqueradeCIDR string) error {
 	if remoteRuntimeEndpoint != "" {
 		// remoteImageEndpoint is same as remoteRuntimeEndpoint if not explicitly specified
+		// 默认--image-service-endpoint就是空
 		if remoteImageEndpoint == "" {
 			remoteImageEndpoint = remoteRuntimeEndpoint
 		}
@@ -343,12 +344,18 @@ func PreInitRuntimeService(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	case kubetypes.DockerContainerRuntime:
 		// TODO: These need to become arguments to a standalone docker shim.
 		pluginSettings := dockershim.NetworkPluginSettings{
+			// 默认promiscuous-bridge
 			HairpinMode:        kubeletconfiginternal.HairpinMode(kubeCfg.HairpinMode),
+			// 默认为"10.0.0.0/8"
 			NonMasqueradeCIDR:  nonMasqueradeCIDR,
 			PluginName:         crOptions.NetworkPluginName,
+			// 默认/etc/cni/net.d
 			PluginConfDir:      crOptions.CNIConfDir,
+			// 默认/opt/cni/bin
 			PluginBinDirString: crOptions.CNIBinDir,
+			// 默认/var/lib/cni/cache
 			PluginCacheDir:     crOptions.CNICacheDir,
+			// 默认为0--相当于1460/或者网卡的mtu
 			MTU:                int(crOptions.NetworkPluginMTU),
 		}
 
@@ -359,6 +366,7 @@ func PreInitRuntimeService(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		if err != nil {
 			return err
 		}
+		// RedirectContainerStreaming默认为false
 		if crOptions.RedirectContainerStreaming {
 			kubeDeps.criHandler = ds
 		}
@@ -369,11 +377,15 @@ func PreInitRuntimeService(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 			remoteImageEndpoint)
 		klog.V(2).Infof("Starting the GRPC server for the docker CRI shim.")
 		dockerServer := dockerremote.NewDockerServer(remoteRuntimeEndpoint, ds)
+		// 启动stream server处理exec、log等操作--默认监听随机端口
+		// 启动goroutine每5分钟，当设置--runtime-cgoups，设置dockerd在相应的cgroup；然后设置dockerd的oom_score_adj为-999
+		// 监听dockershim的grpc的socket:///var/run/dockershim.sock
 		if err := dockerServer.Start(); err != nil {
 			return err
 		}
 
 		// Create dockerLegacyService when the logging driver is not supported.
+		// 非json-file格式的日志创建dockerLegacyService
 		supported, err := ds.IsCRISupportedLogDriver()
 		if err != nil {
 			return err
@@ -389,6 +401,7 @@ func PreInitRuntimeService(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	}
 
 	var err error
+	// RuntimeRequestTimeout默认为2分钟
 	if kubeDeps.RemoteRuntimeService, err = remote.NewRemoteRuntimeService(remoteRuntimeEndpoint, kubeCfg.RuntimeRequestTimeout.Duration); err != nil {
 		return err
 	}
@@ -396,6 +409,7 @@ func PreInitRuntimeService(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		return err
 	}
 
+	//都为true
 	kubeDeps.useLegacyCadvisorStats = cadvisor.UsingLegacyCadvisorStats(containerRuntime, remoteRuntimeEndpoint)
 
 	return nil
@@ -2294,11 +2308,16 @@ func isSyncPodWorthy(event *pleg.PodLifecycleEvent) bool {
 // Gets the streaming server configuration to use with in-process CRI shims.
 func getStreamingConfig(kubeCfg *kubeletconfiginternal.KubeletConfiguration, kubeDeps *Dependencies, crOptions *config.ContainerRuntimeOptions) *streaming.Config {
 	config := &streaming.Config{
+		// 默认为4小时
 		StreamIdleTimeout:               kubeCfg.StreamingConnectionIdleTimeout.Duration,
+		// 固定为30s
 		StreamCreationTimeout:           streaming.DefaultConfig.StreamCreationTimeout,
+		// 固定为["channel.k8s.io", "v2.channel.k8s.io", "v3.channel.k8s.io", "v4.channel.k8s.io"]
 		SupportedRemoteCommandProtocols: streaming.DefaultConfig.SupportedRemoteCommandProtocols,
+		// 固定为["portforward.k8s.io"]
 		SupportedPortForwardProtocols:   streaming.DefaultConfig.SupportedPortForwardProtocols,
 	}
+	// RedirectContainerStreaming默认为false
 	if !crOptions.RedirectContainerStreaming {
 		config.Addr = net.JoinHostPort("localhost", "0")
 	} else {

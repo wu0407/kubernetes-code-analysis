@@ -811,6 +811,7 @@ func getPidsForProcess(name, pidFile string) ([]int, error) {
 	}
 
 	// Try to lookup pid by process name
+	// 如果找不到进程，返回pids为空，error为nil
 	pids, err2 := procfs.PidOf(name)
 	if err2 == nil {
 		return pids, nil
@@ -842,6 +843,8 @@ func EnsureDockerInContainer(dockerAPIVersion *utilversion.Version, oomScoreAdj 
 
 		// Move if the pid is not already in the desired container.
 		for _, pid := range pids {
+			// 如果manager不为空，则会将dockerd进程移动到manager.Cgroups.Name为路径的cgroup，否则跳过
+			// 然后设置dockerd的oom_score_adj为-999
 			if err := ensureProcessInContainerWithOOMScore(pid, oomScoreAdj, manager); err != nil {
 				errs = append(errs, fmt.Errorf("errors moving %q pid: %v", proc.name, err))
 			}
@@ -852,6 +855,8 @@ func EnsureDockerInContainer(dockerAPIVersion *utilversion.Version, oomScoreAdj 
 
 // 如果manager不为空，则会将kubelet进程移动到manager.Cgroups.Name为路径的cgroup，否则跳过
 // 然后设置kubelet的oom_score_adj为-999
+// 如果manager不为空，则会将dockerd进程移动到manager.Cgroups.Name为路径的cgroup，否则跳过
+// 然后设置dockerd的oom_score_adj为-999
 func ensureProcessInContainerWithOOMScore(pid int, oomScoreAdj int, manager *fs.Manager) error {
 	if runningInHost, err := isProcessRunningInHost(pid); err != nil {
 		// Err on the side of caution. Avoid moving the docker daemon unless we are able to identify its context.
@@ -890,6 +895,7 @@ func ensureProcessInContainerWithOOMScore(pid int, oomScoreAdj int, manager *fs.
 // getContainer returns the cgroup associated with the specified pid.
 // It enforces a unified hierarchy for memory and cpu cgroups.
 // On systemd environments, it uses the name=systemd cgroup for the specified pid.
+// 获得进程的cgroup路径，比如/system.slice/kubelet.service
 func getContainer(pid int) (string, error) {
 	cgs, err := cgroups.ParseCgroupFile(fmt.Sprintf("/proc/%d/cgroup", pid))
 	if err != nil {

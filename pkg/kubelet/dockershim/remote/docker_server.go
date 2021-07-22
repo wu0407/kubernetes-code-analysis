@@ -51,12 +51,16 @@ func NewDockerServer(endpoint string, s dockershim.CRIService) *DockerServer {
 // Start starts the dockershim grpc server.
 func (s *DockerServer) Start() error {
 	// Start the internal service.
+	// 启动stream server用于处理exec、logs、portforward等操作
+	// 每5分钟执行，当cgroupName不为空，确保dockerd和docker-contained(在19.03版本已经没有这个进程)在相应的cgroup中--当设置--runtime-cgroups
+	// 每5分钟执行，设置dockerd和docker-contained(在19.03版本已经没有这个进程)的oom_score_adj为-999
 	if err := s.service.Start(); err != nil {
 		klog.Errorf("Unable to start docker service")
 		return err
 	}
 
 	klog.V(2).Infof("Start dockershim grpc server")
+	// 默认监听unix:///var/run/dockershim.sock
 	l, err := util.CreateListener(s.endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to listen on %q: %v", s.endpoint, err)

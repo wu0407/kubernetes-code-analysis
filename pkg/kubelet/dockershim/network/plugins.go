@@ -130,10 +130,12 @@ type PortMappingGetter interface {
 
 // InitNetworkPlugin inits the plugin that matches networkPluginName. Plugins must have unique names.
 func InitNetworkPlugin(plugins []NetworkPlugin, networkPluginName string, host Host, hairpinMode kubeletconfig.HairpinMode, nonMasqueradeCIDR string, mtu int) (NetworkPlugin, error) {
+	// 没有指定--network-plugin或NetworkPluginName
 	if networkPluginName == "" {
 		// default to the no_op plugin
 		plug := &NoopNetworkPlugin{}
 		plug.Sysctl = utilsysctl.New()
+		// 加载br-netfilter内核模块，设置/proc/sys/net/bridge/bridge-nf-call-iptables、/proc/sys/net/bridge/bridge-nf-call-ip6tables为1
 		if err := plug.Init(host, hairpinMode, nonMasqueradeCIDR, mtu); err != nil {
 			return nil, err
 		}
@@ -159,6 +161,15 @@ func InitNetworkPlugin(plugins []NetworkPlugin, networkPluginName string, host H
 
 	chosenPlugin := pluginMap[networkPluginName]
 	if chosenPlugin != nil {
+		// 对选择的插件进行初始化
+		// cni插件
+		// 查找nsenter命令路径，并设置plugin.nsenterPath
+		// 启动goroutine 每5秒读取配置文件，更新defaultNetwork
+		//
+		// kubenet插件
+		// 决定cbr0网卡的mtu、加载br-netfilter内核模块，设置/proc/sys/net/bridge/bridge-nf-call-iptables为1
+		// 查找nsenter命令路径，并且设置为plugin.nsenterPath
+		// 设置出站的snat规则，根据nonMasqueradeCIDR，这里只支持一个cidr
 		err := chosenPlugin.Init(host, hairpinMode, nonMasqueradeCIDR, mtu)
 		if err != nil {
 			allErrs = append(allErrs, fmt.Errorf("network plugin %q failed init: %v", networkPluginName, err))

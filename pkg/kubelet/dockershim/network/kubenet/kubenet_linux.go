@@ -141,6 +141,9 @@ func NewPlugin(networkPluginDirs []string, cacheDir string) network.NetworkPlugi
 	}
 }
 
+// 决定cbr0网卡的mtu、加载br-netfilter内核模块，设置/proc/sys/net/bridge/bridge-nf-call-iptables为1
+// 查找nsenter命令路径，并且设置为plugin.nsenterPath
+// 设置出站的snat规则，根据nonMasqueradeCIDR，这里只支持一个cidr
 func (plugin *kubenetNetworkPlugin) Init(host network.Host, hairpinMode kubeletconfig.HairpinMode, nonMasqueradeCIDR string, mtu int) error {
 	plugin.host = host
 	plugin.hairpinMode = hairpinMode
@@ -221,6 +224,7 @@ func findMinMTU() (*net.Interface, error) {
 	mtu := 999999
 	defIntfIndex := -1
 	for i, intf := range intfs {
+		// 网卡是up状态且不是loopback接口或点对点网卡
 		if ((intf.Flags & net.FlagUp) != 0) && (intf.Flags&(net.FlagLoopback|net.FlagPointToPoint) == 0) {
 			if intf.MTU < mtu {
 				mtu = intf.MTU

@@ -384,8 +384,11 @@ func UnsecuredDependencies(s *options.KubeletServer, featureGate featuregate.Fea
 	var dockerClientConfig *dockershim.ClientConfig
 	if s.ContainerRuntime == kubetypes.DockerContainerRuntime {
 		dockerClientConfig = &dockershim.ClientConfig{
+			// 默认为unix:///var/run/docker.sock
 			DockerEndpoint:            s.DockerEndpoint,
+			// 默认为2分钟
 			RuntimeRequestTimeout:     s.RuntimeRequestTimeout.Duration,
+			// 默认为1分钟
 			ImagePullProgressDeadline: s.ImagePullProgressDeadline.Duration,
 		}
 	}
@@ -780,11 +783,13 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 	utilruntime.ReallyCrash = s.ReallyCrashForTesting
 
 	// TODO(vmarmol): Do this through container config.
+	// 设置kubelet进程得oom_score_adj，默认OOMScoreAdj为-999
 	oomAdjuster := kubeDeps.OOMAdjuster
 	if err := oomAdjuster.ApplyOOMScoreAdj(0, int(s.OOMScoreAdj)); err != nil {
 		klog.Warning(err)
 	}
 
+	// 初始化容器运行时--当容器运行时为docker初始化dockershim，当容器运行时为remote时，不执行任何东西
 	err = kubelet.PreInitRuntimeService(&s.KubeletConfiguration,
 		kubeDeps, &s.ContainerRuntimeOptions,
 		s.ContainerRuntime,
@@ -1081,6 +1086,7 @@ func RunKubelet(kubeServer *options.KubeletServer, kubeDeps *kubelet.Dependencie
 		return err
 	}
 	// Query the cloud provider for our node name, default to hostname if kubeDeps.Cloud == nil
+	// 在cloud provider是aws会被替换成aws的主机域名
 	nodeName, err := getNodeName(kubeDeps.Cloud, hostname)
 	if err != nil {
 		return err

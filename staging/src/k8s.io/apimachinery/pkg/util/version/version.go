@@ -26,16 +26,21 @@ import (
 
 // Version is an opqaue representation of a version number
 type Version struct {
+	// 各个位置的数字 比如1.3.2 --》 []uint{1, 3, 2}
 	components    []uint
 	semver        bool
+	// 版本号后面部分--横杆后面加号前面 v1.5.2-sdsdd.sdsd+asds --》sdsdd.sdsd
 	preRelease    string
+	// 加号后面部分 v1.5.2-sdsdd.sdsd+asds --》asds
 	buildMetadata string
 }
 
 var (
 	// versionMatchRE splits a version string into numeric and "extra" parts
+	// 解析v1.5.2 v1.5.2-sdsd
 	versionMatchRE = regexp.MustCompile(`^\s*v?([0-9]+(?:\.[0-9]+)*)(.*)*$`)
 	// extraMatchRE splits the "extra" part of versionMatchRE into semver pre-release and build metadata; it does not validate the "no leading zeroes" constraint for pre-release
+	// 解析 -dsd -dsd.dsd -dsd.dsd+sdsd.sdsd
 	extraMatchRE = regexp.MustCompile(`^(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?\s*$`)
 )
 
@@ -71,8 +76,10 @@ func parse(str string, semver bool) (*Version, error) {
 		if extraParts == nil {
 			return nil, fmt.Errorf("could not parse pre-release/metadata (%s) in version %q", extra, str)
 		}
+		// v.preRelease是不包含“-”前半部分，v.buildMetadata是不包含“+”后半部分
 		v.preRelease, v.buildMetadata = extraParts[1], extraParts[2]
 
+		// v.preRelease里的点“.”前后，如果是数字不能是0开头数字，比如03，但是可以是0
 		for _, comp := range strings.Split(v.preRelease, ".") {
 			if _, err := strconv.ParseUint(comp, 10, 0); err == nil {
 				if strings.HasPrefix(comp, "0") && comp != "0" {
@@ -223,12 +230,16 @@ func (v *Version) compareInternal(other *Version) int {
 	oLen := len(other.components)
 	for i := 0; i < vLen && i < oLen; i++ {
 		switch {
+		// 在最短长度的内，就能区分出大小
 		case other.components[i] < v.components[i]:
 			return 1
 		case other.components[i] > v.components[i]:
 			return -1
 		}
 	}
+
+	// v的components是other的前缀， other包含v 比如 v是1.4 other是1.4.1
+	// other的components是v的前缀， v包含other 比如 other是1.4 v是1.4.1
 
 	// If components are common but one has more items and they are not zeros, it is bigger
 	switch {
@@ -238,11 +249,16 @@ func (v *Version) compareInternal(other *Version) int {
 		return -1
 	}
 
+	// 长度不一样 有一方是0， oLen < vLen时候，v多的部分是0；oLen > vLen时候，other多的部分是0
+	// 长度一样 components相等 包括component都是0
+
+	// 只要有一个不是semver，就返回0--相等
 	if !v.semver || !other.semver {
 		return 0
 	}
 
 	switch {
+	// 有一方没有preRelease，没有preRelease就是大的
 	case v.preRelease == "" && other.preRelease != "":
 		return 1
 	case v.preRelease != "" && other.preRelease == "":
@@ -251,6 +267,9 @@ func (v *Version) compareInternal(other *Version) int {
 		return 0
 	}
 
+	// 都有preRelease但是不相等
+
+	// 在v.preRelease和other.preRelease，点号分隔成的string slice，长度最短的范围内，就能区分出大小
 	vPR := strings.Split(v.preRelease, ".")
 	oPR := strings.Split(other.preRelease, ".")
 	for i := 0; i < len(vPR) && i < len(oPR); i++ {
@@ -258,6 +277,7 @@ func (v *Version) compareInternal(other *Version) int {
 		if err == nil {
 			oNum, err := strconv.ParseUint(oPR[i], 10, 0)
 			if err == nil {
+				// 都是数字情况
 				switch {
 				case oNum < vNum:
 					return 1
@@ -268,6 +288,7 @@ func (v *Version) compareInternal(other *Version) int {
 				}
 			}
 		}
+		// 至少有一个不是数字
 		if oPR[i] < vPR[i] {
 			return 1
 		} else if oPR[i] > vPR[i] {
@@ -275,9 +296,13 @@ func (v *Version) compareInternal(other *Version) int {
 		}
 	}
 
+	// v.preRelease是other.preRelease的前缀
+	// other.preRelease是v.preRelease的前缀
 	switch {
+	// other.preRelease是v.preRelease的前缀
 	case len(oPR) < len(vPR):
 		return 1
+	// v.preRelease是other.preRelease的前缀
 	case len(oPR) > len(vPR):
 		return -1
 	}

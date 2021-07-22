@@ -147,10 +147,12 @@ func ProbeNetworkPlugins(confDir, cacheDir string, binDirs []string) []network.N
 	}
 
 	// sync NetworkConfig in best effort during probing.
+	// 读取所有cni配置--验证合法、生成plugin.defaultNetwork网络配置
 	plugin.syncNetworkConfig()
 	return []network.NetworkPlugin{plugin}
 }
 
+// 获得binDirs下所有cni配置
 func getDefaultCNINetwork(confDir string, binDirs []string) (*cniNetwork, error) {
 	files, err := libcni.ConfFiles(confDir, []string{".conf", ".conflist", ".json"})
 	switch {
@@ -197,6 +199,7 @@ func getDefaultCNINetwork(confDir string, binDirs []string) (*cniNetwork, error)
 
 		// Before using this CNI config, we have to validate it to make sure that
 		// all plugins of this config exist on disk
+		// 插件二进制文件是否存在，版本是否支持配置文件里指定的cniversion版本
 		caps, err := cniConfig.ValidateNetworkList(context.TODO(), confList)
 		if err != nil {
 			klog.Warningf("Error validating CNI config list %s: %v", string(confList.Bytes[:maxStringLengthInLog(len(confList.Bytes))]), err)
@@ -215,7 +218,10 @@ func getDefaultCNINetwork(confDir string, binDirs []string) (*cniNetwork, error)
 	return nil, fmt.Errorf("no valid networks found in %s", confDir)
 }
 
+// 查找nsenter命令路径，并设置plugin.nsenterPath
+// 启动goroutine 每5秒读取配置文件，更新defaultNetwork
 func (plugin *cniNetworkPlugin) Init(host network.Host, hairpinMode kubeletconfig.HairpinMode, nonMasqueradeCIDR string, mtu int) error {
+	// 查找nsenter命令路径，并设置plugin.nsenterPath
 	err := plugin.platformInit()
 	if err != nil {
 		return err
@@ -232,11 +238,13 @@ func (plugin *cniNetworkPlugin) Init(host network.Host, hairpinMode kubeletconfi
 }
 
 func (plugin *cniNetworkPlugin) syncNetworkConfig() {
+	// 获得binDirs下所有cni配置
 	network, err := getDefaultCNINetwork(plugin.confDir, plugin.binDirs)
 	if err != nil {
 		klog.Warningf("Unable to update cni config: %s", err)
 		return
 	}
+	// 设置defaultNetwork为binDirs下所有cni配置
 	plugin.setDefaultNetwork(network)
 }
 

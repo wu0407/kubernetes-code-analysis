@@ -149,6 +149,7 @@ func MergeAPIResourceConfigs(
 			resourceConfig.DisableVersions(groupVersion)
 		}
 
+		// 处理extensions/v1beta1/sddsd=false情况，如果是len(tokens) == 2就continue
 		if len(tokens) < 3 {
 			continue
 		}

@@ -71,8 +71,11 @@ type containerManager struct {
 	cgroupsManager *fs.Manager
 }
 
+// 每5分钟执行，当cgroupName不为空，确保dockerd和docker-contained(在19.03版本已经没有这个进程)在相应的cgroup中
+// 设置dockerd和docker-contained(在19.03版本已经没有这个进程)的oom_score_adj为-999
 func (m *containerManager) Start() error {
 	// TODO: check if the required cgroups are mounted.
+	// 默认cgroupsName为空
 	if len(m.cgroupsName) != 0 {
 		manager, err := createCgroupManager(m.cgroupsName)
 		if err != nil {

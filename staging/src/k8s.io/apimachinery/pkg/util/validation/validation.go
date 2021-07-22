@@ -39,6 +39,14 @@ var qualifiedNameRegexp = regexp.MustCompile("^" + qualifiedNameFmt + "$")
 // "qualified name".  This is a format used in various places throughout the
 // system.  If the value is not valid, a list of error strings is returned.
 // Otherwise an empty list (or nil) is returned.
+// 
+// 支持 a.b/sdsd 或 a-bs/sdsd 或 sasd 或 a/b 或 a/b-b 或 b-b 或b_b 或 b.b
+// 
+// 如果包含一个部分，则为name
+// 如果包含两个部分，前半部分为domain，后半部分为name
+// name 开头和结尾必须是小写字母或数字，可以包含 横杆、下划线、点，但是不能在开头或结尾
+// domain 开头和结尾必须是小写字母或数字，可以包含点，但是后面必须有小写字母或数字，可以包含横杆，但是前面和后面必须是小写字母或数字
+// domain长度必须小于等于253， name长度小于等于63
 func IsQualifiedName(value string) []string {
 	var errs []string
 	parts := strings.Split(value, "/")

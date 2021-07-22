@@ -236,15 +236,18 @@ func (s *server) Start(stayUp bool) error {
 		return errors.New("stayUp=false is not yet implemented")
 	}
 
+	// 默认会监听localhost和随机端口
 	listener, err := net.Listen("tcp", s.config.Addr)
 	if err != nil {
 		return err
 	}
 	// Use the actual address as baseURL host. This handles the "0" port case.
 	s.config.BaseURL.Host = listener.Addr().String()
+	// 默认转发stream流量，TLSConfig为nil，不使用tls
 	if s.config.TLSConfig != nil {
 		return s.server.ServeTLS(listener, "", "") // Use certs from TLSConfig.
 	}
+	// 一般不退出，除非主动关闭
 	return s.server.Serve(listener)
 }
 

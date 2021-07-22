@@ -223,6 +223,14 @@ func NewDockerService(config *ClientConfig, podSandboxImage string, streamingCon
 	// create streaming server if configured.
 	if streamingConfig != nil {
 		var err error
+		// 默认streamingConfig为
+		// &streaming.Config{
+		//  StreamIdleTimeout: 4 * time.Hour,
+		//  StreamCreationTimeout: 30 * time.Second,
+		//  Addr: "localhost:0",
+		//  StreamCreationTimeout: ["channel.k8s.io", "v2.channel.k8s.io", "v3.channel.k8s.io", "v4.channel.k8s.io"],
+		//  SupportedPortForwardProtocols: ["portforward.k8s.io"]
+		// }
 		ds.streamingServer, err = streaming.NewServer(*streamingConfig, ds.streamingRuntime)
 		if err != nil {
 			return nil, err
@@ -230,6 +238,7 @@ func NewDockerService(config *ClientConfig, podSandboxImage string, streamingCon
 	}
 
 	// Determine the hairpin mode.
+	// 验证hairpin mode设置是否合法，promiscuous-bridge模式只能用在kubenet网络模式
 	if err := effectiveHairpinMode(pluginSettings); err != nil {
 		// This is a non-recoverable error. Returning it up the callstack will just
 		// lead to retries of the same failure, so just fail hard.
@@ -245,6 +254,7 @@ func NewDockerService(config *ClientConfig, podSandboxImage string, streamingCon
 		&namespaceGetter{ds},
 		&portMappingGetter{ds},
 	}
+	// 初始化网络插件
 	plug, err := network.InitNetworkPlugin(cniPlugins, pluginSettings.PluginName, netHost, pluginSettings.HairpinMode, pluginSettings.NonMasqueradeCIDR, pluginSettings.MTU)
 	if err != nil {
 		return nil, fmt.Errorf("didn't find compatible CNI plugin with given settings %+v: %v", pluginSettings, err)
@@ -403,9 +413,11 @@ func (ds *dockerService) GetPodPortMappings(podSandboxID string) ([]*hostport.Po
 
 // Start initializes and starts components in dockerService.
 func (ds *dockerService) Start() error {
+	// linux操作系统不做任何操作
 	ds.initCleanup()
 
 	// Initialize the legacy cleanup flag.
+	// 默认是启动的
 	if ds.startLocalStreamingServer {
 		go func() {
 			if err := ds.streamingServer.Start(true); err != nil {
@@ -413,13 +425,14 @@ func (ds *dockerService) Start() error {
 			}
 		}()
 	}
-	//调整dockerd和docker-contained进程在正确的cgroup上(--cgroup-root),调整pid的oom值
+	//每5分钟调整dockerd和docker-contained(在19.03版本已经没有这个进程)进程在正确的cgroup上(如果指定了--runtime-cgroups),调整pid的oom值为-999
 	return ds.containerManager.Start()
 }
 
 // initCleanup is responsible for cleaning up any crufts left by previous
 // runs. If there are any errors, it simply logs them.
 func (ds *dockerService) initCleanup() {
+	// linux操作系统不做任何操作
 	errors := ds.platformSpecificContainerInitCleanup()
 
 	for _, err := range errors {
