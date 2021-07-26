@@ -99,6 +99,8 @@ func (obj functionFakeRuntimeObject) DeepCopyObject() runtime.Object {
 func (b *Broadcaster) blockQueue(f func()) {
 	var wg sync.WaitGroup
 	wg.Add(1)
+	// 等待Event发送到incoming
+	// 这个Event不会被watcher消费，在loop()中会单独处理这个Type的Event--执行functionFakeRuntimeObject里的func
 	b.incoming <- Event{
 		Type: internalRunFunctionMarker,
 		Object: functionFakeRuntimeObject(func() {
@@ -106,6 +108,7 @@ func (b *Broadcaster) blockQueue(f func()) {
 			f()
 		}),
 	}
+	// 等待f()执行完成
 	wg.Wait()
 }
 
@@ -177,6 +180,7 @@ func (m *Broadcaster) closeAll() {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	for _, w := range m.watchers {
+		// 关闭watcher 消息接收通道
 		close(w.result)
 	}
 	// Delete everything from the map, since presence/absence in the map is used
@@ -204,6 +208,8 @@ func (m *Broadcaster) Shutdown() {
 func (m *Broadcaster) loop() {
 	// Deliberately not catching crashes here. Yes, bring down the process if there's a
 	// bug in watch.Broadcaster.
+	// 先处理Type为internal-do-function的event，执行event.Object的func
+	// 避免这个Event被watcher消费，导致重复执行
 	for event := range m.incoming {
 		if event.Type == internalRunFunctionMarker {
 			event.Object.(functionFakeRuntimeObject)()
@@ -211,6 +217,7 @@ func (m *Broadcaster) loop() {
 		}
 		m.distribute(event)
 	}
+	// 消息处理完，关闭watcher的接收通道，重置清空watchers列表
 	m.closeAll()
 	m.distributing.Done()
 }
@@ -222,6 +229,8 @@ func (m *Broadcaster) distribute(event Event) {
 	if m.fullChannelBehavior == DropIfChannelFull {
 		for _, w := range m.watchers {
 			select {
+			// 如果w.result卡住，那么就执行下面w.stopped，如果w.stopped没有消息，则执行default
+			// 即w.result卡住或w.stopped也卡住--这个watcher的消息堵住了，那么就放弃发送给这个watcher
 			case w.result <- event:
 			case <-w.stopped:
 			default: // Don't block if the event can't be queued.
@@ -229,6 +238,9 @@ func (m *Broadcaster) distribute(event Event) {
 		}
 	} else {
 		for _, w := range m.watchers {
+			// 如果w.result卡住，那么就执行下面w.stopped，如果w.stopped没有消息，那就一直等，直到某个chan不堵塞
+			// 即w.result卡住或w.stopped也卡住，这个watcher不会被放弃，一直等到它空闲
+			// 但是它会阻塞下一个watcher接收这个消息
 			select {
 			case w.result <- event:
 			case <-w.stopped:

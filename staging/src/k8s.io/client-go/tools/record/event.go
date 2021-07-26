@@ -152,7 +152,7 @@ func (a *EventRecorderAdapter) Eventf(regarding, _ runtime.Object, eventtype, re
 func NewBroadcaster() EventBroadcaster {
 	return &eventBroadcasterImpl{
 		Broadcaster:   watch.NewBroadcaster(maxQueuedEvents, watch.DropIfChannelFull),
-		sleepDuration: defaultSleepDuration,
+		sleepDuration: defaultSleepDuration, // 10s
 	}
 }
 
@@ -273,6 +273,7 @@ func recordEvent(sink EventSink, event *v1.Event, patch []byte, updateExistingEv
 // StartLogging starts sending events received from this EventBroadcaster to the given logging function.
 // The return value can be ignored or used to stop recording, if desired.
 func (e *eventBroadcasterImpl) StartLogging(logf func(format string, args ...interface{})) watch.Interface {
+	// 新建一个watcher，读取事件进行记录
 	return e.StartEventWatcher(
 		func(e *v1.Event) {
 			logf("Event(%#v): type: '%v' reason: '%v' %v", e.InvolvedObject, e.Type, e.Reason, e.Message)
@@ -282,7 +283,9 @@ func (e *eventBroadcasterImpl) StartLogging(logf func(format string, args ...int
 // StartEventWatcher starts sending events received from this EventBroadcaster to the given event handler function.
 // The return value can be ignored or used to stop recording, if desired.
 func (e *eventBroadcasterImpl) StartEventWatcher(eventHandler func(*v1.Event)) watch.Interface {
+	// 创建并添加新的watcher
 	watcher := e.Watch()
+	// 启动goroutine 处理这个watcher的event
 	go func() {
 		defer utilruntime.HandleCrash()
 		for watchEvent := range watcher.ResultChan() {
@@ -317,6 +320,7 @@ func (recorder *recorderImpl) generateEvent(object runtime.Object, annotations m
 		return
 	}
 
+	// 只支持Normal或Warning，这里是k8s.io/api/core/v1里的Event，与k8s.io/apimachinery/pkg/watch的里Event的EventType不一样
 	if !util.ValidateEventType(eventtype) {
 		klog.Errorf("Unsupported event type: '%v'", eventtype)
 		return

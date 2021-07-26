@@ -474,7 +474,11 @@ func makeEventRecorder(kubeDeps *kubelet.Dependencies, nodeName types.NodeName) 
 		return
 	}
 	eventBroadcaster := record.NewBroadcaster()
+	// 这里的legacyscheme.Scheme，本文件里 import k8s.io/kubernetes/pkg/kubelet/config--（pkg\kubelet\config\common.go里import k8s.io/kubernetes/pkg/apis/core/install--注册所有core group下的api到legacyscheme.Scheme）
+	// legacyscheme.Scheme是用来查找event的InvolvedObject的groupversion信息
+	// Recorder用于生产event
 	kubeDeps.Recorder = eventBroadcaster.NewRecorder(legacyscheme.Scheme, v1.EventSource{Component: componentKubelet, Host: string(nodeName)})
+	// 启动个goroutine来记录事件日志
 	eventBroadcaster.StartLogging(klog.V(3).Infof)
 	if kubeDeps.EventClient != nil {
 		klog.V(4).Infof("Sending events to api server.")

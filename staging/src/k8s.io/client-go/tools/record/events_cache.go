@@ -50,6 +50,7 @@ const (
 )
 
 // getEventKey builds unique event key based on source, involvedObject, reason, message
+// 拼合event的Source、involvedObject（包含FieldPath）、Type、reason、message字段--全部字段信息
 func getEventKey(event *v1.Event) string {
 	return strings.Join([]string{
 		event.Source.Component,
@@ -68,6 +69,7 @@ func getEventKey(event *v1.Event) string {
 }
 
 // getSpamKey builds unique event key based on source, involvedObject
+// 拼合event的Source、involvedObject（不包含FieldPath）字段
 func getSpamKey(event *v1.Event) string {
 	return strings.Join([]string{
 		event.Source.Component,
@@ -119,6 +121,7 @@ type spamRecord struct {
 }
 
 // Filter controls that a given source+object are not exceeding the allowed rate.
+// 对相同的source和involvedObject的event进行限速
 func (f *EventSourceObjectSpamFilter) Filter(event *v1.Event) bool {
 	var record spamRecord
 
@@ -154,6 +157,8 @@ func (f *EventSourceObjectSpamFilter) Filter(event *v1.Event) bool {
 type EventAggregatorKeyFunc func(event *v1.Event) (aggregateKey string, localKey string)
 
 // EventAggregatorByReasonFunc aggregates events by exact match on event.Source, event.InvolvedObject, event.Type and event.Reason
+// aggregateKey是拼合Source、InvolvedObject（不包含FieldPath）、Type、Reason
+// localKey是Message
 func EventAggregatorByReasonFunc(event *v1.Event) (string, string) {
 	return strings.Join([]string{
 		event.Source.Component,
@@ -235,6 +240,8 @@ func (e *EventAggregator) EventAggregate(newEvent *v1.Event) (*v1.Event, string)
 	// eventKey is the full cache key for this event
 	eventKey := getEventKey(newEvent)
 	// aggregateKey is for the aggregate event, if one is needed.
+	// 默认的keyFunc是EventAggregatorByReasonFunc
+	// EventAggregatorByReasonFunc返回的aggregateKey是拼合Source、InvolvedObject（不包含FieldPath）、Type、Reason，localKey是Message。
 	aggregateKey, localKey := e.keyFunc(newEvent)
 
 	// Do we have a record of similar events in our cache?
@@ -250,16 +257,19 @@ func (e *EventAggregator) EventAggregate(newEvent *v1.Event) (*v1.Event, string)
 	// create a new one in that case.
 	maxInterval := time.Duration(e.maxIntervalInSeconds) * time.Second
 	interval := now.Time.Sub(record.lastTimestamp.Time)
+	// 现在已经过期时间，清空记录
 	if interval > maxInterval {
 		record = aggregateRecord{localKeys: sets.NewString()}
 	}
 
 	// Write the new event into the aggregation record and put it on the cache
+	// 写入localKey，这里利用map特性，如果已经存在，不会保存重复的key
 	record.localKeys.Insert(localKey)
 	record.lastTimestamp = now
 	e.cache.Add(aggregateKey, record)
 
 	// If we are not yet over the threshold for unique events, don't correlate them
+	// localKeys长度（不同的message的个数）小于maxEvents，包括过期或没有过期，则直接返回newEvent或eventKey
 	if uint(record.localKeys.Len()) < e.maxEvents {
 		return newEvent, eventKey
 	}
@@ -269,6 +279,7 @@ func (e *EventAggregator) EventAggregate(newEvent *v1.Event) (*v1.Event, string)
 
 	// create a new aggregate event, and return the aggregateKey as the cache key
 	// (so that it can be overwritten.)
+	// 在record没有过期且localKeys长度（不同的message的个数）大于等于maxEvents，则进行聚合--修改最后收到的event
 	eventCopy := &v1.Event{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%v.%x", newEvent.InvolvedObject.Name, now.UnixNano()),
@@ -278,6 +289,8 @@ func (e *EventAggregator) EventAggregate(newEvent *v1.Event) (*v1.Event, string)
 		FirstTimestamp: now,
 		InvolvedObject: newEvent.InvolvedObject,
 		LastTimestamp:  now,
+		// 默认的messageFunc为EventAggregatorByReasonMessageFunc
+		// EventAggregatorByReasonMessageFunc返回"(combined from similar events): "加上message
 		Message:        e.messageFunc(newEvent),
 		Type:           newEvent.Type,
 		Reason:         newEvent.Reason,
