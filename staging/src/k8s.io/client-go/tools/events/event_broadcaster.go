@@ -112,8 +112,10 @@ func (e *eventBroadcasterImpl) refreshExistingEventSeries() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	for isomorphicKey, event := range e.eventCache {
+		// 有series，请求apiserver更新event
 		if event.Series != nil {
 			if recordedEvent, retry := recordEvent(e.sink, event); !retry {
+				// 更新成功，更新cache中的event为apiserver返回的event
 				if recordedEvent != nil {
 					e.eventCache[isomorphicKey] = recordedEvent
 				}
@@ -131,12 +133,15 @@ func (e *eventBroadcasterImpl) finishSeries() {
 	defer e.mu.Unlock()
 	for isomorphicKey, event := range e.eventCache {
 		eventSerie := event.Series
+		// 有series
 		if eventSerie != nil {
+			// LastObservedTime在finishTime（6分钟）之前
 			if eventSerie.LastObservedTime.Time.Before(time.Now().Add(-finishTime)) {
 				if _, retry := recordEvent(e.sink, event); !retry {
 					delete(e.eventCache, isomorphicKey)
 				}
 			}
+		// 没有series，EventTime在finishTime（6分钟）之前
 		} else if event.EventTime.Time.Before(time.Now().Add(-finishTime)) {
 			delete(e.eventCache, isomorphicKey)
 		}
@@ -159,23 +164,29 @@ func (e *eventBroadcasterImpl) recordToSink(event *v1beta1.Event, clock clock.Cl
 			defer e.mu.Unlock()
 			eventKey := getKey(eventCopy)
 			isomorphicEvent, isIsomorphic := e.eventCache[eventKey]
+			// eventKey在cache中存在
 			if isIsomorphic {
+				// cache保存event有series，更新cache中event的LastObservedTime为现在、Series.Count加一
 				if isomorphicEvent.Series != nil {
 					isomorphicEvent.Series.Count++
 					isomorphicEvent.Series.LastObservedTime = metav1.MicroTime{Time: clock.Now()}
 					return nil
 				}
+				// cache保存event没有series，cache中的event添加series，返回cache中的event包含series
 				isomorphicEvent.Series = &v1beta1.EventSeries{
 					Count:            1,
 					LastObservedTime: metav1.MicroTime{Time: clock.Now()},
 				}
 				return isomorphicEvent
 			}
+			// eventKey在cache中不存在，cache中添加event
 			e.eventCache[eventKey] = eventCopy
 			return eventCopy
 		}()
+		// cache有event且没有series或cache中event不存在，请求apiserver
 		if evToRecord != nil {
 			recordedEvent := e.attemptRecording(evToRecord)
+			// 请求apiserver成功，更新cache中的event为apiserver返回的
 			if recordedEvent != nil {
 				recordedEventKey := getKey(recordedEvent)
 				e.mu.Lock()
@@ -207,6 +218,7 @@ func recordEvent(sink EventSink, event *v1beta1.Event) (*v1beta1.Event, bool) {
 	var newEvent *v1beta1.Event
 	var err error
 	isEventSeries := event.Series != nil
+	// 如果有series，则使用patch更新
 	if isEventSeries {
 		patch, patchBytesErr := createPatchBytesForSeries(event)
 		if patchBytesErr != nil {
@@ -216,6 +228,7 @@ func recordEvent(sink EventSink, event *v1beta1.Event) (*v1beta1.Event, bool) {
 		newEvent, err = sink.Patch(event, patch)
 	}
 	// Update can fail because the event may have been removed and it no longer exists.
+	// 没有series或有series的patch请求404，则使用create进行创建
 	if !isEventSeries || (isEventSeries && util.IsKeyNotFoundError(err)) {
 		// Making sure that ResourceVersion is empty on creation
 		event.ResourceVersion = ""
@@ -294,9 +307,11 @@ func (e *eventBroadcasterImpl) StartEventWatcher(eventHandler func(event runtime
 
 // StartRecordingToSink starts sending events received from the specified eventBroadcaster to the given sink.
 func (e *eventBroadcasterImpl) StartRecordingToSink(stopCh <-chan struct{}) {
+	// 每30分钟执行更新已经cache中的event有series
 	go wait.Until(func() {
 		e.refreshExistingEventSeries()
 	}, refreshTime, stopCh)
+	// 每6分钟执行更新event--在cache中有6分钟之前发现的或event生成已经过了6分钟
 	go wait.Until(func() {
 		e.finishSeries()
 	}, finishTime, stopCh)
@@ -308,6 +323,7 @@ func (e *eventBroadcasterImpl) StartRecordingToSink(stopCh <-chan struct{}) {
 		}
 		e.recordToSink(event, clock.RealClock{})
 	}
+	// 启动一个goroutine添加一个watcher，处理接收到的event
 	stopWatcher := e.StartEventWatcher(eventHandler)
 	go func() {
 		<-stopCh
