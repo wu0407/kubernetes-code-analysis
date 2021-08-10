@@ -288,14 +288,18 @@ func makePodSourceConfig(kubeCfg *kubeletconfiginternal.KubeletConfiguration, ku
 	cfg := config.NewPodConfig(config.PodConfigNotificationIncremental, kubeDeps.Recorder)
 
 	// define file config source
+	// 默认StaticPodPath为空，FileCheckFrequency为20s
 	if kubeCfg.StaticPodPath != "" {
 		klog.Infof("Adding pod path: %v", kubeCfg.StaticPodPath)
+		// 启动gorotine watch文件变化和周期性读取文件，生成PodUpdate（op为set，包含所有pod）消息发送给updates通道
 		config.NewSourceFile(kubeCfg.StaticPodPath, nodeName, kubeCfg.FileCheckFrequency.Duration, cfg.Channel(kubetypes.FileSource))
 	}
 
 	// define url config source
+	// 默认StaticPodURL为空，HTTPCheckFrequency默认为20s
 	if kubeCfg.StaticPodURL != "" {
 		klog.Infof("Adding pod url %q with HTTP header %v", kubeCfg.StaticPodURL, manifestURLHeader)
+		// 启动goroutine 周期请求url获取pod或podlist，生成PodUpdate（op为set，包含所有pod）消息发送给updates通道
 		config.NewSourceURL(kubeCfg.StaticPodURL, manifestURLHeader, nodeName, kubeCfg.HTTPCheckFrequency.Duration, cfg.Channel(kubetypes.HTTPSource))
 	}
 
@@ -304,9 +308,11 @@ func makePodSourceConfig(kubeCfg *kubeletconfiginternal.KubeletConfiguration, ku
 	// below, or the checkpoint would override the source of truth.
 
 	var updatechannel chan<- interface{}
+	// 默认bootstrapCheckpointPath为空
 	if bootstrapCheckpointPath != "" {
 		klog.Infof("Adding checkpoint path: %v", bootstrapCheckpointPath)
 		updatechannel = cfg.Channel(kubetypes.ApiserverSource)
+		// 从目录中读取所有checkpoint文件获取所有pod，然后发送PodUpdate（op为restore）到updatechannel
 		err := cfg.Restore(bootstrapCheckpointPath, updatechannel)
 		if err != nil {
 			return nil, err
@@ -447,10 +453,12 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	if rootDirectory == "" {
 		return nil, fmt.Errorf("invalid root directory %q", rootDirectory)
 	}
+	// 默认为1分钟
 	if kubeCfg.SyncFrequency.Duration <= 0 {
 		return nil, fmt.Errorf("invalid sync frequency %d", kubeCfg.SyncFrequency.Duration)
 	}
 
+	// 默认为true
 	if kubeCfg.MakeIPTablesUtilChains {
 		if kubeCfg.IPTablesMasqueradeBit > 31 || kubeCfg.IPTablesMasqueradeBit < 0 {
 			return nil, fmt.Errorf("iptables-masquerade-bit is not valid. Must be within [0, 31]")
@@ -476,6 +484,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 			return nil, fmt.Errorf("failed to get instances from cloud provider")
 		}
 
+		// cloud provider为aws，aws会返回主机的dns名字
 		nodeName, err = instances.CurrentNodeName(context.TODO(), hostname)
 		if err != nil {
 			return nil, fmt.Errorf("error fetching current instance name from cloud provider: %v", err)
@@ -486,6 +495,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 
 	if kubeDeps.PodConfig == nil {
 		var err error
+		// bootstrapCheckpointPath默认为空
 		kubeDeps.PodConfig, err = makePodSourceConfig(kubeCfg, kubeDeps, nodeName, bootstrapCheckpointPath)
 		if err != nil {
 			return nil, err

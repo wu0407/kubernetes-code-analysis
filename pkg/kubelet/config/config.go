@@ -57,6 +57,7 @@ const (
 // in order.
 type PodConfig struct {
 	pods *podStorage
+	// 聚合器
 	mux  *config.Mux
 
 	// the channel of denormalized changes passed to listeners
@@ -84,6 +85,10 @@ func NewPodConfig(mode PodConfigNotificationMode, recorder record.EventRecorder)
 
 // Channel creates or returns a config source channel.  The channel
 // only accepts PodUpdates
+// 
+// sources里添加source
+// 创建或返回一个chan接收updates，这个chan保存在mux里sources
+// 启动一个goroutine消费这个chan里的PodUpdates消息--进行加工分类，然后发送给updates通道
 func (c *PodConfig) Channel(source string) chan<- interface{} {
 	c.sourcesLock.Lock()
 	defer c.sourcesLock.Unlock()
@@ -168,12 +173,17 @@ func newPodStorage(updates chan<- kubetypes.PodUpdate, mode PodConfigNotificatio
 // Merge normalizes a set of incoming changes from different sources into a map of all Pods
 // and ensures that redundant changes are filtered out, and then pushes zero or more minimal
 // updates onto the update channel.  Ensures that updates are delivered in order.
+// 
+// 将输入source的PodUpdate的pod列表去重
+// 将PodUpdate与s.pods[source]的pod进行比对，加工出各个OP类型PodUpdate，发送到s.updates通道中
+// 输入PodUpdate的OP可能与输出PodUpdate的OP不一样
 func (s *podStorage) Merge(source string, change interface{}) error {
 	s.updateLock.Lock()
 	defer s.updateLock.Unlock()
 
 	seenBefore := s.sourcesSeen.Has(source)
 	adds, updates, deletes, removes, reconciles, restores := s.merge(source, change)
+	// 当PodUpdate的op为SET时候，firstSet为true
 	firstSet := !seenBefore && s.sourcesSeen.Has(source)
 
 	// deliver update notifications
@@ -230,6 +240,8 @@ func (s *podStorage) Merge(source string, change interface{}) error {
 	return nil
 }
 
+// 将传进来的change--PodUpdate里的pod，与记录中s.pods[source]的pod进行比对，分类出adds, updates, deletes, removes, reconciles, restores
+// 返回各类PodUpdate--包含最终pod信息（有修改过或未修改--对于s.pods[source]的pod来说）
 func (s *podStorage) merge(source string, change interface{}) (adds, updates, deletes, removes, reconciles, restores *kubetypes.PodUpdate) {
 	s.podLock.Lock()
 	defer s.podLock.Unlock()
@@ -260,6 +272,8 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 			ref.Annotations[kubetypes.ConfigSourceAnnotationKey] = source
 			if existing, found := oldPods[ref.UID]; found {
 				pods[ref.UID] = existing
+				//  如果status以外属性相同且status也相同，则不需要任何操作，返回都是false。status以外属性相同，但是status不同则更新existing.status为ref.status、返回needReconcile为true
+				//  如果属性不同，则更新existing属性=ref属性，如果ref.DeletionTimestamp存在，则返回needGracefulDelete为true。否则needUpdate为true
 				needUpdate, needReconcile, needGracefulDelete := checkAndUpdatePod(existing, ref)
 				if needUpdate {
 					updatePods = append(updatePods, existing)
@@ -270,6 +284,7 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 				}
 				continue
 			}
+			// 添加kubernetes.io/config.seen的annotation
 			recordFirstSeenTime(ref)
 			pods[ref.UID] = ref
 			addPods = append(addPods, ref)
@@ -286,11 +301,13 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 		} else {
 			klog.V(4).Infof("Updating pods from source %s : %v", source, update.Pods)
 		}
+		// 根据update.Pods里的pod列表，更新pods里的pod信息--添加或修改
 		updatePodsFunc(update.Pods, pods, pods)
 
 	case kubetypes.REMOVE:
 		klog.V(4).Infof("Removing pods from source %s : %v", source, update.Pods)
 		for _, value := range update.Pods {
+			// 被remove的pod，在update.Pods里且也在s.pods[source]--pods里
 			if existing, found := pods[value.UID]; found {
 				// this is a delete
 				delete(pods, value.UID)
@@ -302,12 +319,14 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 
 	case kubetypes.SET:
 		klog.V(4).Infof("Setting pods for source %s", source)
-		//添加已经发现的source
+		//添加source到已经发现的sourceSet
 		s.markSourceSet(source)
 		// Clear the old map entries by just creating a new map
 		oldPods := pods
 		pods = make(map[types.UID]*v1.Pod)
+		// 根据update.Pods, oldPods将更新过的（以update.Pods里的pod同样在oldpods中或者不在oldpods）pod列表保存到最新的pods中
 		updatePodsFunc(update.Pods, oldPods, pods)
+		// 被remove的pod--在oldPods--s.pods[source]里但是不在update.Pods里的pod
 		for uid, existing := range oldPods {
 			if _, found := pods[uid]; !found {
 				// this is a delete
@@ -327,7 +346,10 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 
 	adds = &kubetypes.PodUpdate{Op: kubetypes.ADD, Pods: copyPods(addPods), Source: source}
 	updates = &kubetypes.PodUpdate{Op: kubetypes.UPDATE, Pods: copyPods(updatePods), Source: source}
+	// op为ADD、UPDATE、DELETE、SET，pod有DeletionTimestamp
 	deletes = &kubetypes.PodUpdate{Op: kubetypes.DELETE, Pods: copyPods(deletePods), Source: source}
+	// op为SET，在s.pods[source]--oldPods里但是不在update.Pods里的pod
+	// op为REMOVE，在update.Pods里且也在s.pods[source]--pods里
 	removes = &kubetypes.PodUpdate{Op: kubetypes.REMOVE, Pods: copyPods(removePods), Source: source}
 	reconciles = &kubetypes.PodUpdate{Op: kubetypes.RECONCILE, Pods: copyPods(reconcilePods), Source: source}
 	restores = &kubetypes.PodUpdate{Op: kubetypes.RESTORE, Pods: copyPods(restorePods), Source: source}
@@ -347,6 +369,7 @@ func (s *podStorage) seenSources(sources ...string) bool {
 	return s.sourcesSeen.HasAll(sources...)
 }
 
+// 去掉重复的pod
 func filterInvalidPods(pods []*v1.Pod, source string, recorder record.EventRecorder) (filtered []*v1.Pod) {
 	names := sets.String{}
 	for i, pod := range pods {
@@ -448,13 +471,14 @@ func podsDifferSemantically(existing, ref *v1.Pod) bool {
 //   * if ref makes no meaningful change, but changes the pod status, returns needReconcile=true
 //   * else return all false
 //   Now, needUpdate, needGracefulDelete and needReconcile should never be both true
-//  如果除了status以外属性相同，status相同，则返回都是false。status不同则更新existing.status为ref.status、返回needReconcile为true
+//  如果status以外属性相同且status也相同，则不需要任何操作，返回都是false。status以外属性相同，但是status不同则更新existing.status为ref.status、返回needReconcile为true
 //  如果属性不同，则更新existing属性=ref属性，如果ref.DeletionTimestamp存在，则返回needGracefulDelete为true。否则needUpdate为true
 func checkAndUpdatePod(existing, ref *v1.Pod) (needUpdate, needReconcile, needGracefulDelete bool) {
 
 	// 1. this is a reconcile
 	// TODO: it would be better to update the whole object and only preserve certain things
 	//       like the source annotation or the UID (to ensure safety)
+	// pod的Spec、Label、DeletionTimestamp、DeletionGracePeriodSeconds、Annotations（除了内部的localannotation）一样
 	if !podsDifferSemantically(existing, ref) {
 		// this is not an update
 		// Only check reconcile when it is not an update, because if the pod is going to
@@ -477,6 +501,7 @@ func checkAndUpdatePod(existing, ref *v1.Pod) (needUpdate, needReconcile, needGr
 	existing.DeletionTimestamp = ref.DeletionTimestamp
 	existing.DeletionGracePeriodSeconds = ref.DeletionGracePeriodSeconds
 	existing.Status = ref.Status
+	// 替换existing的annotation为ref的annotation--（除了已有的localAnnotations）
 	updateAnnotations(existing, ref)
 
 	// 2. this is an graceful delete
@@ -498,6 +523,7 @@ func (s *podStorage) Sync() {
 }
 
 // Object implements config.Accessor
+// 所有source里的pod列表
 func (s *podStorage) MergedState() interface{} {
 	s.podLock.RLock()
 	defer s.podLock.RUnlock()

@@ -23,6 +23,10 @@ package cache
 // It is thread-safe.  It guarantees that every change (Add, Update, Replace, Delete) results
 // in one call to PushFunc, but sometimes PushFunc may be called twice with the same values.
 // PushFunc should be thread safe.
+// 
+// UndeltaStore的store不会使用ThreadSafeStore里的indexer和indices，因为indexer和indices都是空
+// 它会使用ThreadSafeStore里锁来保证存储items是thread-safe
+// 或从store中获取所有items，然后执行PushFunc
 type UndeltaStore struct {
 	Store
 	PushFunc func([]interface{})

@@ -86,16 +86,22 @@ func GetItemsPtr(list runtime.Object) (interface{}, error) {
 }
 
 // getItemsPtr returns a pointer to the list object's Items member or an error.
+//
+// 返回list的itmes字段值--返回指针
 func getItemsPtr(list runtime.Object) (interface{}, error) {
+	// list必须是指针，返回指针的真实值reflect.Value
 	v, err := conversion.EnforcePtr(list)
 	if err != nil {
 		return nil, err
 	}
 
+	// v必须是struct
 	items := v.FieldByName("Items")
+	// items是空值
 	if !items.IsValid() {
 		return nil, errExpectFieldItems
 	}
+	// items必须是slice
 	switch items.Kind() {
 	case reflect.Interface, reflect.Ptr:
 		target := reflect.TypeOf(items.Interface()).Elem()
@@ -104,6 +110,7 @@ func getItemsPtr(list runtime.Object) (interface{}, error) {
 		}
 		return items.Interface(), nil
 	case reflect.Slice:
+		// 返回slice的指针值
 		return items.Addr().Interface(), nil
 	default:
 		return nil, errExpectSliceItems
@@ -130,7 +137,9 @@ func EachListItem(obj runtime.Object, fn func(runtime.Object) error) error {
 		return nil
 	}
 	takeAddr := false
+	// items内部包含的元素，不是指针或Interface，则获取内部元素的指针地址
 	if elemType := items.Type().Elem(); elemType.Kind() != reflect.Ptr && elemType.Kind() != reflect.Interface {
+		// 不是slice或array的元素或不是struct字段或不是指针指向的值
 		if !items.Index(0).CanAddr() {
 			return fmt.Errorf("unable to take address of items in %T for EachListItem", obj)
 		}

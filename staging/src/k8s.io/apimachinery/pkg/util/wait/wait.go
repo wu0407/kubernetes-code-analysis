@@ -214,6 +214,7 @@ func runConditionWithCrashProtection(condition ConditionFunc) (bool, error) {
 // Backoff holds parameters applied to a Backoff function.
 type Backoff struct {
 	// The initial duration.
+	// 回退周期
 	Duration time.Duration
 	// Duration is multiplied by factor each iteration, if factor is not zero
 	// and the limits imposed by Steps and Cap have not been reached.
@@ -234,13 +235,16 @@ type Backoff struct {
 	// multiplication by the factor parameter would make the duration
 	// exceed the cap then the duration is set to the cap and the
 	// steps parameter is set to zero.
+	// 最大回退周期
 	Cap time.Duration
 }
 
 // Step (1) returns an amount of time to sleep determined by the
 // original Duration and Jitter and (2) mutates the provided Backoff
 // to update its Steps and Duration.
+// 计算最终的回退周期，设置下一次的回退周期
 func (b *Backoff) Step() time.Duration {
+	// step等于0或小于0，说明达到了最大回退周期
 	if b.Steps < 1 {
 		if b.Jitter > 0 {
 			return Jitter(b.Duration, b.Jitter)
@@ -252,8 +256,10 @@ func (b *Backoff) Step() time.Duration {
 	duration := b.Duration
 
 	// calculate the next step
+	// 设置下一个回退周期
 	if b.Factor != 0 {
 		b.Duration = time.Duration(float64(b.Duration) * b.Factor)
+		// 超出了最大回退周期
 		if b.Cap > 0 && b.Duration > b.Cap {
 			b.Duration = b.Cap
 			b.Steps = 0

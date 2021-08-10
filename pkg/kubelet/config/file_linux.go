@@ -51,13 +51,17 @@ func (s *sourceFile) startWatch() {
 	backOff := flowcontrol.NewBackOff(retryPeriod, maxRetryPeriod)
 	backOffID := "watch"
 
+	// 如果func()执行完成，等待一秒后重新执行
+	// watch文件变化发生错误的时候，等待1秒，查询是否在回退周期内，不在回退周期内，重新执行watch
 	go wait.Forever(func() {
+		// 在回退周期中
 		if backOff.IsInBackOffSinceUpdate(backOffID, time.Now()) {
 			return
 		}
 
 		if err := s.doWatch(); err != nil {
 			klog.Errorf("Unable to read config path %q: %v", s.path, err)
+			// 发生不是文件不存在的错误，进行回退
 			if _, retryable := err.(*retryableError); !retryable {
 				backOff.Next(backOffID, time.Now())
 			}
@@ -126,6 +130,9 @@ func (s *sourceFile) produceWatchEvent(e *fsnotify.Event) error {
 	return nil
 }
 
+// 消费inotify事件
+// podAdd和podModify事件，读取发生变更的文件，将pod信息保存在UndeltaStore，然后从UndeltaStore中读出pod列表，然后将所有pod信息组合成PodUpdate（op为set）发送到update通道里
+// podDelete事件，从fileKeyMapping查找是否是已知的文件，如果存在，则查找store中是否保存该pod，存在则从store中删除且也从fileKeyMapping中删除该文件
 func (s *sourceFile) consumeWatchEvent(e *watchEvent) error {
 	switch e.eventType {
 	case podAdd, podModify:
@@ -136,6 +143,7 @@ func (s *sourceFile) consumeWatchEvent(e *watchEvent) error {
 		return s.store.Add(pod)
 	case podDelete:
 		if objKey, keyExist := s.fileKeyMapping[e.fileName]; keyExist {
+			// 从UndeltaStore里的threadSafeMap里的items获取
 			pod, podExist, err := s.store.GetByKey(objKey)
 			if err != nil {
 				return err

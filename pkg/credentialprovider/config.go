@@ -69,6 +69,7 @@ var (
 	configJsonFileName = "config.json"
 )
 
+// 默认设置为kubelet的RootDirectory--默认为/var/lib/kubelet
 func SetPreferredDockercfgPath(path string) {
 	preferredPathLock.Lock()
 	defer preferredPathLock.Unlock()

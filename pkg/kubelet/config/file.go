@@ -54,12 +54,15 @@ type sourceFile struct {
 	nodeName       types.NodeName
 	period         time.Duration
 	store          cache.Store
+	// 文件名和保存store中的key
 	fileKeyMapping map[string]string
 	updates        chan<- interface{}
 	watchEvents    chan *watchEvent
 }
 
 // NewSourceFile watches a config file for changes.
+//
+// 启动gorotine watch文件变化和周期性读取文件，生成PodUpdate（op为set，包含所有pod）消息发送给updates通道
 func NewSourceFile(path string, nodeName types.NodeName, period time.Duration, updates chan<- interface{}) {
 	// "github.com/sigma/go-inotify" requires a path without trailing "/"
 	path = strings.TrimRight(path, string(os.PathSeparator))
@@ -118,6 +121,8 @@ func (s *sourceFile) applyDefaults(pod *api.Pod, source string) error {
 	return applyDefaults(pod, source, true, s.nodeName)
 }
 
+// 读取所有文件里的pod信息，如果读取到pod信息，保存到UndeltaStore，然后将UndeltaStore里的所有pod信息组合成PodUpdate发送到update通道里
+// 一个文件里面只允许有一个pod配置
 func (s *sourceFile) listConfig() error {
 	path := s.path
 	statInfo, err := os.Stat(path)
@@ -225,6 +230,8 @@ func (s *sourceFile) extractFromFile(filename string) (pod *v1.Pod, err error) {
 		return s.applyDefaults(pod, filename)
 	}
 
+	// 解析字节流为pod
+	// 生成pod的UID、pod的name、转换空的namespace为default、设置Spec.NodeName、ObjectMeta.SelfLink、添加容忍所有NoExecute taint、设置Status.Phase为pending
 	parsed, pod, podErr := tryDecodeSinglePod(data, defaultFn)
 	if parsed {
 		if podErr != nil {
@@ -241,5 +248,9 @@ func (s *sourceFile) replaceStore(pods ...*v1.Pod) (err error) {
 	for _, pod := range pods {
 		objs = append(objs, pod)
 	}
+	// 只在threadSafeMap里将objs按照cache.MetaNamespaceKeyFunc计算key，保存到threadSafeMap里的items
+	// 没有使用indexer和indices，只用到了线程安全的store--threadSafeMap
+	// 然后从threadSafeMap里拿到pod列表
+	// 然后执行pushfunc-- updates <- kubetypes.PodUpdate{Pods: pods, Op: kubetypes.SET, Source: kubetypes.FileSource}--将所有的pods发给updates
 	return s.store.Replace(objs, "")
 }

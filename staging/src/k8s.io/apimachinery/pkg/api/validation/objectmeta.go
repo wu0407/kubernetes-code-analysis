@@ -74,6 +74,7 @@ func validateOwnerReference(ownerReference metav1.OwnerReference, fldPath *field
 	if len(ownerReference.UID) == 0 {
 		allErrs = append(allErrs, field.Invalid(fldPath.Child("uid"), ownerReference.UID, "uid must not be empty"))
 	}
+	// corev1的event不能是ownner
 	if _, ok := BannedOwners[gvk]; ok {
 		allErrs = append(allErrs, field.Invalid(fldPath, ownerReference, fmt.Sprintf("%s is disallowed from being an owner", gvk)))
 	}
@@ -172,18 +173,25 @@ func ValidateObjectMetaAccessor(meta metav1.Object, requiresNamespace bool, name
 		}
 	}
 	if len(meta.GetClusterName()) != 0 {
+		// 限制长度63个字符,第一个字符只能是小写字母
 		for _, msg := range ValidateClusterName(meta.GetClusterName(), false) {
 			allErrs = append(allErrs, field.Invalid(fldPath.Child("clusterName"), meta.GetClusterName(), msg))
 		}
 	}
 	for _, entry := range meta.GetManagedFields() {
+		// managedFields[*].Manager长度不能超过128个字符且字符必须是可打印的
 		allErrs = append(allErrs, v1validation.ValidateFieldManager(entry.Manager, fldPath.Child("fieldManager"))...)
 	}
+	// meta.Generation值不能小于0
 	allErrs = append(allErrs, ValidateNonnegativeField(meta.GetGeneration(), fldPath.Child("generation"))...)
 	allErrs = append(allErrs, v1validation.ValidateLabels(meta.GetLabels(), fldPath.Child("labels"))...)
+	// annotation的key必须符合IsQualifiedName且所有的key和value长度不能超过256kb
 	allErrs = append(allErrs, ValidateAnnotations(meta.GetAnnotations(), fldPath.Child("annotations"))...)
+	// apiVersion、kind、name、uid不能为空且corev1的event不能是ownner
 	allErrs = append(allErrs, ValidateOwnerReferences(meta.GetOwnerReferences(), fldPath.Child("ownerReferences"))...)
+	// finalizer符合IsQualifiedName且不能同时设置为orphan和foregroundDeletion
 	allErrs = append(allErrs, ValidateFinalizers(meta.GetFinalizers(), fldPath.Child("finalizers"))...)
+	// operation必须是Apply或Update，fieldsType必须是FieldsV1
 	allErrs = append(allErrs, v1validation.ValidateManagedFields(meta.GetManagedFields(), fldPath.Child("managedFields"))...)
 	return allErrs
 }
@@ -194,6 +202,7 @@ func ValidateFinalizers(finalizers []string, fldPath *field.Path) field.ErrorLis
 	hasFinalizerOrphanDependents := false
 	hasFinalizerDeleteDependents := false
 	for _, finalizer := range finalizers {
+		// finalizer符合IsQualifiedName
 		allErrs = append(allErrs, ValidateFinalizerName(finalizer, fldPath)...)
 		if finalizer == metav1.FinalizerOrphanDependents {
 			hasFinalizerOrphanDependents = true

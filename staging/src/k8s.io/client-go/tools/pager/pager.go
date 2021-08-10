@@ -111,6 +111,7 @@ func (p *ListPager) List(ctx context.Context, options metav1.ListOptions) (runti
 		}
 
 		// exit early and return the object we got if we haven't processed any pages
+		// continue为0--apiserver支持watch cache，说明全量list就直接返回
 		if len(m.GetContinue()) == 0 && list == nil {
 			return obj, paginatedResult, nil
 		}

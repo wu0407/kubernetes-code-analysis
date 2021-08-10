@@ -66,9 +66,11 @@ func (p *Path) Key(key string) *Path {
 }
 
 // String produces a string representation of the Path.
+// 输出 a.b.c[1]
 func (p *Path) String() string {
 	// make a slice to iterate
 	elems := []*Path{}
+	// 获得所有的path, 倒序排列root在最后
 	for ; p != nil; p = p.parent {
 		elems = append(elems, p)
 	}
@@ -76,6 +78,7 @@ func (p *Path) String() string {
 	// iterate, but it has to be backwards
 	buf := bytes.NewBuffer(nil)
 	for i := range elems {
+		// 从root根路径开始--从最后开始
 		p := elems[len(elems)-1-i]
 		if p.parent != nil && len(p.name) > 0 {
 			// This is either the root or it is a subscript.

@@ -132,17 +132,24 @@ func ValidateDNS1123Subdomain(value string, fldPath *field.Path) field.ErrorList
 func ValidatePodSpecificAnnotations(annotations map[string]string, spec *core.PodSpec, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
+	// pod的annotation为kubernetes.io/config.mirror，spec.NodeName必须不为空
 	if value, isMirror := annotations[core.MirrorPodAnnotationKey]; isMirror {
 		if len(spec.NodeName) == 0 {
 			allErrs = append(allErrs, field.Invalid(fldPath.Key(core.MirrorPodAnnotationKey), value, "must set spec.nodeName if mirror pod annotation is set"))
 		}
 	}
 
+	// 验证pod的scheduler.alpha.kubernetes.io/tolerations的value--tolerations
 	if annotations[core.TolerationsAnnotationKey] != "" {
 		allErrs = append(allErrs, ValidateTolerationsInPodAnnotations(annotations, fldPath)...)
 	}
 
+	// 验证seccomp.security.alpha.kubernetes.io/pod的annotation或包含“container.seccomp.security.alpha.kubernetes.io/”前缀的annotation的value
+	// value必须是runtime/default、docker/default、unconfined、localhost/加路径
 	allErrs = append(allErrs, ValidateSeccompPodAnnotations(annotations, fldPath)...)
+	// 验证包含“container.apparmor.security.beta.kubernetes.io/”前缀
+	// pod spec里包含相应的container
+	// 值支持空、runtime/default、unconfined、包含“localhost/”前缀
 	allErrs = append(allErrs, ValidateAppArmorPodAnnotations(annotations, spec, fldPath)...)
 
 	return allErrs
@@ -152,6 +159,7 @@ func ValidatePodSpecificAnnotations(annotations map[string]string, spec *core.Po
 func ValidateTolerationsInPodAnnotations(annotations map[string]string, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
 
+	// 获取annotation key为scheduler.alpha.kubernetes.io/tolerations的value，进行json反序列化转成[]core.Toleration
 	tolerations, err := helper.GetTolerationsFromPodAnnotations(annotations)
 	if err != nil {
 		allErrs = append(allErrs, field.Invalid(fldPath, core.TolerationsAnnotationKey, err.Error()))
@@ -1125,10 +1133,12 @@ func validateHostPathType(hostPathType *core.HostPathType, fldPath *field.Path) 
 // 2. does not have any element which is ".."
 func validateLocalDescendingPath(targetPath string, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
+	// 不能是相对路径
 	if path.IsAbs(targetPath) {
 		allErrs = append(allErrs, field.Invalid(fldPath, targetPath, "must be a relative path"))
 	}
 
+	// 路径不能包含“..”，比如../../as/s，但是支持..asd/sds
 	allErrs = append(allErrs, validatePathNoBacksteps(targetPath, fldPath)...)
 
 	return allErrs
@@ -2947,6 +2957,7 @@ func validateAffinity(affinity *core.Affinity, fldPath *field.Path) field.ErrorL
 }
 
 func validateTaintEffect(effect *core.TaintEffect, allowEmpty bool, fldPath *field.Path) field.ErrorList {
+	// 如果不允许为空，则effect必须不为空
 	if !allowEmpty && len(*effect) == 0 {
 		return field.ErrorList{field.Required(fldPath, "")}
 	}
@@ -3011,16 +3022,19 @@ func ValidateTolerations(tolerations []core.Toleration, fldPath *field.Path) fie
 	for i, toleration := range tolerations {
 		idxPath := fldPath.Index(i)
 		// validate the toleration key
+		// 验证toleration的key符合IsQualifiedName
 		if len(toleration.Key) > 0 {
 			allErrors = append(allErrors, unversionedvalidation.ValidateLabelName(toleration.Key, idxPath.Child("key"))...)
 		}
 
 		// empty toleration key with Exists operator and empty value means match all taints
+		// key没有设置，则operator必须为Exists
 		if len(toleration.Key) == 0 && toleration.Operator != core.TolerationOpExists {
 			allErrors = append(allErrors, field.Invalid(idxPath.Child("operator"), toleration.Operator,
 				"operator must be Exists when `key` is empty, which means \"match all values and all keys\""))
 		}
 
+		// 设置了tolerationSeconds则Effect必须NoExecute
 		if toleration.TolerationSeconds != nil && toleration.Effect != core.TaintEffectNoExecute {
 			allErrors = append(allErrors, field.Invalid(idxPath.Child("effect"), toleration.Effect,
 				"effect must be 'NoExecute' when `tolerationSeconds` is set"))
@@ -3034,6 +3048,7 @@ func ValidateTolerations(tolerations []core.Toleration, fldPath *field.Path) fie
 				allErrors = append(allErrors, field.Invalid(idxPath.Child("operator"), toleration.Value, strings.Join(errs, ";")))
 			}
 		case core.TolerationOpExists:
+			// operator为Exists，则不能设置Value
 			if len(toleration.Value) > 0 {
 				allErrors = append(allErrors, field.Invalid(idxPath.Child("operator"), toleration, "value must be empty when `operator` is 'Exists'"))
 			}
@@ -3043,6 +3058,7 @@ func ValidateTolerations(tolerations []core.Toleration, fldPath *field.Path) fie
 		}
 
 		// validate toleration effect, empty toleration effect means match all taint effects
+		// 目前Effect允许为空、NoSchedule、PreferNoSchedule、NoExecute
 		if len(toleration.Effect) > 0 {
 			allErrors = append(allErrors, validateTaintEffect(&toleration.Effect, true, idxPath.Child("effect"))...)
 		}
@@ -3554,9 +3570,13 @@ func ValidateSeccompProfile(p string, fldPath *field.Path) field.ErrorList {
 
 func ValidateSeccompPodAnnotations(annotations map[string]string, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
+	// seccomp.security.alpha.kubernetes.io/pod的annotation
+	// value必须是runtime/default、docker/default、unconfined、localhost/加路径
 	if p, exists := annotations[core.SeccompPodAnnotationKey]; exists {
 		allErrs = append(allErrs, ValidateSeccompProfile(p, fldPath.Child(core.SeccompPodAnnotationKey))...)
 	}
+	// 包含“container.seccomp.security.alpha.kubernetes.io/”前缀
+	// value必须是runtime/default、docker/default、unconfined、包含“localhost/”前缀
 	for k, p := range annotations {
 		if strings.HasPrefix(k, core.SeccompContainerAnnotationKeyPrefix) {
 			allErrs = append(allErrs, ValidateSeccompProfile(p, fldPath.Child(k))...)
@@ -3568,15 +3588,18 @@ func ValidateSeccompPodAnnotations(annotations map[string]string, fldPath *field
 
 func ValidateAppArmorPodAnnotations(annotations map[string]string, spec *core.PodSpec, fldPath *field.Path) field.ErrorList {
 	allErrs := field.ErrorList{}
+	// 包含“container.apparmor.security.beta.kubernetes.io/”前缀
 	for k, p := range annotations {
 		if !strings.HasPrefix(k, apparmor.ContainerAnnotationKeyPrefix) {
 			continue
 		}
 		containerName := strings.TrimPrefix(k, apparmor.ContainerAnnotationKeyPrefix)
+		// pod spec里包含相应的container
 		if !podSpecHasContainer(spec, containerName) {
 			allErrs = append(allErrs, field.Invalid(fldPath.Key(k), containerName, "container not found"))
 		}
 
+		// 值支持空、runtime/default、unconfined、包含“localhost/”前缀
 		if err := apparmor.ValidateProfileFormat(p); err != nil {
 			allErrs = append(allErrs, field.Invalid(fldPath.Key(k), p, err.Error()))
 		}

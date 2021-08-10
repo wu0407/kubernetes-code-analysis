@@ -43,6 +43,8 @@ type sourceURL struct {
 }
 
 // NewSourceURL specifies the URL where to read the Pod configuration from, then watches it for changes.
+//
+// 启动goroutine 周期请求url获取pod或podlist，生成PodUpdate（op为set，包含所有pod）消息发送给updates通道
 func NewSourceURL(url string, header http.Header, nodeName types.NodeName, period time.Duration, updates chan<- interface{}) {
 	config := &sourceURL{
 		url:      url,

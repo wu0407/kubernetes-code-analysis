@@ -164,6 +164,7 @@ func (c *threadSafeMap) Index(indexName string, obj interface{}) ([]interface{},
 		storeKeySet = sets.String{}
 		for _, indexedValue := range indexedValues {
 			for key := range index[indexedValue] {
+				//利用storeKeySet是map结构来去重
 				storeKeySet.Insert(key)
 			}
 		}

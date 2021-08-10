@@ -62,6 +62,9 @@ func NewMux(merger Merger) *Mux {
 // source will return the same channel. This allows change and state based sources
 // to use the same channel. Different source names however will be treated as a
 // union.
+// 
+// source已经有chan通道，就返回这个chan
+// 否则创建一个source的chan，然后启动一个goroutine消费这个chan（对消息进行加工分类，然后将最终的podUpdate消息发送给merger--PodStorage里的updates--chan通道）
 func (m *Mux) Channel(source string) chan interface{} {
 	if len(source) == 0 {
 		panic("Channel given an empty name")

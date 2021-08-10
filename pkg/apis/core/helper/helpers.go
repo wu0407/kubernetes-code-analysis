@@ -404,6 +404,8 @@ func NodeSelectorRequirementsAsFieldSelector(nsm []core.NodeSelectorRequirement)
 
 // GetTolerationsFromPodAnnotations gets the json serialized tolerations data from Pod.Annotations
 // and converts it to the []Toleration type in core.
+// 
+// 获取annotation key为scheduler.alpha.kubernetes.io/tolerations的value，进行json反序列化转成[]core.Toleration
 func GetTolerationsFromPodAnnotations(annotations map[string]string) ([]core.Toleration, error) {
 	var tolerations []core.Toleration
 	if len(annotations) > 0 && annotations[core.TolerationsAnnotationKey] != "" {
@@ -435,6 +437,7 @@ func AddOrUpdateTolerationInPod(pod *core.Pod, toleration *core.Toleration) bool
 		newTolerations = append(newTolerations, podTolerations[i])
 	}
 
+	// toleration不在podTolerations里
 	if !updated {
 		newTolerations = append(newTolerations, *toleration)
 	}

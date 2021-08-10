@@ -55,6 +55,7 @@ func generatePodName(name string, nodeName types.NodeName) string {
 	return fmt.Sprintf("%s-%s", name, strings.ToLower(string(nodeName)))
 }
 
+// 生成pod的UID、pod的name、转换空的namespace为default、设置Spec.NodeName、ObjectMeta.SelfLink、添加容忍所有NoExecute taint、设置Status.Phase为pending
 func applyDefaults(pod *api.Pod, source string, isFile bool, nodeName types.NodeName) error {
 	if len(pod.UID) == 0 {
 		hasher := md5.New()
@@ -91,6 +92,7 @@ func applyDefaults(pod *api.Pod, source string, isFile bool, nodeName types.Node
 	if isFile {
 		// Applying the default Taint tolerations to static pods,
 		// so they are not evicted when there are node problems.
+		// 容忍所有NoExecute taint
 		helper.AddOrUpdateTolerationInPod(pod, &api.Toleration{
 			Operator: "Exists",
 			Effect:   api.TaintEffectNoExecute,

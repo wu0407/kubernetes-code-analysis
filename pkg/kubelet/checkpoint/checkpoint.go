@@ -91,6 +91,7 @@ func getPodKey(pod *v1.Pod) string {
 func LoadPods(cpm checkpointmanager.CheckpointManager) ([]*v1.Pod, error) {
 	pods := make([]*v1.Pod, 0)
 
+	// 获得目录下的所有文件列表
 	checkpointKeys, err := cpm.ListCheckpoints()
 	if err != nil {
 		klog.Errorf("Failed to list checkpoints: %v", err)
@@ -98,6 +99,7 @@ func LoadPods(cpm checkpointmanager.CheckpointManager) ([]*v1.Pod, error) {
 
 	for _, key := range checkpointKeys {
 		checkpoint := NewPodCheckpoint(nil)
+		// 将文件的内容转化成checkpoint--包含pod和checksum
 		err := cpm.GetCheckpoint(key, checkpoint)
 		if err != nil {
 			klog.Errorf("Failed to retrieve checkpoint for pod %q: %v", key, err)
