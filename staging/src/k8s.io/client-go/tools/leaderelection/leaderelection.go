@@ -250,6 +250,7 @@ func (le *LeaderElector) acquire(ctx context.Context) bool {
 		le.config.Lock.RecordEvent("became leader")
 		le.metrics.leaderOn(le.config.Name)
 		klog.Infof("successfully acquired lease %v", desc)
+		// 执行cancle，关闭ctx.Done()的chan，然后会退出循环
 		cancel()
 	}, le.config.RetryPeriod, JitterFactor, true, ctx.Done())
 	return succeeded
@@ -267,6 +268,7 @@ func (le *LeaderElector) renew(ctx context.Context) {
 		}, timeoutCtx.Done())
 
 		le.maybeReportTransition()
+		// endpoint类型锁的Describe()输出"namespace/name"
 		desc := le.config.Lock.Describe()
 		if err == nil {
 			klog.V(5).Infof("successfully renewed lease %v", desc)
@@ -307,6 +309,7 @@ func (le *LeaderElector) release() bool {
 func (le *LeaderElector) tryAcquireOrRenew(ctx context.Context) bool {
 	now := metav1.Now()
 	leaderElectionRecord := rl.LeaderElectionRecord{
+		// 返回锁的id--主机名_uuid
 		HolderIdentity:       le.config.Lock.Identity(),
 		LeaseDurationSeconds: int(le.config.LeaseDuration / time.Second),
 		RenewTime:            now,
@@ -335,6 +338,7 @@ func (le *LeaderElector) tryAcquireOrRenew(ctx context.Context) bool {
 		le.observedRawRecord = oldLeaderElectionRawRecord
 		le.observedTime = le.clock.Now()
 	}
+	// 不是leader且id不为空且不是leader直接返回
 	if len(oldLeaderElectionRecord.HolderIdentity) > 0 &&
 		le.observedTime.Add(le.config.LeaseDuration).After(now.Time) &&
 		!le.IsLeader() {

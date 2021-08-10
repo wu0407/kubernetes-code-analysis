@@ -370,6 +370,7 @@ func (f *DeltaFIFO) queueActionLocked(actionType DeltaType, obj interface{}) err
 		return KeyError{obj, err}
 	}
 
+	// if f.items[id] not exist,  f.items[id] is nil of type Deltas
 	newDeltas := append(f.items[id], Delta{actionType, obj})
 	newDeltas = dedupDeltas(newDeltas)
 
@@ -489,6 +490,7 @@ func (f *DeltaFIFO) Pop(process PopProcessFunc) (interface{}, error) {
 			continue
 		}
 		delete(f.items, id)
+		// deltafifo 更新indexer
 		err := process(item)
 		if e, ok := err.(ErrRequeue); ok {
 			f.addIfNotPresent(id, item)
@@ -535,6 +537,7 @@ func (f *DeltaFIFO) Replace(list []interface{}, resourceVersion string) error {
 	if f.knownObjects == nil {
 		// Do deletion detection against our own list.
 		queuedDeletions := 0
+		// oldItem is in f.items but not in new replace list
 		for k, oldItem := range f.items {
 			if keys.Has(k) {
 				continue
@@ -544,6 +547,9 @@ func (f *DeltaFIFO) Replace(list []interface{}, resourceVersion string) error {
 				deletedObj = n.Object
 			}
 			queuedDeletions++
+			// 确保oldItem最后一个delta是delta{Deleted，DeletedFinalStateUnknown{k, deletedObj}}
+			// 如果Deltas里的最后一个delta.object是DeletedFinalStateUnknown，则将老的item的Deltas里的最后一个delta，替换为delta{Deleted，DeletedFinalStateUnknown{k, deletedObj}}
+			// 如果Deltas里的最后一个delta.object 不是DeletedFinalStateUnknown，则在Deltas尾部添加delta{Deleted，DeletedFinalStateUnknown{k, deletedObj}}
 			if err := f.queueActionLocked(Deleted, DeletedFinalStateUnknown{k, deletedObj}); err != nil {
 				return err
 			}
