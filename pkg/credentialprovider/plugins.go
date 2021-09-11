@@ -33,6 +33,12 @@ var providers = make(map[string]DockerConfigProvider)
 //   func init() {
 //    	RegisterCredentialProvider("name", &myProvider{...})
 //   }
+// 在cmd\kubelet\app\plugins.go里会import aws、azure、gcp镜像仓库凭证
+// _ "k8s.io/kubernetes/pkg/credentialprovider/aws"
+// _ "k8s.io/kubernetes/pkg/credentialprovider/azure"
+// _ "k8s.io/kubernetes/pkg/credentialprovider/gcp"
+// 这些package里有init会调用RegisterCredentialProvider
+// 在pkg\credentialprovider\provider.go里有init注册.dockercfg镜像仓库凭证
 func RegisterCredentialProvider(name string, provider DockerConfigProvider) {
 	providersMutex.Lock()
 	defer providersMutex.Unlock()

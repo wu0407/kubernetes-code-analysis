@@ -42,6 +42,7 @@ const (
 
 // providerRequiresNetworkingConfiguration returns whether the cloud provider
 // requires special networking configuration.
+// 没有cloud provider和非gce的provider都是false，gce调用Routes()确认是否支持
 func (kl *Kubelet) providerRequiresNetworkingConfiguration() bool {
 	// TODO: We should have a mechanism to say whether native cloud provider
 	// is used or whether we are using overlay networking. We should return

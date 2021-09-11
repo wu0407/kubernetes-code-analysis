@@ -382,6 +382,8 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 		// start the clock before sending the request, since some proxies won't flush headers until after the first watch event is sent
 		start := r.clock.Now()
 		w, err := r.listerWatcher.Watch(options)
+		// 除了IsConnectionRefused错误，重新执行watch
+		// 其他错误直接返回--重新执行listAndWatch
 		if err != nil {
 			switch {
 			case isExpiredError(err):

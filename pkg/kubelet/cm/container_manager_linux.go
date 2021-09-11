@@ -286,6 +286,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 		NodeConfig:          nodeConfig,
 		subsystems:          subsystems,
 		cgroupManager:       cgroupManager,
+		// 包括cpu、内存、hugepage
 		capacity:            capacity,
 		// 包括cpu 内存、hugepage、pid
 		internalCapacity:    internalCapacity,
@@ -577,6 +578,7 @@ func (cm *containerManagerImpl) Status() Status {
 	return cm.status
 }
 
+// 在pkg\kubelet\kubelet.go里的initializeRuntimeDependentModules会执行Start
 func (cm *containerManagerImpl) Start(node *v1.Node,
 	activePods ActivePodsFunc,
 	sourcesReady config.SourcesReady,

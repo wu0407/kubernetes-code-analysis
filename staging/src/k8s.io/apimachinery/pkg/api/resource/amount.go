@@ -92,6 +92,9 @@ func (a int64Amount) AsInt64() (int64, bool) {
 // in overflow because 1e19 is not representable as an int64. Note that setting a scale larger
 // than the current value may result in loss of precision - i.e. (1e-6).AsScaledInt64(0) would
 // return 1, because 0.000001 is rounded up to 1.
+// 将a转成为目标scale--以 result*10^scale方式表示a
+// 如果a的scale小于目标scale，有可能发生精度丢失
+// 比如a的value为1，scale为3，目标scale为6--(1e3).AsScaledInt64(6)，将会返回1，因为计算出来result是0.001，向上取整为1
 func (a int64Amount) AsScaledInt64(scale Scale) (result int64, ok bool) {
 	if a.scale < scale {
 		result, _ = negativeScaleInt64(a.value, scale-a.scale)
@@ -101,6 +104,7 @@ func (a int64Amount) AsScaledInt64(scale Scale) (result int64, ok bool) {
 }
 
 // AsDec returns an inf.Dec representation of this value.
+// int64Amount转成inf.Dec
 func (a int64Amount) AsDec() *inf.Dec {
 	var base inf.Dec
 	base.SetUnscaled(a.value)
@@ -109,21 +113,28 @@ func (a int64Amount) AsDec() *inf.Dec {
 }
 
 // Cmp returns 0 if a and b are equal, 1 if a is greater than b, or -1 if a is less than b.
+// 如果scale不等，转成较大的scale，然后对value进行比较
 func (a int64Amount) Cmp(b int64Amount) int {
 	switch {
 	case a.scale == b.scale:
 		// compare only the unscaled portion
 	case a.scale > b.scale:
+		// b转成较大a的scale，然后进行对value比较
 		result, remainder, exact := divideByScaleInt64(b.value, a.scale-b.scale)
+		// a.scale-b.scale大于等于18，转成inf.Dec进行比较
 		if !exact {
 			return a.AsDec().Cmp(b.AsDec())
 		}
+		// b.value除以（a.scale-b.scale）的得出值与a.value相等，比如a.value=5 a.scale=3 b.value=5000 b.scale=0， 5000/10^3=5
 		if result == a.value {
 			switch {
+			// 余数为0，说明a与b相等
 			case remainder == 0:
 				return 0
+			// 余数大于0，说明a小于b，比如a.value=5 a.scale=3 b.value=5001 b.scale=0，5001%10^3=1
 			case remainder > 0:
 				return -1
+			// 余数小于0，说明a大于b，比如a.value=-5 a.scale=3 b.value=-5001 b.scale=0，-5001%10^3=-1
 			default:
 				return 1
 			}
@@ -148,6 +159,7 @@ func (a int64Amount) Cmp(b int64Amount) int {
 	}
 
 	switch {
+	// 当a.scale == b.scale才有可能a.value == b.value
 	case a.value == b.value:
 		return 0
 	case a.value < b.value:
@@ -205,6 +217,9 @@ func (a *int64Amount) Sub(b int64Amount) bool {
 
 // AsScale adjusts this amount to set a minimum scale, rounding up, and returns true iff no precision
 // was lost. (1.1e5).AsScale(5) would return 1.1e5, but (1.1e5).AsScale(6) would return 1e6.
+// 
+// 如果自身的scale大于等于提供的scale，则不需要处理直接返回原始的值和true
+// 如果自身的scale小于提供的scale，一直除以10 直到值为0或次数耗尽（提供的scale与自身的scale的差值），如果a能够对10进行整除，则返回最后的整除完值和true，否则返回值（除10之后的值（0代表次数耗尽，非0代表未耗尽），当a为正数加1，负数减1）和false
 func (a int64Amount) AsScale(scale Scale) (int64Amount, bool) {
 	if a.scale >= scale {
 		return a, true
@@ -220,25 +235,34 @@ func (a int64Amount) AsCanonicalBytes(out []byte) (result []byte, exponent int32
 	mantissa := a.value
 	exponent = int32(a.scale)
 
+	// times为能整除10的次数，amount为最后不能整除10的数， mantissa == amount * 10 ^ times
 	amount, times := removeInt64Factors(mantissa, 10)
 	exponent += int32(times)
 
 	// make sure exponent is a multiple of 3
 	var ok bool
+	// 处理exponent不能整除3的情况
 	switch exponent % 3 {
+	// exponent减1就能整除3
 	case 1, -2:
+		// amount的值乘以10，ok为false代表amount等于int64能表示的最小负数或amount超出了int64所能表示的正数
 		amount, ok = int64MultiplyScale10(amount)
+		// amount等于int64能表示的最小负数或超出了int64所能表示的正数，则转成inf.Dec进行计算
 		if !ok {
 			return infDecAmount{a.AsDec()}.AsCanonicalBytes(out)
 		}
 		exponent = exponent - 1
+	// exponent减2就能整除3
 	case 2, -1:
+		// amount的值乘以100，ok为false代表amount等于int64能表示的最小负数或amount超出了int64所能表示的正数
 		amount, ok = int64MultiplyScale100(amount)
+		// amount等于int64能表示的最小负数或超出了int64所能表示的正数，则转成inf.Dec进行计算
 		if !ok {
 			return infDecAmount{a.AsDec()}.AsCanonicalBytes(out)
 		}
 		exponent = exponent - 2
 	}
+	// 返回10进制的[]byte和能整除3的exponent
 	return strconv.AppendInt(out, amount, 10), exponent
 }
 
@@ -247,9 +271,12 @@ func (a int64Amount) AsCanonicalBytes(out []byte) (result []byte, exponent int32
 // return []byte("2048"), 1.
 func (a int64Amount) AsCanonicalBase1024Bytes(out []byte) (result []byte, exponent int32) {
 	value, ok := a.AsScaledInt64(0)
+	// 超出int64，转成inf.Dec进行处理
 	if !ok {
 		return infDecAmount{a.AsDec()}.AsCanonicalBase1024Bytes(out)
 	}
+	// amount为不能整除1024的值，exponent为能整除1024的次数
+	// 使用amount == amount * 1024 ^ exponent计算结果
 	amount, exponent := removeInt64Factors(value, 1024)
 	return strconv.AppendInt(out, amount, 10), exponent
 }
@@ -262,6 +289,9 @@ type infDecAmount struct {
 
 // AsScale adjusts this amount to set a minimum scale, rounding up, and returns true iff no precision
 // was lost. (1.1e5).AsScale(5) would return 1.1e5, but (1.1e5).AsScale(6) would return 1e6.
+// 
+// 返回一个scale至少为提供的scale的infDecAmount
+// 当进行scale计算（除以10^(-scale)之后）之后的值，整数则返回这个值和true，小数则返回对这个值向上取整和false
 func (a infDecAmount) AsScale(scale Scale) (infDecAmount, bool) {
 	tmp := &inf.Dec{}
 	tmp.Round(a.Dec, scale.infScale(), inf.RoundUp)
@@ -276,10 +306,13 @@ func (a infDecAmount) AsCanonicalBytes(out []byte) (result []byte, exponent int3
 	exponent = int32(-a.Dec.Scale())
 	amount := big.NewInt(0).Set(mantissa)
 	// move all factors of 10 into the exponent for easy reasoning
+	// 返回times为能整除10的次数，amount为不能对10整除的数，比如250 返回amount为25，times为1
 	amount, times := removeBigIntFactors(amount, bigTen)
 	exponent += times
 
 	// make sure exponent is a multiple of 3
+	// exponent不为3的倍数，则一直减到为3的倍数，amount不断乘以10
+	// 确保exponent为3的倍数
 	for exponent%3 != 0 {
 		amount.Mul(amount, bigTen)
 		exponent--
@@ -293,7 +326,9 @@ func (a infDecAmount) AsCanonicalBytes(out []byte) (result []byte, exponent int3
 // return []byte("2048"), 1.
 func (a infDecAmount) AsCanonicalBase1024Bytes(out []byte) (result []byte, exponent int32) {
 	tmp := &inf.Dec{}
+	// a.Dec转成scale为0，转换之后的unscaled使用RoundUp向上取整（负数向下取整 比如-1.0变成-2）
 	tmp.Round(a.Dec, 0, inf.RoundUp)
+	// 返回exponent为能整除1024的次数，amount为不能对1024整除的数，比如2048 返回amount为2，exponent为1
 	amount, exponent := removeBigIntFactors(tmp.UnscaledBig(), big1024)
 	return append(out, amount.String()...), exponent
 }

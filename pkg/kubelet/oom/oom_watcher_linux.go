@@ -45,6 +45,7 @@ var _ Watcher = &realWatcher{}
 // NewWatcher creates and initializes a OOMWatcher backed by Cadvisor as
 // the oom streamer.
 func NewWatcher(recorder record.EventRecorder) (Watcher, error) {
+	// 读取/dev/kmsg
 	oomStreamer, err := oomparser.New()
 	if err != nil {
 		return nil, err

@@ -128,9 +128,11 @@ func (kl *Kubelet) tryRegisterWithAPIServer(node *v1.Node) bool {
 }
 
 // Zeros out extended resource capacity during reconciliation.
+// 有device-plugins且node.Status.Capacity里有外部资源，则重置成0
 func (kl *Kubelet) reconcileExtendedResource(initialNode, node *v1.Node) bool {
 	requiresUpdate := false
 	// Check with the device manager to see if node has been recreated, in which case extended resources should be zeroed until they are available
+	// 检测/var/lib/kubelet/device-plugins/目录下面是否有文件，一般有kubelet.sock
 	if kl.containerManager.ShouldResetExtendedResourceCapacity() {
 		for k := range node.Status.Capacity {
 			if v1helper.IsExtendedResourceName(k) {
@@ -232,6 +234,7 @@ func (kl *Kubelet) initialNode(ctx context.Context) (*v1.Node, error) {
 			Unschedulable: !kl.registerSchedulable,
 		},
 	}
+	// linux没有oslabel
 	osLabels, err := getOSSpecificLabels()
 	if err != nil {
 		return nil, err
@@ -435,12 +438,15 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 		// Pod CIDR could have been updated before, so we cannot rely on
 		// node.Spec.PodCIDR being non-empty. We also need to know if pod CIDR is
 		// actually changed.
+		// node.Spec.PodCIDRs是由controller-manager分配的
 		podCIDRs := strings.Join(node.Spec.PodCIDRs, ",")
+		// podCIDRs与runtime中的cidr进行比较，不一样就更新kubelet.contianerRuntime和kubelet.runtimeState中的cidr
 		if podCIDRChanged, err = kl.updatePodCIDR(podCIDRs); err != nil {
 			klog.Errorf(err.Error())
 		}
 	}
 
+	// 更新node.status中的各种属性
 	kl.setNodeStatus(node)
 
 	now := kl.clock.Now()
@@ -550,27 +556,37 @@ func (kl *Kubelet) defaultNodeStatusFuncs() []func(*v1.Node) error {
 	}
 	var setters []func(n *v1.Node) error
 	setters = append(setters,
+		// node的ip地址或主机名
 		nodestatus.NodeAddress(kl.nodeIP, kl.nodeIPValidator, kl.hostname, kl.hostnameOverridden, kl.externalCloudProvider, kl.cloud, nodeAddressesFunc),
+		// 设置node各种资源的Allocatable、Capacity值，比如cpu、内存、pid、maxpods、hugepage
 		nodestatus.MachineInfo(string(kl.nodeName), kl.maxPods, kl.podsPerCore, kl.GetCachedMachineInfo, kl.containerManager.GetCapacity,
 			kl.containerManager.GetDevicePluginResourceCapacity, kl.containerManager.GetNodeAllocatableReservation, kl.recordEvent),
+		// kubelet、kube-proxy版本、内核版本和操作系统版本、container runtime的版本
 		nodestatus.VersionInfo(kl.cadvisor.VersionInfo, kl.containerRuntime.Type, kl.containerRuntime.Version),
+		// 监听端口信息
 		nodestatus.DaemonEndpoints(kl.daemonEndpoints),
+		// 镜像列表
 		nodestatus.Images(kl.nodeStatusMaxImages, kl.imageManager.GetImageList),
+		// 操作系统类型和cpu架构类型
 		nodestatus.GoRuntime(),
 	)
 	// Volume limits
+	// volume挂载数量限制
 	setters = append(setters, nodestatus.VolumeLimits(kl.volumePluginMgr.ListVolumePluginWithLimits))
 
 	setters = append(setters,
 		nodestatus.MemoryPressureCondition(kl.clock.Now, kl.evictionManager.IsUnderMemoryPressure, kl.recordNodeStatusEvent),
 		nodestatus.DiskPressureCondition(kl.clock.Now, kl.evictionManager.IsUnderDiskPressure, kl.recordNodeStatusEvent),
 		nodestatus.PIDPressureCondition(kl.clock.Now, kl.evictionManager.IsUnderPIDPressure, kl.recordNodeStatusEvent),
+		// 
 		nodestatus.ReadyCondition(kl.clock.Now, kl.runtimeState.runtimeErrors, kl.runtimeState.networkErrors, kl.runtimeState.storageErrors, validateHostFunc, kl.containerManager.Status, kl.recordNodeStatusEvent),
+		// node上挂载的volume名称--经过字母排序
 		nodestatus.VolumesInUse(kl.volumeManager.ReconcilerStatesHasBeenSynced, kl.volumeManager.GetVolumesInUse),
 		// TODO(mtaufen): I decided not to move this setter for now, since all it does is send an event
 		// and record state back to the Kubelet runtime object. In the future, I'd like to isolate
 		// these side-effects by decoupling the decisions to send events and partial status recording
 		// from the Node setters.
+		// kl.lastNodeUnschedulable与node.Spec.Unschedulable不一致时候，发送Node是否Schedulable的Event
 		kl.recordNodeSchedulableEvent,
 	)
 	return setters

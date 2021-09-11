@@ -188,6 +188,7 @@ func (p *csiPlugin) Init(host volume.VolumeHost) error {
 		klog.Warning(log("kubeclient not set, assuming standalone kubelet"))
 	} else {
 		// set CSIDriverLister and volumeAttachmentLister
+		// 在pkg\kubelet\volume_host.go里的kubeletVolumeHost没有实现volume.AttachDetachVolumeHost
 		adcHost, ok := host.(volume.AttachDetachVolumeHost)
 		if ok {
 			p.csiDriverLister = adcHost.CSIDriverLister()
@@ -235,6 +236,7 @@ func (p *csiPlugin) Init(host volume.VolumeHost) error {
 		utilfeature.DefaultFeatureGate.Enabled(features.CSIMigration) {
 		// This function prevents Kubelet from posting Ready status until CSINode
 		// is both installed and initialized
+		// 创建或更新csiNode
 		if err := initializeCSINode(host); err != nil {
 			return errors.New(log("failed to initialize CSINode: %v", err))
 		}
@@ -263,6 +265,7 @@ func initializeCSINode(host volume.VolumeHost) error {
 
 		// First wait indefinitely to talk to Kube APIServer
 		nodeName := host.GetNodeName()
+		// 从apiserver get csinodes
 		err := waitForAPIServerForever(kubeClient, nodeName)
 		if err != nil {
 			klog.Fatalf("Failed to initialize CSINode while waiting for API server to report ok: %v", err)

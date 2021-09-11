@@ -593,6 +593,7 @@ func (pm *VolumePluginMgr) InitPlugins(plugins []VolumePlugin, prober DynamicPlu
 	} else {
 		pm.prober = prober
 	}
+	// 创建inotify监听Flexvolume插件目录和子目录
 	if err := pm.prober.Init(); err != nil {
 		// Prober init failure should not affect the initialization of other plugins.
 		klog.Errorf("Error initializing dynamic plugin prober: %s", err)
@@ -607,6 +608,7 @@ func (pm *VolumePluginMgr) InitPlugins(plugins []VolumePlugin, prober DynamicPlu
 	}
 
 	allErrs := []error{}
+	// 初始化各个在cmd\kubelet\app\plugins.go里ProbeVolumePlugins注册的插件
 	for _, plugin := range plugins {
 		name := plugin.GetPluginName()
 		if errs := validation.IsQualifiedName(name); len(errs) != 0 {
@@ -751,6 +753,7 @@ func (pm *VolumePluginMgr) refreshProbedPlugins() {
 }
 
 // ListVolumePluginWithLimits returns plugins that have volume limits on nodes
+// 目前只有aws的ebs、azure的dd datadisk、gce的pd persistent disk、cinder支持volume limits
 func (pm *VolumePluginMgr) ListVolumePluginWithLimits() []VolumePluginWithAttachLimits {
 	matchedPlugins := []VolumePluginWithAttachLimits{}
 	for _, v := range pm.plugins {

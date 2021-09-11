@@ -143,12 +143,14 @@ var (
 )
 
 // parseQuantityString is a fast scanner for quantity values.
+// value代表值--数值没有单位（整数或小数），num是整数位，denom是小数位，suffix是单位
 func parseQuantityString(str string) (positive bool, value, num, denom, suffix string, err error) {
 	positive = true
 	pos := 0
 	end := len(str)
 
 	// handle leading sign
+	// 支持多个加号或减号 ---++++5m
 	if pos < end {
 		switch str[0] {
 		case '-':
@@ -162,6 +164,7 @@ func parseQuantityString(str string) (positive bool, value, num, denom, suffix s
 	// strip leading zeros
 Zeroes:
 	for i := pos; ; i++ {
+		// 如果剩下全是0
 		if i >= end {
 			num = "0"
 			value = num
@@ -178,6 +181,7 @@ Zeroes:
 	// extract the numerator
 Num:
 	for i := pos; ; i++ {
+		// 剩下的都是数字
 		if i >= end {
 			num = str[pos:end]
 			value = str[0:end]
@@ -185,6 +189,7 @@ Num:
 		}
 		switch str[i] {
 		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		// 剩下的不是数字
 		default:
 			num = str[pos:i]
 			pos = i
@@ -202,6 +207,7 @@ Num:
 		pos++
 	Denom:
 		for i := pos; ; i++ {
+			// 剩下的都是数字 比如1.01121212
 			if i >= end {
 				denom = str[pos:end]
 				value = str[0:end]
@@ -209,6 +215,7 @@ Num:
 			}
 			switch str[i] {
 			case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			// 剩下的不是数字
 			default:
 				denom = str[pos:i]
 				pos = i
@@ -226,15 +233,18 @@ Num:
 	// grab the elements of the suffix
 	suffixStart := pos
 	for i := pos; ; i++ {
+		// 剩下的都是已知的字符，比如5Miiiiiiii
 		if i >= end {
 			suffix = str[suffixStart:end]
 			return
 		}
+		// 不是已知后缀字符
 		if !strings.ContainsAny(str[i:i+1], "eEinumkKMGTP") {
 			pos = i
 			break
 		}
 	}
+	// 后面有加号或减号 5Miiiiiiii---+++
 	if pos < end {
 		switch str[pos] {
 		case '-', '+':
@@ -242,13 +252,16 @@ Num:
 		}
 	}
 Suffix:
+	// 如果剩下字符的第一个字符不是已知后缀字符
 	for i := pos; ; i++ {
+		// 剩下都是数字 比如5Mi123434343 5e2
 		if i >= end {
 			suffix = str[suffixStart:end]
 			return
 		}
 		switch str[i] {
 		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+		// 不是已知字符 比如5Miaim
 		default:
 			break Suffix
 		}
@@ -273,6 +286,7 @@ func ParseQuantity(str string) (Quantity, error) {
 		return Quantity{}, err
 	}
 
+	//比如Mi返回2 20 BinarySI
 	base, exponent, format, ok := quantitySuffixer.interpret(suffix(suf))
 	if !ok {
 		return Quantity{}, ErrSuffix
@@ -292,16 +306,29 @@ func ParseQuantity(str string) (Quantity, error) {
 			// only handle positive binary numbers with the fast path
 			mantissa = int64(int64(mantissa) << uint64(exponent))
 			// 1Mi (2^20) has ~6 digits of decimal precision, so exponent*3/10 -1 is roughly the precision
+			// 1Mi (2^20)=1048576 是有七位，20*3/10+1=7
+			// 9Mi =9437184也只有7位
+			// 1Gi 2^30=1073741824 是有10位，30*3/10+1=10
+			// 9Gi =9663676416也是10位
+			// 1Ti 2^40=1099511627776 13位
+			// 9Ti =9895604649984 13位
+			// 1Pi 2^50 =1125899906842624 16位
+			// 9Pi 10133099161583616 17位
+			// 要使用int64Amount存储，最大支持到99Ti--计算出来的值是15位数字
+			// 为什么是15？
 			precision = 15 - int32(len(num)) - int32(float32(exponent)*3/10) - 1
 		default:
 			precision = -1
 		}
 	}
 
+	// DecimalExponent, DecimalSI类型没有超出int64能存储的范围，保存到int64Amount
+	// BinarySI类型且没有小数，且计算出的值没有超过15位数
 	if precision >= 0 {
 		// if we have a denominator, shift the entire value to the left by the number of places in the
 		// denominator
 		scale -= int32(len(denom))
+		// scale是还有几位是小数位的负数，小数位数量小于等于9
 		if scale >= int32(Nano) {
 			shifted := num + denom
 
@@ -317,10 +344,13 @@ func ParseQuantity(str string) (Quantity, error) {
 				// if the number is in canonical form, reuse the string
 				switch format {
 				case BinarySI:
+					// Mi、ki、Ti的exponent都是10的整数倍且value二进制最后三位不能都是0（value不能对8进行整除--不能是8的倍数或0）
+					// 没明白为什么
 					if exponent%10 == 0 && (value&0x07 != 0) {
 						return Quantity{i: int64Amount{value: result, scale: Scale(scale)}, Format: format, s: str}, nil
 					}
 				default:
+					// 小数位数量是3的倍数，但是数值的最后三位不是000且数字第一位不是0，比如10002，就是不能再压缩
 					if scale%3 == 0 && !strings.HasSuffix(shifted, "000") && shifted[0] != '0' {
 						return Quantity{i: int64Amount{value: result, scale: Scale(scale)}, Format: format, s: str}, nil
 					}
@@ -330,14 +360,19 @@ func ParseQuantity(str string) (Quantity, error) {
 		}
 	}
 
+	// 保存到infDecAmount，忽略denom小数部分，使用big库存巨大值
+
+	// 将value转成infDecAmount
 	amount := new(inf.Dec)
 	if _, ok := amount.SetString(value); !ok {
 		return Quantity{}, ErrNumeric
 	}
 
 	// So that no one but us has to think about suffixes, remove it.
+	// DecimalExponent, DecimalSI类型，设置scale字段
 	if base == 10 {
 		amount.SetScale(amount.Scale() + Scale(exponent).infScale())
+	// BinarySI类型，设置unscaled字段，由于amount.SetString以base为10进行解析--scale是以base为10的指数，所以只能设置unscaled字段
 	} else if base == 2 {
 		// numericSuffix = 2 ** exponent
 		numericSuffix := big.NewInt(1).Lsh(bigOne, uint(exponent))
@@ -347,6 +382,7 @@ func ParseQuantity(str string) (Quantity, error) {
 
 	// Cap at min/max bounds.
 	sign := amount.Sign()
+	// 将负数转成正数计算，防止溢出
 	if sign == -1 {
 		amount.Neg(amount)
 	}
@@ -355,20 +391,24 @@ func ParseQuantity(str string) (Quantity, error) {
 	// if you want some resources, you should get some resources, even if you asked for way too small
 	// of an amount.  Arguably, this should be inf.RoundHalfUp (normal rounding), but that would have
 	// the side effect of rounding values < .5n to zero.
+	// 所有类型unscaled value非0值或不在int64范围内，则乘以10^9然后小数部分向上取整，设置scale值为9
 	if v, ok := amount.Unscaled(); v != int64(0) || !ok {
 		amount.Round(amount, Nano.infScale(), inf.RoundUp)
 	}
 
 	// The max is just a simple cap.
 	// TODO: this prevents accumulating quantities greater than int64, for instance quota across a cluster
+	// BinarySI类型，如果值不在int64范围内（将scale设为9进行比较--maxAllowed.Dec.unscaled要乘以10^9后进行比较），则设置为最大的int64值
 	if format == BinarySI && amount.Cmp(maxAllowed.Dec) > 0 {
 		amount.Set(maxAllowed.Dec)
 	}
 
+	// BinarySI类型，如果值大于0（inf.Dec类型）且小于1（inf.Dec类型，要乘以10^9），则修改为DecimalSI类型，比如0.00000000001Mi
 	if format == BinarySI && amount.Cmp(decOne) < 0 && amount.Cmp(decZero) > 0 {
 		// This avoids rounding and hopefully confusion, too.
 		format = DecimalSI
 	}
+	// 将负数还原为负数
 	if sign == -1 {
 		amount.Neg(amount)
 	}
@@ -413,11 +453,15 @@ func (q *Quantity) CanonicalizeBytes(out []byte) (result, suffix []byte) {
 	switch format {
 	case DecimalExponent, DecimalSI:
 	case BinarySI:
+		// 如果是infDecAmount定义了，则与infDecAmount的-1024和1024比较，infDecAmount类型转成scale为0进行比较
+		// 否则是int64Amount，则用int64Amount的-1024和1024比较
+		// 因为BinarySI最小为2^10--quantitySuffixer
 		if q.CmpInt64(-1024) > 0 && q.CmpInt64(1024) < 0 {
 			// This avoids rounding and hopefully confusion, too.
 			format = DecimalSI
 		} else {
 			var exact bool
+			// 转成scale至少为0，是否丢失精度--如果转完之后是小数就会丢失精度--rounded发生向上取整（int64Amount）
 			if rounded, exact = q.AsScale(0); !exact {
 				// Don't lose precision-- show as DecimalSI
 				format = DecimalSI
@@ -431,12 +475,16 @@ func (q *Quantity) CanonicalizeBytes(out []byte) (result, suffix []byte) {
 	// one of the other formats.
 	switch format {
 	case DecimalExponent, DecimalSI:
+		// 转成base为10 exponent为3的倍数和相应转化后的值
 		number, exponent := q.AsCanonicalBytes(out)
 		suffix, _ := quantitySuffixer.constructBytes(10, exponent, format)
 		return number, suffix
 	default:
 		// format must be BinarySI
+		// 转成base为1024，number为不能整除1024，exponent为除1024的次数
 		number, exponent := rounded.AsCanonicalBase1024Bytes(out)
+		// 由于1024为2^10，转成base为2，则需要乘以10
+		// rounded =number * (2^10)^exponent
 		suffix, _ := quantitySuffixer.constructBytes(2, exponent*10, format)
 		return number, suffix
 	}
@@ -475,8 +523,10 @@ func (q *Quantity) AsDec() *inf.Dec {
 // allocation.
 func (q *Quantity) AsCanonicalBytes(out []byte) (result []byte, exponent int32) {
 	if q.d.Dec != nil {
+		// 转换成exponent为3的倍数（exponent一直减1到能被3整除）
 		return q.d.AsCanonicalBytes(out)
 	}
+	// 转换成exponent为3的倍数（exponent一直减1或减2到能被3整除）
 	return q.i.AsCanonicalBytes(out)
 }
 
@@ -597,6 +647,8 @@ const int64QuantityExpectedBytes = 18
 // String formats the Quantity as a string, caching the result if not calculated.
 // String is an expensive operation and caching this result significantly reduces the cost of
 // normal parse / marshal operations on Quantity.
+// 如果q.s为空，则解析出值和后缀设置这个值
+// 如果q.s不为空直接返回
 func (q *Quantity) String() string {
 	if len(q.s) == 0 {
 		result := make([]byte, 0, int64QuantityExpectedBytes)

@@ -19,6 +19,7 @@ package app
 // This file exists to force the desired plugin implementations to be linked.
 import (
 	// Credential providers
+	// 注册内置的镜像仓库存储凭证
 	_ "k8s.io/kubernetes/pkg/credentialprovider/aws"
 	_ "k8s.io/kubernetes/pkg/credentialprovider/azure"
 	_ "k8s.io/kubernetes/pkg/credentialprovider/gcp"

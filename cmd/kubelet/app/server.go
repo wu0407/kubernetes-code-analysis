@@ -413,6 +413,7 @@ func UnsecuredDependencies(s *options.KubeletServer, featureGate featuregate.Fea
 		OSInterface:         kubecontainer.RealOS{},
 		VolumePlugins:       plugins,
 		// flexvolume插件动态发现
+		// VolumePluginDir默认为/usr/libexec/kubernetes/kubelet-plugins/volume/exec/
 		DynamicPluginProber: GetDynamicPluginProber(s.VolumePluginDir, pluginRunner),
 		TLSOptions:          tlsOptions}, nil
 }
@@ -630,8 +631,8 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 	// 如果CgroupDriver是cgroupfs，则cgroupRoots为[]string{"/kubepods"}
 	// 
 	// 如果s.CgroupRoot不为空，cgrouproots为 
-	// systemd --- s.CgroupRoot后面append "/kubepods.slice"
-	// cgroupfs --- s.CgroupRoot后面append "/kubepods"
+	// systemd --- s.CgroupRoot后面加上 "/kubepods.slice"
+	// cgroupfs --- s.CgroupRoot后面加上 "/kubepods"
 	cgroupRoots = append(cgroupRoots, cm.NodeAllocatableRoot(s.CgroupRoot, s.CgroupDriver))
 	// 如果指定了s.KubeletCgroups，则kubeletCgroup为s.KubeletCgroups
 	// 否则从/proc/{kubelet pid}/cgroup里获取name=systemd的cgroup路径，用systemd启动的是/system.slice/kubelet.service
@@ -850,6 +851,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 // buildKubeletClientConfig constructs the appropriate client config for the kubelet depending on whether
 // bootstrapping is enabled or client certificate rotation is enabled.
 func buildKubeletClientConfig(s *options.KubeletServer, nodeName types.NodeName) (*restclient.Config, func(), error) {
+	// 启用RotateCertificates
 	if s.RotateCertificates && utilfeature.DefaultFeatureGate.Enabled(features.RotateKubeletClientCertificate) {
 		// Rules for client rotation and the handling of kube config files:
 		//
@@ -901,6 +903,8 @@ func buildKubeletClientConfig(s *options.KubeletServer, nodeName types.NodeName)
 		return transportConfig, closeAllConns, nil
 	}
 
+	// 未启用RotateCertificates
+	// 设置了--bootstrap-kubeconfig（默认为空）
 	if len(s.BootstrapKubeconfig) > 0 {
 		if err := bootstrap.LoadClientCert(s.KubeConfig, s.BootstrapKubeconfig, s.CertDirectory, nodeName); err != nil {
 			return nil, nil, err
@@ -970,6 +974,7 @@ func buildClientCertificateManager(certConfig, clientConfig *restclient.Config, 
 }
 
 func kubeClientConfigOverrides(s *options.KubeletServer, clientConfig *restclient.Config) {
+	// 默认的ContentType: "application/vnd.kubernetes.protobuf"
 	setContentTypeForClient(clientConfig, s.ContentType)
 	// Override kubeconfig qps/burst settings from flags
 	clientConfig.QPS = float32(s.KubeAPIQPS)
@@ -1147,6 +1152,7 @@ func RunKubelet(kubeServer *options.KubeletServer, kubeDeps *kubelet.Dependencie
 	}
 	podCfg := kubeDeps.PodConfig
 
+	// 设置kubelet进程的rlimit nofile，MaxOpenFiles默认为1000000
 	rlimit.RlimitNumFiles(uint64(kubeServer.MaxOpenFiles))
 
 	// process pods and exit.
@@ -1240,6 +1246,7 @@ func createAndInitKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		return nil, err
 	}
 
+	// 发送start kubelet的event
 	k.BirthCry()
 
 	k.StartGarbageCollection()

@@ -110,6 +110,8 @@ func getReclaimableThreshold(thresholds []evictionapi.Threshold) (evictionapi.Th
 }
 
 // ParseThresholdConfig parses the flags for thresholds.
+// hardEviction与softEviction的区别是hardEviction的GracePeriod一定是0，而softEviction不为0
+// 这也是softThresholds与hardThresholds和results都用slice的原因
 func ParseThresholdConfig(allocatableConfig []string, evictionHard, evictionSoft, evictionSoftGracePeriod, evictionMinimumReclaim map[string]string) ([]evictionapi.Threshold, error) {
 	results := []evictionapi.Threshold{}
 	hardThresholds, err := parseThresholdStatements(evictionHard)
@@ -129,6 +131,7 @@ func ParseThresholdConfig(allocatableConfig []string, evictionHard, evictionSoft
 	if err != nil {
 		return nil, err
 	}
+	// 确保所有soft eviction配置都有相应的gracePeriods 
 	for i := range softThresholds {
 		signal := softThresholds[i].Signal
 		period, found := gracePeriods[signal]
@@ -144,6 +147,7 @@ func ParseThresholdConfig(allocatableConfig []string, evictionHard, evictionSoft
 		}
 	}
 	for _, key := range allocatableConfig {
+		// 如果enforceNodeAllocatable里有pods，添加allocatableMemory.available，所有设置与memory.available一样
 		if key == kubetypes.NodeAllocatableEnforcementKey {
 			results = addAllocatableThresholds(results)
 			break
@@ -155,6 +159,7 @@ func ParseThresholdConfig(allocatableConfig []string, evictionHard, evictionSoft
 func addAllocatableThresholds(thresholds []evictionapi.Threshold) []evictionapi.Threshold {
 	additionalThresholds := []evictionapi.Threshold{}
 	for _, threshold := range thresholds {
+		// hardEviction里的memory.available，添加allocatableMemory.available，所有设置与memory.available一样
 		if threshold.Signal == evictionapi.SignalMemoryAvailable && isHardEvictionThreshold(threshold) {
 			// Copy the SignalMemoryAvailable to SignalAllocatableMemoryAvailable
 			additionalThresholds = append(additionalThresholds, evictionapi.Threshold{
@@ -192,6 +197,7 @@ func parseThresholdStatement(signal evictionapi.Signal, val string) (*evictionap
 	if !validSignal(signal) {
 		return nil, fmt.Errorf(unsupportedEvictionSignal, signal)
 	}
+	// 目前所有的都是LessThan
 	operator := evictionapi.OpForSignal[signal]
 	if strings.HasSuffix(val, "%") {
 		// ignore 0% and 100%
@@ -950,6 +956,7 @@ func compareThresholdValue(a evictionapi.ThresholdValue, b evictionapi.Threshold
 }
 
 // isHardEvictionThreshold returns true if eviction should immediately occur
+// hardEviction与softEviction的区别是hardEviction的GracePeriod一定是0，而softEviction不为0
 func isHardEvictionThreshold(threshold evictionapi.Threshold) bool {
 	return threshold.GracePeriod == time.Duration(0)
 }

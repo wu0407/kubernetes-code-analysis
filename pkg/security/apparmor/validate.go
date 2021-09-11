@@ -35,6 +35,7 @@ import (
 
 // Whether AppArmor should be disabled by default.
 // Set to true if the wrong build tags are set (see validate_disabled.go).
+// linux为false，非linux为true，在pkg\security\apparmor\validate_disabled.go里的init()设置
 var isDisabledBuild bool
 
 // Validator is a interface for validating that a pod with an AppArmor profile can be run by a Node.

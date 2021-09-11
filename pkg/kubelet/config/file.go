@@ -114,6 +114,7 @@ func (s *sourceFile) run() {
 		}
 	}()
 
+	// 启动goroutine，watch文件变化，生产watchEvents
 	s.startWatch()
 }
 

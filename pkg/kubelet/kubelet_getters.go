@@ -223,6 +223,7 @@ func (kl *Kubelet) GetHostname() string {
 }
 
 // getRuntime returns the current Runtime implementation in use by the kubelet.
+// 这个runtime是pkg\kubelet\kuberuntime\kuberuntime_manager.go里的kubeGenericRuntimeManager
 func (kl *Kubelet) getRuntime() kubecontainer.Runtime {
 	return kl.containerRuntime
 }

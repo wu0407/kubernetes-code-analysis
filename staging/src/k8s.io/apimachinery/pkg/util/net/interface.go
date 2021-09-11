@@ -102,6 +102,7 @@ func (rf RouteFile) extract() ([]Route, error) {
 }
 
 // getIPv4DefaultRoutes obtains the IPv4 routes, and filters out non-default routes.
+// 找到0.0.0.0的路由信息--默认路由
 func getIPv4DefaultRoutes(input io.Reader) ([]Route, error) {
 	routes := []Route{}
 	scanner := bufio.NewReader(input)
@@ -217,6 +218,7 @@ func isLoopbackOrPointToPoint(intf *net.Interface) bool {
 
 // getMatchingGlobalIP returns the first valid global unicast address of the given
 // 'family' from the list of 'addrs'.
+// 返回第一个匹配AddressFamily且是单播地址的net.Addr
 func getMatchingGlobalIP(addrs []net.Addr, family AddressFamily) (net.IP, error) {
 	if len(addrs) > 0 {
 		for i := range addrs {
@@ -278,6 +280,7 @@ func memberOf(ip net.IP, family AddressFamily) bool {
 // chooseIPFromHostInterfaces looks at all system interfaces, trying to find one that is up that
 // has a global unicast address (non-loopback, non-link local, non-point2point), and returns the IP.
 // addressFamilies determines whether it prefers IPv4 or IPv6
+// 返回匹配期望addressFamilies的网卡（非回环，点对点、不是down状态）的ip
 func chooseIPFromHostInterfaces(nw networkInterfacer, addressFamilies AddressFamilyPreference) (net.IP, error) {
 	intfs, err := nw.Interfaces()
 	if err != nil {
@@ -289,23 +292,28 @@ func chooseIPFromHostInterfaces(nw networkInterfacer, addressFamilies AddressFam
 	for _, family := range addressFamilies {
 		klog.V(4).Infof("Looking for system interface with a global IPv%d address", uint(family))
 		for _, intf := range intfs {
+			// 忽略down的网卡
 			if !isInterfaceUp(&intf) {
 				klog.V(4).Infof("Skipping: down interface %q", intf.Name)
 				continue
 			}
+			// 忽略回环网卡和点对点网卡
 			if isLoopbackOrPointToPoint(&intf) {
 				klog.V(4).Infof("Skipping: LB or P2P interface %q", intf.Name)
 				continue
 			}
+			// 获得网卡的所有网卡ip地址--格式是ip和mask
 			addrs, err := nw.Addrs(&intf)
 			if err != nil {
 				return nil, err
 			}
+			// 网卡ip没有地址
 			if len(addrs) == 0 {
 				klog.V(4).Infof("Skipping: no addresses on interface %q", intf.Name)
 				continue
 			}
 			for _, addr := range addrs {
+				// 从net.Addr（比如192.0.2.1:25）提取出ip地址（比如192.0.2.1）
 				ip, _, err := net.ParseCIDR(addr.String())
 				if err != nil {
 					return nil, fmt.Errorf("Unable to parse CIDR for interface %q: %s", intf.Name, err)
@@ -315,6 +323,7 @@ func chooseIPFromHostInterfaces(nw networkInterfacer, addressFamilies AddressFam
 					continue
 				}
 				// TODO: Decide if should open up to allow IPv6 LLAs in future.
+				// 忽略非单播地址，可能是广播地址、或组播地址、或anycast
 				if !ip.IsGlobalUnicast() {
 					klog.V(4).Infof("Skipping: non-global address %q on interface %q.", ip, intf.Name)
 					continue
@@ -338,13 +347,16 @@ func ChooseHostInterface() (net.IP, error) {
 
 func chooseHostInterface(addressFamilies AddressFamilyPreference) (net.IP, error) {
 	var nw networkInterfacer = networkInterface{}
+	// 没有/proc/net/route文件，从第一个非回环，点对点、不是down状态的网卡ip
 	if _, err := os.Stat(ipv4RouteFile); os.IsNotExist(err) {
 		return chooseIPFromHostInterfaces(nw, addressFamilies)
 	}
+	// 获得所有默认路由信息--为了获得默认路由相关的网卡名字
 	routes, err := getAllDefaultRoutes()
 	if err != nil {
 		return nil, err
 	}
+	// 返回默认路由相关网卡的第一个ip地址（单播地址），优先返回相同的地址类型（没有相同类型就返回不同类型）
 	return chooseHostInterfaceFromRoute(routes, nw, addressFamilies)
 }
 
@@ -422,12 +434,20 @@ func chooseHostInterfaceFromRoute(routes []Route, nw networkInterfacer, addressF
 // If bindAddress is unspecified or loopback, it returns the default IP of the same
 // address family as bindAddress.
 // Otherwise, it just returns bindAddress.
+// bindAddress是空或0.0.0.0或::或是回环地址，则优先返回相同类型的ip
+// 如果没有/proc/net/route文件，从第一个非回环，点对点、不是down状态的网卡ip
+// 否则返回默认路由相关网卡的第一个ip地址（单播地址），优先返回相同的地址类型（没有相同类型就返回不同类型）
+// bindAddress不是空或不是0.0.0.0或不是::或不是回环地址，则返回bindAddress
 func ResolveBindAddress(bindAddress net.IP) (net.IP, error) {
 	addressFamilies := preferIPv4
+	// bindAddress是ipv6地址
 	if bindAddress != nil && memberOf(bindAddress, familyIPv6) {
 		addressFamilies = preferIPv6
 	}
 
+	// bindAddress是空或0.0.0.0或::或是回环地址，则优先返回相同类型的ip
+	// 如果没有/proc/net/route文件，从第一个非回环，点对点、不是down状态的网卡ip
+	// 否则返回默认路由相关网卡的第一个ip地址（单播地址），优先返回相同的地址类型（没有相同类型就返回不同类型）
 	if bindAddress == nil || bindAddress.IsUnspecified() || bindAddress.IsLoopback() {
 		hostIP, err := chooseHostInterface(addressFamilies)
 		if err != nil {

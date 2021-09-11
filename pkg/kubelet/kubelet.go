@@ -415,7 +415,7 @@ func PreInitRuntimeService(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		return err
 	}
 
-	//都为true
+	//linux上的docker或crio的socket都为true
 	kubeDeps.useLegacyCadvisorStats = cadvisor.UsingLegacyCadvisorStats(containerRuntime, remoteRuntimeEndpoint)
 
 	return nil
@@ -471,6 +471,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		}
 	}
 
+	// 有hostnameOverride就使用hostnameOverride，否则使用主机名
 	hostname, err := nodeutil.GetHostname(hostnameOverride)
 	if err != nil {
 		return nil, err
@@ -509,15 +510,20 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	}
 
 	daemonEndpoints := &v1.NodeDaemonEndpoints{
+		// Port默认为10250
 		KubeletEndpoint: v1.DaemonEndpoint{Port: kubeCfg.Port},
 	}
 
 	imageGCPolicy := images.ImageGCPolicy{
+		// 默认为0秒
 		MinAge:               kubeCfg.ImageMinimumGCAge.Duration,
+		// 默认为85
 		HighThresholdPercent: int(kubeCfg.ImageGCHighThresholdPercent),
+		// 默认为80
 		LowThresholdPercent:  int(kubeCfg.ImageGCLowThresholdPercent),
 	}
 
+	// 默认为pods
 	enforceNodeAllocatable := kubeCfg.EnforceNodeAllocatable
 	if experimentalNodeAllocatableIgnoreEvictionThreshold {
 		// Do not provide kubeCfg.EnforceNodeAllocatable to eviction threshold parsing if we are not enforcing Evictions
@@ -528,10 +534,13 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		return nil, err
 	}
 	evictionConfig := eviction.Config{
+		// EvictionPressureTransitionPeriod默认为5分钟
 		PressureTransitionPeriod: kubeCfg.EvictionPressureTransitionPeriod.Duration,
 		MaxPodGracePeriodSeconds: int64(kubeCfg.EvictionMaxPodGracePeriod),
 		Thresholds:               thresholds,
+		// experimentalKernelMemcgNotification默认为false
 		KernelMemcgNotification:  experimentalKernelMemcgNotification,
+		// 如果是cgroupdriver是systemd，PodCgroupRoot是/kubepods.slice
 		PodCgroupRoot:            kubeDeps.ContainerManager.GetPodCgroupRoot(),
 	}
 
@@ -579,6 +588,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		}
 	}
 	httpClient := &http.Client{}
+	// nodeIp默认为空
 	parsedNodeIP := net.ParseIP(nodeIP)
 	protocol := utilipt.ProtocolIpv4
 	if utilnet.IsIPv6(parsedNodeIP) {
@@ -589,54 +599,77 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	klet := &Kubelet{
 		hostname:                                hostname,
 		hostnameOverridden:                      len(hostnameOverride) > 0,
+		// 优先使用cloudprovider提供的主机名，其次是hostnameOverride，最后是主机名
 		nodeName:                                nodeName,
 		kubeClient:                              kubeDeps.KubeClient,
 		heartbeatClient:                         kubeDeps.HeartbeatClient,
+		// kubeDeps.OnHeartbeatFailure为closeAllConns
 		onRepeatedHeartbeatFailure:              kubeDeps.OnHeartbeatFailure,
 		rootDirectory:                           rootDirectory,
+		// 默认为1分钟
 		resyncInterval:                          kubeCfg.SyncFrequency.Duration,
 		sourcesReady:                            config.NewSourcesReady(kubeDeps.PodConfig.SeenAllSources),
+		// 默认为true
 		registerNode:                            registerNode,
 		registerWithTaints:                      registerWithTaints,
+		// 默认为true
 		registerSchedulable:                     registerSchedulable,
+		// kubeCfg.ResolverConfig默认为"/etc/resolv.conf"
 		dnsConfigurer:                           dns.NewConfigurer(kubeDeps.Recorder, nodeRef, parsedNodeIP, clusterDNS, kubeCfg.ClusterDomain, kubeCfg.ResolverConfig),
 		serviceLister:                           serviceLister,
 		nodeLister:                              nodeLister,
+		// 默认为default
 		masterServiceNamespace:                  masterServiceNamespace,
+		// 默认为4小时
 		streamingConnectionIdleTimeout:          kubeCfg.StreamingConnectionIdleTimeout.Duration,
 		recorder:                                kubeDeps.Recorder,
 		cadvisor:                                kubeDeps.CAdvisorInterface,
 		cloud:                                   kubeDeps.Cloud,
 		externalCloudProvider:                   cloudprovider.IsExternal(cloudProvider),
+		// providerID默认为空
 		providerID:                              providerID,
 		nodeRef:                                 nodeRef,
 		nodeLabels:                              nodeLabels,
+		// NodeStatusUpdateFrequency默认为10s
 		nodeStatusUpdateFrequency:               kubeCfg.NodeStatusUpdateFrequency.Duration,
+		// 默认为5分钟
 		nodeStatusReportFrequency:               kubeCfg.NodeStatusReportFrequency.Duration,
 		os:                                      kubeDeps.OSInterface,
 		oomWatcher:                              oomWatcher,
+		// 默认为true
 		cgroupsPerQOS:                           kubeCfg.CgroupsPerQOS,
+		// 这里--cgroups-per-qos enabled, but --cgroup-root was not specified.  defaulting to /"
 		cgroupRoot:                              kubeCfg.CgroupRoot,
 		mounter:                                 kubeDeps.Mounter,
 		hostutil:                                kubeDeps.HostUtil,
 		subpather:                               kubeDeps.Subpather,
 		maxPods:                                 int(kubeCfg.MaxPods),
+		// 默认为0
 		podsPerCore:                             int(kubeCfg.PodsPerCore),
 		syncLoopMonitor:                         atomic.Value{},
 		daemonEndpoints:                         daemonEndpoints,
 		containerManager:                        kubeDeps.ContainerManager,
+		// 默认为docker
 		containerRuntimeName:                    containerRuntime,
+		// 默认为false
 		redirectContainerStreaming:              crOptions.RedirectContainerStreaming,
 		nodeIP:                                  parsedNodeIP,
 		nodeIPValidator:                         validateNodeIP,
 		clock:                                   clock.RealClock{},
+		// 默认为true
 		enableControllerAttachDetach:            kubeCfg.EnableControllerAttachDetach,
 		iptClient:                               utilipt.New(utilexec.New(), protocol),
+		// 默认为true
 		makeIPTablesUtilChains:                  kubeCfg.MakeIPTablesUtilChains,
+		// 默认为14
 		iptablesMasqueradeBit:                   int(kubeCfg.IPTablesMasqueradeBit),
+		// 默认为15
 		iptablesDropBit:                         int(kubeCfg.IPTablesDropBit),
+		// 默认为false
 		experimentalHostUserNamespaceDefaulting: utilfeature.DefaultFeatureGate.Enabled(features.ExperimentalHostUserNamespaceDefaultingGate),
+		// 默认为false
 		keepTerminatedPodVolumes:                keepTerminatedPodVolumes,
+		// 默认为50
 		nodeStatusMaxImages:                     nodeStatusMaxImages,
 	}
 
@@ -646,6 +679,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 
 	var secretManager secret.Manager
 	var configMapManager configmap.Manager
+	// 默认为watch
 	switch kubeCfg.ConfigMapAndSecretChangeDetectionStrategy {
 	case kubeletconfiginternal.WatchChangeDetectionStrategy:
 		secretManager = secret.NewWatchingSecretManager(kubeDeps.KubeClient)
@@ -694,12 +728,14 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 
 	klet.statusManager = status.NewManager(klet.kubeClient, klet.podManager, klet)
 
+	// VolumeStatsAggPeriod默认1分钟
 	klet.resourceAnalyzer = serverstats.NewResourceAnalyzer(klet, kubeCfg.VolumeStatsAggPeriod.Duration)
 
 	klet.dockerLegacyService = kubeDeps.dockerLegacyService
 	klet.criHandler = kubeDeps.criHandler
 	klet.runtimeService = kubeDeps.RemoteRuntimeService
 
+	// features.RuntimeClass默认启用
 	if utilfeature.DefaultFeatureGate.Enabled(features.RuntimeClass) && kubeDeps.KubeClient != nil {
 		klet.runtimeClassManager = runtimeclass.NewManager(kubeDeps.KubeClient)
 	}
@@ -708,6 +744,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		kubecontainer.FilterEventRecorder(kubeDeps.Recorder),
 		klet.livenessManager,
 		klet.startupManager,
+		// 默认为/var/lib/kubelet/seccomp
 		seccompProfileRoot,
 		containerRefManager,
 		machineInfo,
@@ -717,7 +754,9 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		httpClient,
 		imageBackOff,
 		kubeCfg.SerializeImagePulls,
+		// 默认为5
 		float32(kubeCfg.RegistryPullQPS),
+		// 默认为10
 		int(kubeCfg.RegistryBurst),
 		kubeCfg.CPUCFSQuota,
 		kubeCfg.CPUCFSQuotaPeriod,
@@ -763,6 +802,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	klet.pleg = pleg.NewGenericPLEG(klet.containerRuntime, plegChannelCapacity, plegRelistPeriod, klet.podCache, clock.RealClock{})
 	klet.runtimeState = newRuntimeState(maxWaitForContainerRuntime)
 	klet.runtimeState.addHealthCheck("PLEG", klet.pleg.Healthy)
+	// 如果命令行配置了--pod-cidr或PodCIDR，则设置网络插件的podcidr，kubeCfg.PodCIDR默认为空
 	if _, err := klet.updatePodCIDR(kubeCfg.PodCIDR); err != nil {
 		klog.Errorf("Pod CIDR update failed %v", err)
 	}
@@ -794,6 +834,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		}
 		klet.containerLogManager = containerLogManager
 	} else {
+		// 不做任何事情
 		klet.containerLogManager = logs.NewStubContainerLogManager()
 	}
 
@@ -874,9 +915,11 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	klet.evictionManager = evictionManager
 	klet.admitHandlers.AddPodAdmitHandler(evictionAdmitHandler)
 
+	// 默认启用
 	if utilfeature.DefaultFeatureGate.Enabled(features.Sysctls) {
 		// Safe, whitelisted sysctls can always be used as unsafe sysctls in the spec.
 		// Hence, we concatenate those two lists.
+		// allowedUnsafeSysctls默认为空
 		safeAndUnsafeSysctls := append(sysctlwhitelist.SafeSysctlWhitelist(), allowedUnsafeSysctls...)
 		sysctlsWhitelist, err := sysctl.NewWhitelist(safeAndUnsafeSysctls)
 		if err != nil {
@@ -893,11 +936,13 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	klet.AddPodSyncLoopHandler(activeDeadlineHandler)
 	klet.AddPodSyncHandler(activeDeadlineHandler)
 
+	// 增加containerManagerImpl.topologyManager到admitHandlers
 	klet.admitHandlers.AddPodAdmitHandler(klet.containerManager.GetAllocateResourcesPodAdmitHandler())
 
 	criticalPodAdmissionHandler := preemption.NewCriticalPodAdmissionHandler(klet.GetActivePods, killPodNow(klet.podWorkers, kubeDeps.Recorder), kubeDeps.Recorder)
 	klet.admitHandlers.AddPodAdmitHandler(lifecycle.NewPredicateAdmitHandler(klet.getNodeAnyWay, criticalPodAdmissionHandler, klet.containerManager.UpdatePluginResources))
 	// apply functional Option's
+	// 默认没有Options
 	for _, opt := range kubeDeps.Options {
 		opt(klet)
 	}
@@ -907,6 +952,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	klet.softAdmitHandlers.AddPodAdmitHandler(lifecycle.NewNoNewPrivsAdmitHandler(klet.containerRuntime))
 	klet.softAdmitHandlers.AddPodAdmitHandler(lifecycle.NewProcMountAdmitHandler(klet.containerRuntime))
 
+	// NodeLeaseDurationSeconds默认为40s
 	klet.nodeLeaseController = nodelease.NewController(klet.clock, klet.heartbeatClient, string(klet.nodeName), kubeCfg.NodeLeaseDurationSeconds, klet.onRepeatedHeartbeatFailure)
 
 	// Finally, put the most recent version of the config on the Kubelet, so
@@ -1261,23 +1307,33 @@ type Kubelet struct {
 // 4.  the pod-resources directory
 func (kl *Kubelet) setupDataDirs() error {
 	kl.rootDirectory = path.Clean(kl.rootDirectory)
+	// 返回rootDirectory加plugins_registry，默认/var/lib/kubelet/plugins_registry
 	pluginRegistrationDir := kl.getPluginsRegistrationDir()
+	// 返回rootDirectory加plugin，默认/var/lib/kubelet/plugin
 	pluginsDir := kl.getPluginsDir()
+	// 创建rootDirectory目录
 	if err := os.MkdirAll(kl.getRootDir(), 0750); err != nil {
 		return fmt.Errorf("error creating root directory: %v", err)
 	}
+	// 找到rootDirectory所在挂载目录（rootDirectory或rootDirectory的前缀），如果读取/proc/self/mountinfo里mount option里没有shared
+	// 则执行rootDirectory的bind和rshared挂载，比如mount --bind /var/lib/kubelet /var/lib/kubelet mount --make-rshared /var/lib/kubelet
+	// 一般挂载都会有shared，所以不会执行bind和rshared挂载
 	if err := kl.hostutil.MakeRShared(kl.getRootDir()); err != nil {
 		return fmt.Errorf("error configuring root directory: %v", err)
 	}
+	// 创建pods目录，默认为/var/lib/kubelet/pods
 	if err := os.MkdirAll(kl.getPodsDir(), 0750); err != nil {
 		return fmt.Errorf("error creating pods directory: %v", err)
 	}
+	// 创建plugin目录，默认为/var/lib/kubelet/plugin
 	if err := os.MkdirAll(kl.getPluginsDir(), 0750); err != nil {
 		return fmt.Errorf("error creating plugins directory: %v", err)
 	}
+	// 创建plugins_registry目录，默认为/var/lib/kubelet/plugins_registry
 	if err := os.MkdirAll(kl.getPluginsRegistrationDir(), 0750); err != nil {
 		return fmt.Errorf("error creating plugins registry directory: %v", err)
 	}
+	// 创建pod-resources目录，默认为/var/lib/kubelet/pod-resources
 	if err := os.MkdirAll(kl.getPodResourcesDir(), 0750); err != nil {
 		return fmt.Errorf("error creating podresources directory: %v", err)
 	}
@@ -1360,6 +1416,7 @@ func (kl *Kubelet) initializeModules() error {
 	}
 
 	// If the container logs directory does not exist, create it.
+	// 创建/var/log/containers目录
 	if _, err := os.Stat(ContainerLogsDir); err != nil {
 		if err := kl.os.MkdirAll(ContainerLogsDir, 0755); err != nil {
 			klog.Errorf("Failed to create directory %q: %v", ContainerLogsDir, err)
@@ -1425,6 +1482,7 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 // Run starts the kubelet reacting to config updates
 func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 	if kl.logServer == nil {
+		// 提供访问容器日志
 		kl.logServer = http.StripPrefix("/logs/", http.FileServer(http.Dir("/var/log/")))
 	}
 	if kl.kubeClient == nil {
@@ -1432,6 +1490,7 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 	}
 
 	// Start the cloud provider sync manager
+	// 启动一个goroutine 每10s从cloudprovider同步一下ip地址
 	if kl.cloudResourceSyncManager != nil {
 		go kl.cloudResourceSyncManager.Run(wait.NeverStop)
 	}

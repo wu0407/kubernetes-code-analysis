@@ -55,6 +55,7 @@ func NewWhitelist(patterns []string) (*patternWhitelist, error) {
 				policyvalidation.SysctlPatternFmt,
 			)
 		}
+		// 完整的kernel.sem、前缀kernel.shm、kernel.msg、fs.mqueue.* 、net.*
 		if strings.HasSuffix(s, "*") {
 			prefix := s[:len(s)-1]
 			ns := NamespacedBy(prefix)

@@ -99,6 +99,7 @@ func (s *secretManager) UnregisterPod(pod *v1.Pod) {
 	s.manager.UnregisterPod(pod)
 }
 
+// 获得pod相关的secret名字列表--Spec.ImagePullSecrets、container EnvFrom.SecretRef、container Envvar.ValueFrom.SecretKeyRef、各个存储卷的secret
 func getSecretNames(pod *v1.Pod) sets.String {
 	result := sets.NewString()
 	podutil.VisitPodSecretNames(pod, func(name string) bool {

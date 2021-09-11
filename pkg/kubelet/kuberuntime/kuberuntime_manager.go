@@ -208,6 +208,7 @@ func NewKubeGenericRuntimeManager(
 		return nil, ErrVersionNotSupported
 	}
 
+	// 运行时是docker，typedVersion.RuntimeName是docker，typedVersion.RuntimeVersion是docker版本（比如19.03.15），typedVersion.RuntimeApiVersion是docker api版本（比如1.40.0）
 	kubeRuntimeManager.runtimeName = typedVersion.RuntimeName
 	klog.Infof("Container runtime %s initialized, version: %s, apiVersion: %s",
 		typedVersion.RuntimeName,
@@ -217,6 +218,7 @@ func NewKubeGenericRuntimeManager(
 	// If the container logs directory does not exist, create it.
 	// TODO: create podLogsRootDirectory at kubelet.go when kubelet is refactored to
 	// new runtime interface
+	// /var/log/pods不存在，则创建目录，权限为0755
 	if _, err := osInterface.Stat(podLogsRootDirectory); os.IsNotExist(err) {
 		if err := osInterface.MkdirAll(podLogsRootDirectory, 0755); err != nil {
 			klog.Errorf("Failed to create directory %q: %v", podLogsRootDirectory, err)
@@ -973,7 +975,7 @@ func (m *kubeGenericRuntimeManager) GarbageCollect(gcPolicy kubecontainer.Contai
 
 // UpdatePodCIDR is just a passthrough method to update the runtimeConfig of the shim
 // with the podCIDR supplied by the kubelet.
-//发送grpc给--container-runtime-endpoint监听的grpc docker_service，让它更新cni配置的cidr
+//发送grpc给--container-runtime-endpoint监听的grpc服务，比如dockershim（docker_service），让它更新cni配置的cidr
 func (m *kubeGenericRuntimeManager) UpdatePodCIDR(podCIDR string) error {
 	// TODO(#35531): do we really want to write a method on this manager for each
 	// field of the config?

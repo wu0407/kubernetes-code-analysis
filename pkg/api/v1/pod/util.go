@@ -86,6 +86,8 @@ type Visitor func(name string) (shouldContinue bool)
 // referenced by the pod spec. If visitor returns false, visiting is short-circuited.
 // Transitive references (e.g. pod -> pvc -> pv -> secret) are not visited.
 // Returns true if visiting completed, false if visiting was short-circuited.
+// pod相关的secret--Spec.ImagePullSecrets、所有container EnvFrom.SecretRef、所有container Envvar.ValueFrom.SecretKeyRef
+// 各个存储卷的secret
 func VisitPodSecretNames(pod *v1.Pod, visitor Visitor) bool {
 	for _, reference := range pod.Spec.ImagePullSecrets {
 		if !visitor(reference.Name) {
@@ -175,6 +177,7 @@ func visitContainerSecretNames(container *v1.Container, visitor Visitor) bool {
 // referenced by the pod spec. If visitor returns false, visiting is short-circuited.
 // Transitive references (e.g. pod -> pvc -> pv -> secret) are not visited.
 // Returns true if visiting completed, false if visiting was short-circuited.
+// 访问所有Containers的EnvFrom[*].ConfigMapRef和Env[*].ValueFrom.ConfigMapKeyRef、volume里的ConfigMap
 func VisitPodConfigmapNames(pod *v1.Pod, visitor Visitor) bool {
 	VisitContainers(&pod.Spec, func(c *v1.Container) bool {
 		return visitContainerConfigmapNames(c, visitor)
@@ -200,6 +203,7 @@ func VisitPodConfigmapNames(pod *v1.Pod, visitor Visitor) bool {
 	return true
 }
 
+// 访问env.ConfigMapRef和envVar.ValueFrom.ConfigMapKeyRef
 func visitContainerConfigmapNames(container *v1.Container, visitor Visitor) bool {
 	for _, env := range container.EnvFrom {
 		if env.ConfigMapRef != nil {

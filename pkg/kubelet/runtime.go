@@ -57,18 +57,21 @@ func (s *runtimeState) setRuntimeSync(t time.Time) {
 	s.lastBaseRuntimeSync = t
 }
 
+// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里调用s.setNetworkState
 func (s *runtimeState) setNetworkState(err error) {
 	s.Lock()
 	defer s.Unlock()
 	s.networkError = err
 }
 
+// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里调用s.setRuntimeState
 func (s *runtimeState) setRuntimeState(err error) {
 	s.Lock()
 	defer s.Unlock()
 	s.runtimeError = err
 }
 
+// 在pkg\kubelet\volume_host.go里的kubeletVolumeHost.SetKubeletError里调用s.setStorageState
 func (s *runtimeState) setStorageState(err error) {
 	s.Lock()
 	defer s.Unlock()
@@ -96,11 +99,14 @@ func (s *runtimeState) runtimeErrors() error {
 	} else if !s.lastBaseRuntimeSync.Add(s.baseRuntimeSyncThreshold).After(time.Now()) {
 		errs = append(errs, errors.New("container runtime is down"))
 	}
+	// healthChecks目前只有pelg Healthy()（在pkg\kubelet\pleg\generic.go）
+	// 检测PELG.relistTime是否3分钟更新过
 	for _, hc := range s.healthChecks {
 		if ok, err := hc.fn(); !ok {
 			errs = append(errs, fmt.Errorf("%s is not healthy: %v", hc.name, err))
 		}
 	}
+	// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里调用s.setRuntimeState
 	if s.runtimeError != nil {
 		errs = append(errs, s.runtimeError)
 	}
@@ -108,6 +114,7 @@ func (s *runtimeState) runtimeErrors() error {
 	return utilerrors.NewAggregate(errs)
 }
 
+// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里调用s.setNetworkState设置s.networkError
 func (s *runtimeState) networkErrors() error {
 	s.RLock()
 	defer s.RUnlock()

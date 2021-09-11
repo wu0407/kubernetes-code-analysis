@@ -65,8 +65,10 @@ func NodeAddress(nodeIP net.IP, // typically Kubelet.nodeIP
 	cloud cloudprovider.Interface, // typically Kubelet.cloud
 	nodeAddressesFunc func() ([]v1.NodeAddress, error), // typically Kubelet.cloudResourceSyncManager.NodeAddresses
 ) Setter {
+	// 默认的nodeIP为nil，preferIPv4为true
 	preferIPv4 := nodeIP == nil || nodeIP.To4() != nil
 	isPreferredIPFamily := func(ip net.IP) bool { return (ip.To4() != nil) == preferIPv4 }
+	// 默认为false
 	nodeIPSpecified := nodeIP != nil && !nodeIP.IsUnspecified()
 
 	return func(node *v1.Node) error {
@@ -77,6 +79,8 @@ func NodeAddress(nodeIP net.IP, // typically Kubelet.nodeIP
 			klog.V(2).Infof("Using node IP: %q", nodeIP.String())
 		}
 
+		// 如果是external provider，如果已经指定了nodeip，则设置alpha.kubernetes.io/provided-node-ip的annotation
+		// 且node.Status.Addresses不为空--已经有ip了，则不用查找ip，直接返回
 		if externalCloudProvider {
 			if nodeIPSpecified {
 				if node.ObjectMeta.Annotations == nil {
@@ -93,6 +97,7 @@ func NodeAddress(nodeIP net.IP, // typically Kubelet.nodeIP
 				return nil
 			}
 		}
+		// 设置了cloud provider传入的nodeAddressesFunc不为nil，从cloud provider获取ip地址列表
 		if cloud != nil {
 			cloudNodeAddresses, err := nodeAddressesFunc()
 			if err != nil {
@@ -105,6 +110,7 @@ func NodeAddress(nodeIP net.IP, // typically Kubelet.nodeIP
 			// that address Type (like InternalIP and ExternalIP), meaning other addresses of the same Type are discarded.
 			// See #61921 for more information: some cloud providers may supply secondary IPs, so nodeIP serves as a way to
 			// ensure that the correct IPs show up on a Node object.
+			// 如果指定了ip且ip在cloud provider提供的ip中，将这个ip放在最前面，然后是其他不同类型的ip--按照cloudNodeAddresses里出现的顺序；否则直接返回错误
 			if nodeIPSpecified {
 				enforcedNodeAddresses := []v1.NodeAddress{}
 
@@ -122,6 +128,7 @@ func NodeAddress(nodeIP net.IP, // typically Kubelet.nodeIP
 				}
 
 				// nodeIP was found, now use all other addresses supplied by the cloud provider NOT of the same Type as nodeIP.
+				// 其他跟nodeip不一样类型的ip也会被使用
 				for _, nodeAddress := range cloudNodeAddresses {
 					if !nodeIPTypes[nodeAddress.Type] {
 						enforcedNodeAddresses = append(enforcedNodeAddresses, v1.NodeAddress{Type: nodeAddress.Type, Address: nodeAddress.Address})
@@ -132,6 +139,7 @@ func NodeAddress(nodeIP net.IP, // typically Kubelet.nodeIP
 			} else if nodeIP != nil {
 				// nodeIP is "0.0.0.0" or "::"; sort cloudNodeAddresses to
 				// prefer addresses of the matching family
+				// 将第一个PreferredIP放在前面，然后是在cloudNodeAddresses里的顺序
 				sortedAddresses := make([]v1.NodeAddress, 0, len(cloudNodeAddresses))
 				for _, nodeAddress := range cloudNodeAddresses {
 					ip := net.ParseIP(nodeAddress.Address)
@@ -160,6 +168,7 @@ func NodeAddress(nodeIP net.IP, // typically Kubelet.nodeIP
 				// the cloud provider didn't specify an address of type Hostname,
 				// but the auto-detected hostname matched an address reported by the cloud provider,
 				// so we can add it and count on the value being verifiable via cloud provider metadata
+				// cloud provider没有指定hostname类型，但是却有值为hostname主机名的地址，则增加一条地址
 				nodeAddresses = append(nodeAddresses, v1.NodeAddress{Type: v1.NodeHostName, Address: hostname})
 
 			case hostnameOverridden:
@@ -196,24 +205,33 @@ func NodeAddress(nodeIP net.IP, // typically Kubelet.nodeIP
 			//
 			// For steps 3 and 4, IPv4 addresses are preferred to IPv6 addresses
 			// unless nodeIP is "::", in which case it is reversed.
+
+			// 指定了ip
 			if nodeIPSpecified {
 				ipAddr = nodeIP
+			// 主机名是个ip，就使用这个ip
 			} else if addr := net.ParseIP(hostname); addr != nil {
 				ipAddr = addr
 			} else {
 				var addrs []net.IP
+				// 根据node Name来解析出ip
 				addrs, _ = net.LookupIP(node.Name)
 				for _, addr := range addrs {
 					if err = validateNodeIPFunc(addr); err == nil {
+						// 使用第一个prefer ip
 						if isPreferredIPFamily(addr) {
 							ipAddr = addr
 							break
+						// 一直没有找到prefer ip，那么将就用这个ip
 						} else if ipAddr == nil {
 							ipAddr = addr
 						}
 					}
 				}
 
+				// 根据node Name没有解析到ip
+				// nodeIP是空或0.0.0.0或::或是回环地址，则优先返回相同类型的ip。如果没有/proc/net/route文件，从第一个非回环，点对点、不是down状态的网卡ip；否则返回默认路由相关网卡的第一个ip地址（单播地址）。
+				// nodeIP不是空或不是0.0.0.0或不是::或不是回环地址，则使用nodeIP
 				if ipAddr == nil {
 					ipAddr, err = utilnet.ResolveBindAddress(nodeIP)
 				}
@@ -284,6 +302,7 @@ func MachineInfo(nodeName string,
 			node.Status.NodeInfo.MachineID = info.MachineID
 			node.Status.NodeInfo.SystemUUID = info.SystemUUID
 
+			// cpu、memory、hugepage
 			for rName, rCap := range cadvisor.CapacityFromMachineInfo(info) {
 				node.Status.Capacity[rName] = rCap
 			}
@@ -296,6 +315,8 @@ func MachineInfo(nodeName string,
 					int64(maxPods), resource.DecimalSI)
 			}
 
+			// 在apiserver中node.Status.NodeInfo.BootID保存之前的BootID
+			// node.Status.NodeInfo.BootID不为空（非第一次注册node，node已经存在）且node.Status.NodeInfo.BootID发生了变化
 			if node.Status.NodeInfo.BootID != "" &&
 				node.Status.NodeInfo.BootID != info.BootID {
 				// TODO: This requires a transaction, either both node status is updated
@@ -308,6 +329,7 @@ func MachineInfo(nodeName string,
 			if utilfeature.DefaultFeatureGate.Enabled(features.LocalStorageCapacityIsolation) {
 				// TODO: all the node resources should use ContainerManager.GetCapacity instead of deriving the
 				// capacity for every node status request
+				// initialCapacity只有cpu、memory、hugepage
 				initialCapacity := capacityFunc()
 				if initialCapacity != nil {
 					if v, exists := initialCapacity[v1.ResourceEphemeralStorage]; exists {
@@ -316,6 +338,7 @@ func MachineInfo(nodeName string,
 				}
 			}
 
+			// 一般都为nil
 			devicePluginCapacity, devicePluginAllocatable, removedDevicePlugins = devicePluginResourceCapacityFunc()
 			if devicePluginCapacity != nil {
 				for k, v := range devicePluginCapacity {
@@ -374,6 +397,7 @@ func MachineInfo(nodeName string,
 			}
 		}
 		// for every huge page reservation, we need to remove it from allocatable memory
+		// Allocatable中的memory减去reservation中的huge-page
 		for k, v := range node.Status.Capacity {
 			if v1helper.IsHugePageResourceName(k) {
 				allocatableMemory := node.Status.Allocatable[v1.ResourceMemory]
@@ -495,6 +519,8 @@ func ReadyCondition(
 			Message:           "kubelet is posting ready status",
 			LastHeartbeatTime: currentTime,
 		}
+		// runtimeErrorsFunc检测Kubelet.runtimeState.lastBaseRuntimeSync在30秒内是否更新过，Kubelet.PELG.relistTime是否3分钟更新过，runtime是否有错误
+		// networkErrorsFunc检测是否有网络错误
 		errs := []error{runtimeErrorsFunc(), networkErrorsFunc(), storageErrorsFunc()}
 		requiredCapacities := []v1.ResourceName{v1.ResourceCPU, v1.ResourceMemory, v1.ResourcePods}
 		if utilfeature.DefaultFeatureGate.Enabled(features.LocalStorageCapacityIsolation) {
@@ -770,6 +796,7 @@ func VolumeLimits(volumePluginListFunc func() []volume.VolumePluginWithAttachLim
 			node.Status.Allocatable = v1.ResourceList{}
 		}
 
+		// 目前只有aws的ebs、azure的dd datadisk、gce的pd persistent disk、cinder支持volume limits（主机attatch volume数量限制）
 		pluginWithLimits := volumePluginListFunc()
 		for _, volumePlugin := range pluginWithLimits {
 			attachLimits, err := volumePlugin.GetVolumeLimits()

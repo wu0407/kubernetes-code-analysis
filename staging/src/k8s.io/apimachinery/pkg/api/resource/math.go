@@ -25,6 +25,7 @@ import (
 const (
 	// maxInt64Factors is the highest value that will be checked when removing factors of 10 from an int64.
 	// It is also the maximum decimal digits that can be represented with an int64.
+	// 为什么是18，可能是去除了第一个数字由于不能取满值--百分百保证18位精确，最大int64是19位
 	maxInt64Factors = 18
 )
 
@@ -72,6 +73,8 @@ func int64Add(a, b int64) (int64, bool) {
 }
 
 // int64Multiply returns a*b, or false if that would overflow or underflow int64.
+// 当a等于1或b等于1，有可能超出int64所表示的范围，这里没有严格限制--需要调用方限制
+// 当a或b等于最小的int64数，则返回0和false--就不考虑乘以-1变成最大的int64数
 func int64Multiply(a, b int64) (int64, bool) {
 	if a == 0 || b == 0 || a == 1 || b == 1 {
 		return a * b, true
@@ -80,11 +83,15 @@ func int64Multiply(a, b int64) (int64, bool) {
 		return 0, false
 	}
 	c := a * b
+	// 如果超出了int64，c/b不等于a，返回false
 	return c, c/b == a
 }
 
 // int64MultiplyScale returns a*b, assuming b is greater than one, or false if that would overflow or underflow int64.
 // Use when b is known to be greater than one.
+// 假设b是大于1--需要调用方限制
+// 当a等于1，有可能超出int64所表示的范围，这里没有严格限制--需要调用方限制
+// 当a等于最小的int64数返回且b不等于1，返回0和false--感觉代码写的怪怪的很矛盾
 func int64MultiplyScale(a int64, b int64) (int64, bool) {
 	if a == 0 || a == 1 {
 		return a * b, true
@@ -93,6 +100,7 @@ func int64MultiplyScale(a int64, b int64) (int64, bool) {
 		return 0, false
 	}
 	c := a * b
+	// 如果超出了int64，c/b不等于a，返回false
 	return c, c/b == a
 }
 
@@ -137,6 +145,8 @@ func int64MultiplyScale1000(a int64) (int64, bool) {
 
 // positiveScaleInt64 multiplies base by 10^scale, returning false if the
 // value overflows. Passing a negative scale is undefined.
+// 计算base乘以10^scale的值
+// 如果值超出了int64表示的数值范围，则会返回0和false
 func positiveScaleInt64(base int64, scale Scale) (int64, bool) {
 	switch scale {
 	case 0:
@@ -147,8 +157,10 @@ func positiveScaleInt64(base int64, scale Scale) (int64, bool) {
 		return int64MultiplyScale100(base)
 	case 3:
 		return int64MultiplyScale1000(base)
+	// 为什么要单独写
 	case 6:
 		return int64MultiplyScale(base, 1000000)
+	// 为什么要单独写
 	case 9:
 		return int64MultiplyScale(base, 1000000000)
 	default:
@@ -156,6 +168,7 @@ func positiveScaleInt64(base int64, scale Scale) (int64, bool) {
 		var ok bool
 		for i := Scale(0); i < scale; i++ {
 			if value, ok = int64MultiplyScale(value, 10); !ok {
+				// 超出int64表示范围
 				return 0, false
 			}
 		}
@@ -166,6 +179,8 @@ func positiveScaleInt64(base int64, scale Scale) (int64, bool) {
 // negativeScaleInt64 reduces base by the provided scale, rounding up, until the
 // value is zero or the scale is reached. Passing a negative scale is undefined.
 // The value returned, if not exact, is rounded away from zero.
+// 以 result*10^scale方式表示base，如果base除以10^scale有余数，则会丢失精度--result（base除以10^scale的值）会进行向上取整
+// excat为false代表丢失精度--执行了向上取整，excat为true代表精度未丢失
 func negativeScaleInt64(base int64, scale Scale) (result int64, exact bool) {
 	if scale == 0 {
 		return base, true
@@ -178,6 +193,10 @@ func negativeScaleInt64(base int64, scale Scale) (result int64, exact bool) {
 			fraction = true
 		}
 		value = value / 10
+		// base位数小于等于scale，比如base为200，scale为3
+		// 如果value为0，说明已经除完了
+		// base不能对10进行整除，如果base为正数返回1和false，如果base为负数返回-1和false
+		// base能对10进行整除，返回0和true
 		if value == 0 {
 			if fraction {
 				if base > 0 {
@@ -188,6 +207,11 @@ func negativeScaleInt64(base int64, scale Scale) (result int64, exact bool) {
 			return 0, true
 		}
 	}
+	// base位数大于scale，比如base为200，scale为2
+
+	// base位数大于scale且不是10的倍数，比如base为201，scale为2
+	// base是正数，返回value加1和false--代表不精确
+	// base是负数，返回value减1和false
 	if fraction {
 		if base > 0 {
 			value++
@@ -195,6 +219,7 @@ func negativeScaleInt64(base int64, scale Scale) (result int64, exact bool) {
 			value--
 		}
 	}
+	// base位数大于scale且是10的倍数，则返回value和true，表示精确
 	return value, !fraction
 }
 
@@ -245,6 +270,7 @@ func pow10Int64(b int64) int64 {
 
 // negativeScaleInt64 returns the result of dividing base by scale * 10 and the remainder, or
 // false if no such division is possible. Dividing by negative scales is undefined.
+// 计算除以10^scale的值和余数和是否可除（scale大于等于18不可除）
 func divideByScaleInt64(base int64, scale Scale) (result, remainder int64, exact bool) {
 	if scale == 0 {
 		return base, 0, true
@@ -263,28 +289,33 @@ func removeInt64Factors(value int64, base int64) (result int64, times int32) {
 	times = 0
 	result = value
 	negative := result < 0
+	// 负数转成正数做下面的计算
 	if negative {
 		result = -result
 	}
 	switch base {
 	// allow the compiler to optimize the common cases
 	case 10:
+		// 一直除以10，直到不能跟10整除
 		for result >= 10 && result%10 == 0 {
 			times++
 			result = result / 10
 		}
 	// allow the compiler to optimize the common cases
 	case 1024:
+		// 一直除以1024，直到不能跟1024整除
 		for result >= 1024 && result%1024 == 0 {
 			times++
 			result = result / 1024
 		}
 	default:
+		// 一直除以base，直到不能跟base整除
 		for result >= base && result%base == 0 {
 			times++
 			result = result / base
 		}
 	}
+	// 还原回负数
 	if negative {
 		result = -result
 	}
@@ -299,11 +330,14 @@ func removeBigIntFactors(d, factor *big.Int) (result *big.Int, times int32) {
 	q := big.NewInt(0)
 	m := big.NewInt(0)
 	for d.Cmp(bigZero) != 0 {
+		// q等于d除以factor，m为余数 
 		q.DivMod(d, factor, m)
+		// 余数不等于0,就终止循环
 		if m.Cmp(bigZero) != 0 {
 			break
 		}
 		times++
+		// d变成除完之后的值，q等于之前的d（这个感觉没什么用）
 		d, q = q, d
 	}
 	return d, times

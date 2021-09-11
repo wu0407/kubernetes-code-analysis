@@ -36,10 +36,12 @@ import (
 // to avoid confusion with the convention in quota
 // 3. it satisfies the rules in IsQualifiedName() after converted into quota resource name
 func IsExtendedResourceName(name v1.ResourceName) bool {
+	// 不包含反斜杆（隐式的“kubernetes.io/”为前缀）或或者 “kubernetes.io/”为前缀或“request.”为前缀
 	if IsNativeResource(name) || strings.HasPrefix(string(name), v1.DefaultResourceRequestsPrefix) {
 		return false
 	}
 	// Ensure it satisfies the rules in IsQualifiedName() after converted into quota resource name
+	// 转成前面是"requests." 加上name
 	nameForQuota := fmt.Sprintf("%s%s", v1.DefaultResourceRequestsPrefix, string(name))
 	if errs := validation.IsQualifiedName(string(nameForQuota)); len(errs) != 0 {
 		return false
@@ -56,6 +58,7 @@ func IsPrefixedNativeResource(name v1.ResourceName) bool {
 // IsNativeResource returns true if the resource name is in the
 // *kubernetes.io/ namespace. Partially-qualified (unprefixed) names are
 // implicitly in the kubernetes.io/ namespace.
+// 不包含反斜杆（隐式的“kubernetes.io/”为前缀）或或者 “kubernetes.io/”为前缀
 func IsNativeResource(name v1.ResourceName) bool {
 	return !strings.Contains(string(name), "/") ||
 		IsPrefixedNativeResource(name)

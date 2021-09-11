@@ -152,6 +152,7 @@ func (sh *suffixHandler) construct(base, exponent int32, fmt Format) (s suffix, 
 	return "", false
 }
 
+// 根据base和exponent查找后缀，ok为false说明没有找到
 func (sh *suffixHandler) constructBytes(base, exponent int32, format Format) (s []byte, ok bool) {
 	switch format {
 	case DecimalSI:
@@ -168,9 +169,11 @@ func (sh *suffixHandler) constructBytes(base, exponent int32, format Format) (s 
 		result := make([]byte, 8, 8)
 		result[0] = 'e'
 		number := strconv.AppendInt(result[1:1], int64(exponent), 10)
+		// 如果exponent大于等于0小于100，也就是位数为1位或2位，即strconv.AppendInt使用append
 		if &result[1] == &number[0] {
 			return result[:1+len(number)], true
 		}
+		// 否则使用手动append
 		result = append(result[:1], number...)
 		return result, true
 	}

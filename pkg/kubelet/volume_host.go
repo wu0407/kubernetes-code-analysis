@@ -86,6 +86,7 @@ func NewInitializedVolumePluginMgr(
 		exec:             utilexec.New(),
 	}
 
+	// 初始化Flexvolume插件和在cmd\kubelet\app\plugins.go里ProbeVolumePlugins注册的插件
 	if err := kvh.volumePluginMgr.InitPlugins(plugins, prober, kvh); err != nil {
 		return nil, fmt.Errorf(
 			"could not initialize volume plugins for KubeletVolumePluginMgr: %v",
@@ -115,6 +116,8 @@ type kubeletVolumeHost struct {
 	exec             utilexec.Interface
 }
 
+// 设置kubelet.runtimeState里的storageError
+// 在pkg\volume\csi\csi_plugin.go里的initializeCSINode调用
 func (kvh *kubeletVolumeHost) SetKubeletError(err error) {
 	kvh.kubelet.runtimeState.setStorageState(err)
 }

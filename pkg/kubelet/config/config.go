@@ -87,7 +87,7 @@ func NewPodConfig(mode PodConfigNotificationMode, recorder record.EventRecorder)
 // only accepts PodUpdates
 // 
 // sources里添加source
-// 创建或返回一个chan接收updates，这个chan保存在mux里sources
+// 创建或返回一个chan接收PodUpdates消息，这个chan保存在mux里sources
 // 启动一个goroutine消费这个chan里的PodUpdates消息--进行加工分类，然后发送给updates通道
 func (c *PodConfig) Channel(source string) chan<- interface{} {
 	c.sourcesLock.Lock()
@@ -269,6 +269,7 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 			if ref.Annotations == nil {
 				ref.Annotations = make(map[string]string)
 			}
+			// 添加kubernetes.io/config.source的annotation
 			ref.Annotations[kubetypes.ConfigSourceAnnotationKey] = source
 			if existing, found := oldPods[ref.UID]; found {
 				pods[ref.UID] = existing
