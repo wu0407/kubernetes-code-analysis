@@ -51,6 +51,7 @@ func (s *runtimeState) addHealthCheck(name string, f healthCheckFnType) {
 	s.healthChecks = append(s.healthChecks, &healthCheck{name: name, fn: f})
 }
 
+// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里调用s.setRuntimeSync
 func (s *runtimeState) setRuntimeSync(t time.Time) {
 	s.Lock()
 	defer s.Unlock()
@@ -94,6 +95,8 @@ func (s *runtimeState) runtimeErrors() error {
 	s.RLock()
 	defer s.RUnlock()
 	errs := []error{}
+	// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里调用s.setRuntimeSync设置s.lastBaseRuntimeSync
+	// 如果s.lastBaseRuntimeSync.IsZero()为true，说明kubelet.updateRuntimeUp未执行或未执行完
 	if s.lastBaseRuntimeSync.IsZero() {
 		errs = append(errs, errors.New("container runtime status check may not have completed yet"))
 	} else if !s.lastBaseRuntimeSync.Add(s.baseRuntimeSyncThreshold).After(time.Now()) {

@@ -453,6 +453,7 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 	// NodeStatusReportFrequency's default value is
 	// set to NodeStatusUpdateFrequency if NodeStatusUpdateFrequency is set
 	// explicitly. else NodeStatusReportFrequency is 5min
+	// 未到node Status Report周期且podCIDR未发生变化且status没有变化
 	if now.Before(kl.lastStatusReportTime.Add(kl.nodeStatusReportFrequency)) {
 		if !podCIDRChanged && !nodeStatusHasChanged(&originalNode.Status, &node.Status) {
 			// We must mark the volumes as ReportedInUse in volume manager's dsw even
@@ -471,6 +472,7 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 			// because it does not have access to the Node object.
 			// This also cannot be populated on node status manager init because the volume
 			// may not have been added to dsw at that time.
+			// 将node.Status.VolumesInUse列表里的volume设置volumeManager.desiredStateOfWorld.volumesToMount的reportedInUse为true
 			kl.volumeManager.MarkVolumesAsReportedInUse(node.Status.VolumesInUse)
 			return nil
 		}

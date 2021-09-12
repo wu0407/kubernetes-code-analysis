@@ -42,17 +42,22 @@ func (cm *containerManagerImpl) createNodeAllocatableCgroups() error {
 	// Use Node Allocatable limits instead of capacity if the user requested enforcing node allocatable.
 	nc := cm.NodeConfig.NodeAllocatableConfig
 	if cm.CgroupsPerQOS && nc.EnforceNodeAllocatable.Has(kubetypes.NodeAllocatableEnforcementKey) {
+		// 根据cm.internalCapacity列表，各个资源类型的值减去SystemReserved和KubeReserved
 		nodeAllocatable = cm.getNodeAllocatableInternalAbsolute()
 	}
 
 	cgroupConfig := &CgroupConfig{
+		// 默认为["kubepods"]
 		Name: cm.cgroupRoot,
 		// The default limits for cpu shares can be very low which can lead to CPU starvation for pods.
+		// memory、pid、cpu share、hugepage的limit上限
 		ResourceParameters: getCgroupConfig(nodeAllocatable),
 	}
+	// 各个cgroup子系统挂载目录下面是否有kubepods或kubepods.slice文件夹
 	if cm.cgroupManager.Exists(cgroupConfig.Name) {
 		return nil
 	}
+	// 创建各个cgroup子系统挂载目录下kubepods或kubepods.slice文件夹和设置各个cgroup系统（memory、pid、cpu share、hugepage）的属性值
 	if err := cm.cgroupManager.Create(cgroupConfig); err != nil {
 		klog.Errorf("Failed to create %q cgroup", cm.cgroupRoot)
 		return err
@@ -69,6 +74,7 @@ func (cm *containerManagerImpl) enforceNodeAllocatableCgroups() error {
 	nodeAllocatable := cm.internalCapacity
 	// Use Node Allocatable limits instead of capacity if the user requested enforcing node allocatable.
 	if cm.CgroupsPerQOS && nc.EnforceNodeAllocatable.Has(kubetypes.NodeAllocatableEnforcementKey) {
+		// 根据cm.internalCapacity列表，各个资源类型的值减去SystemReserved和KubeReserved
 		nodeAllocatable = cm.getNodeAllocatableInternalAbsolute()
 	}
 

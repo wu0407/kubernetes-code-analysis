@@ -1506,6 +1506,7 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 	if kl.kubeClient != nil {
 		// Start syncing node status immediately, this may set up things the runtime needs to run.
 		//周期性的更新node的status，包括capabilities，镜像、cidr等
+		// nodeStatusUpdateFrequency默认为10s
 		go wait.Until(kl.syncNodeStatus, kl.nodeStatusUpdateFrequency, wait.NeverStop)
 		//这里面也会调用kl.updateRuntimeUp和kl.syncNodeStatus()，只执行一次
 		go kl.fastStatusUpdateOnce()

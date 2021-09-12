@@ -73,6 +73,7 @@ func MilliCPUToQuota(milliCPU int64, period int64) (quota int64) {
 }
 
 // MilliCPUToShares converts the milliCPU to CFS shares.
+// 一个cpu等于1024 cpu_share，最小的cpu_share为0
 func MilliCPUToShares(milliCPU int64) uint64 {
 	if milliCPU == 0 {
 		// Docker converts zero milliCPU to unset, which maps to kernel default

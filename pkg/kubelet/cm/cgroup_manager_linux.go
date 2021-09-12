@@ -245,8 +245,8 @@ func updateSystemdCgroupInfo(cgroupConfig *libcontainerconfigs.Cgroup, cgroupNam
 // Exists checks if all subsystem cgroups already exist
 func (m *cgroupManagerImpl) Exists(name CgroupName) bool {
 	// Get map of all cgroup paths on the system for the particular cgroup
-	// 如果的name--rootCgroup为 "/"，在cgroup driver为systemd情况下，则cgroupPaths为各个子系统在系统中的挂载，比如cpu-->/sys/fs/cgroup/cpu,cpuacct
-	// 如果是name是system，在cgroup driver为systemd情况下，则cgroupPaths里 cpu挂载-->/sys/fs/cgroup/cpu,cpuacct/system.slice
+	// 如果的name--rootCgroup为 ["/"]，在cgroup driver为systemd情况下，则cgroupPaths为各个子系统在系统中的挂载，比如cpu-->/sys/fs/cgroup/cpu,cpuacct
+	// 如果是name是["system"]，在cgroup driver为systemd情况下，则cgroupPaths里 cpu挂载-->/sys/fs/cgroup/cpu,cpuacct/system.slice
 	cgroupPaths := m.buildCgroupPaths(name)
 
 	// the presence of alternative control groups not known to runc confuses
@@ -347,6 +347,7 @@ func getSupportedSubsystems() map[subsystem]bool {
 // but this is not possible with libcontainers Set() method
 // See https://github.com/opencontainers/runc/issues/932
 func setSupportedSubsystems(cgroupConfig *libcontainerconfigs.Cgroup) error {
+	// cpu、memory、pid为必须的，hugepage非必须
 	for sys, required := range getSupportedSubsystems() {
 		if _, ok := cgroupConfig.Paths[sys.Name()]; !ok {
 			if required {
@@ -356,6 +357,7 @@ func setSupportedSubsystems(cgroupConfig *libcontainerconfigs.Cgroup) error {
 			klog.V(6).Infof("Unable to find subsystem mount for optional subsystem: %v", sys.Name())
 			continue
 		}
+		// 设置各个cgroup系统（cpu、memory、pid、hugepage在系统中开启的）的属性
 		if err := sys.Set(cgroupConfig.Paths[sys.Name()], cgroupConfig); err != nil {
 			return fmt.Errorf("failed to set config for supported subsystems : %v", err)
 		}
@@ -424,6 +426,7 @@ func (m *cgroupManagerImpl) Update(cgroupConfig *CgroupConfig) error {
 	resourceConfig := cgroupConfig.ResourceParameters
 	resources := m.toResources(resourceConfig)
 
+	//比如cgroupConfig.Name为["kubepods"]，则cgroupPaths为/sys/fs/cgroup/{cgroup subsystem}/kubepods.slice
 	cgroupPaths := m.buildCgroupPaths(cgroupConfig.Name)
 
 	libcontainerCgroupConfig := &libcontainerconfigs.Cgroup{
@@ -484,12 +487,15 @@ func (m *cgroupManagerImpl) Create(cgroupConfig *CgroupConfig) error {
 	// It creates cgroup files for each subsystems and writes the pid
 	// in the tasks file. We use the function to create all the required
 	// cgroup files but not attach any "real" pid to the cgroup.
+	// cgroup driver为systemd，比如cgroupConfig.Name为["kubepods"]，创建/sys/fs/cgroup/{cgroup system}/kubepods.slice目录和设置cgroup.procs为-1
+	// cgroup driver为cgroupfs，比如cgroupConfig.Name为["kubepods"]，创建/sys/fs/cgroup/{cgroup system}/kubepods目录和设置cgroup.procs为-1
 	if err := manager.Apply(-1); err != nil {
 		return err
 	}
 
 	// it may confuse why we call set after we do apply, but the issue is that runc
 	// follows a similar pattern.  it's needed to ensure cpu quota is set properly.
+	// 设置各个cgroup系统（cpu、memory、pid、hugepage在系统中开启的）的属性
 	if err := m.Update(cgroupConfig); err != nil {
 		utilruntime.HandleError(fmt.Errorf("cgroup update failed %v", err))
 	}

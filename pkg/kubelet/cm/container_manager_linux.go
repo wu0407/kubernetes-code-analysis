@@ -270,7 +270,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 		klog.Infof("container manager verified user specified cgroup-root exists: %v", cgroupRoot)
 		// Include the top level cgroup for enforcing node allocatable into cgroup-root.
 		// This way, all sub modules can avoid having to understand the concept of node allocatable.
-		// 这里cgroupRoot变成["kubepods.slice"]
+		// 这里cgroupRoot变成["kubepods"]
 		cgroupRoot = NewCgroupName(cgroupRoot, defaultNodeAllocatableCgroupName)
 	}
 	klog.Infof("Creating Container Manager object based on Node Config: %+v", nodeConfig)
@@ -431,23 +431,35 @@ func setupKernelTunables(option KernelTunableBehavior) error {
 }
 
 func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
+	// /proc/mount里cgroup挂载目录下是否有"cpu", "cpuacct", "cpuset", "memory"且cpu的cgroup是否有cpu.cfs_period_us和cpu.cfs_quota_us文件
 	f, err := validateSystemRequirements(cm.mountUtil)
 	if err != nil {
 		return err
 	}
+	// cpu的cgroup有cpu.cfs_period_us和cpu.cfs_quota_us文件，则f.cpuHardcapping为true
 	if !f.cpuHardcapping {
 		cm.status.SoftRequirements = fmt.Errorf("CPU hardcapping unsupported")
 	}
 	b := KernelTunableModify
+	// 默认ProtectKernelDefaults为false
 	if cm.GetNodeConfig().ProtectKernelDefaults {
 		b = KernelTunableError
 	}
+	// 设置一些关键的sysctl项
+	// /sys/fs/vm/overcommit_memory=1
+	// /sys/fs/vm/panic_on_oom=0
+	// /sys/fs/kernel/panic=10
+	// /sys/fs/kernel/panic_on_oops=1
+	// /sys/fs/kernel/keys/root_maxkeys=1000000
+	// /sys/fs/kernel/keys/root_maxbytes=25000000
 	if err := setupKernelTunables(b); err != nil {
 		return err
 	}
 
 	// Setup top level qos containers only if CgroupsPerQOS flag is specified as true
 	if cm.NodeConfig.CgroupsPerQOS {
+		// 确保各个cgroup子系统挂载目录下kubepods或kubepods.slice文件夹存在
+		// 设置各个cgroup系统（memory、pid、cpu share、hugepage）的属性值--这个值是根据cm.internalCapacity列表，各个资源类型的值减去SystemReserved和KubeReserved
 		if err := cm.createNodeAllocatableCgroups(); err != nil {
 			return err
 		}
