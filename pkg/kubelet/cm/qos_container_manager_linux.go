@@ -108,15 +108,18 @@ func (m *qosContainerManagerImpl) Start(getNodeAllocatable func() v1.ResourceLis
 		}
 
 		// for each enumerated huge page size, the qos tiers are unbounded
+		// 所有hugepage设置容量为int64最大值
 		m.setHugePagesUnbounded(containerConfig)
 
 		// check if it exists
+		// ["kubepods", "Burstable"]和["kubepods", "BestEffort"]
 		if !cm.Exists(containerName) {
 			if err := cm.Create(containerConfig); err != nil {
 				return fmt.Errorf("failed to create top level %v QOS cgroup : %v", qosClass, err)
 			}
 		} else {
 			// to ensure we actually have the right state, we update the config on startup
+			// 只更新cpushare和hugepage相关
 			if err := cm.Update(containerConfig); err != nil {
 				return fmt.Errorf("failed to update top level %v QOS cgroup : %v", qosClass, err)
 			}
@@ -124,8 +127,11 @@ func (m *qosContainerManagerImpl) Start(getNodeAllocatable func() v1.ResourceLis
 	}
 	// Store the top level qos container names
 	m.qosContainersInfo = QOSContainersInfo{
+		// ["kubepods"]
 		Guaranteed: rootContainer,
+		// ["kubepods", "Burstable"]
 		Burstable:  qosClasses[v1.PodQOSBurstable],
+		// ["kubepods", "BestEffort"]
 		BestEffort: qosClasses[v1.PodQOSBestEffort],
 	}
 	m.getNodeAllocatable = getNodeAllocatable
@@ -151,6 +157,7 @@ func (m *qosContainerManagerImpl) setHugePagesUnbounded(cgroupConfig *CgroupConf
 		if err != nil {
 			return err
 		}
+		// 设置为int64最大值--1往左移62位，因为本身就是占一位，符号位占一位
 		hugePageLimit[pageSizeBytes] = int64(1 << 62)
 	}
 	cgroupConfig.ResourceParameters.HugePageLimit = hugePageLimit
@@ -283,6 +290,8 @@ func (m *qosContainerManagerImpl) UpdateCgroups() error {
 	}
 
 	// update the qos level cgroup settings for cpu shares
+	// 设置qosConfigs["Burstable"].ResourceParameters.CpuShares 所有Burstable的pod的总cpu request转成cpu share（1核为1024 cpu share）
+	// 设置qosConfigs["BestEffort"].ResourceParameters.CpuShares，BestEffort的cpu share固定为2
 	if err := m.setCPUCgroupConfig(qosConfigs); err != nil {
 		return err
 	}

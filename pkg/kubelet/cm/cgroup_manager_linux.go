@@ -445,6 +445,7 @@ func (m *cgroupManagerImpl) Update(cgroupConfig *CgroupConfig) error {
 		libcontainerCgroupConfig.PidsLimit = *cgroupConfig.ResourceParameters.PidsLimit
 	}
 
+	// 设置各个cgroup系统（cpu、memory、pid、hugepage在系统中开启的）的属性
 	if err := setSupportedSubsystems(libcontainerCgroupConfig); err != nil {
 		return fmt.Errorf("failed to set supported cgroup subsystems for cgroup %v: %v", cgroupConfig.Name, err)
 	}

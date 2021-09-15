@@ -55,6 +55,7 @@ func scaledValue(unscaled *big.Int, scale, newScale int) int64 {
 
 	// Handle scale down
 	// We have to be careful about the intermediate operations.
+	// scale down有可能丢失精度，比如scale为5（10^-5），newscale为4（10^-4），意味着unscaled需要除以10^(5-4)，有可能出现小数，则向上取整
 
 	// fast path when unscaled < max.Int64 and exp(10,dif) < max.Int64
 	const log10MaxInt64 = 19
