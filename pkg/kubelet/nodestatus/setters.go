@@ -554,6 +554,7 @@ func ReadyCondition(
 		}
 
 		// Record any soft requirements that were not met in the container manager.
+		// cpu的cgroup有cpu.cfs_period_us和cpu.cfs_quota_us文件则status.SoftRequirements为nil--这个在pkg\kubelet\cm\container_manager_linux.go里的setupNode设置Kubelet.containerManager.Status
 		status := cmStatusFunc()
 		if status.SoftRequirements != nil {
 			newNodeReadyCondition.Message = fmt.Sprintf("%s. WARNING: %s", newNodeReadyCondition.Message, status.SoftRequirements.Error())
@@ -566,18 +567,22 @@ func ReadyCondition(
 				if node.Status.Conditions[i].Status == newNodeReadyCondition.Status {
 					newNodeReadyCondition.LastTransitionTime = node.Status.Conditions[i].LastTransitionTime
 				} else {
+					// ready condition的status不一样，意味着发生变化
 					newNodeReadyCondition.LastTransitionTime = currentTime
 					needToRecordEvent = true
 				}
+				// node.Status.Conditions的type等于ready已经存在，更新condition
 				node.Status.Conditions[i] = newNodeReadyCondition
 				readyConditionUpdated = true
 				break
 			}
 		}
+		// node.Status.Conditions的type等于ready之前不存在
 		if !readyConditionUpdated {
 			newNodeReadyCondition.LastTransitionTime = currentTime
 			node.Status.Conditions = append(node.Status.Conditions, newNodeReadyCondition)
 		}
+		// ready condition的status不一样，意味着node状态发生变化
 		if needToRecordEvent {
 			if newNodeReadyCondition.Status == v1.ConditionTrue {
 				recordEventFunc(v1.EventTypeNormal, events.NodeReady)

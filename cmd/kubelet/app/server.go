@@ -734,7 +734,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 				return err
 			}
 		}
-		// 从request中保留内存比例，默认s.QOSReserved为0
+		// 从request中保留内存比例，默认s.QOSReserved为nil
 		experimentalQOSReserved, err := cm.ParseQOSReserved(s.QOSReserved)
 		if err != nil {
 			return err

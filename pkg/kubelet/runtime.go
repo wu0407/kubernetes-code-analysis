@@ -58,14 +58,18 @@ func (s *runtimeState) setRuntimeSync(t time.Time) {
 	s.lastBaseRuntimeSync = t
 }
 
-// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里调用s.setNetworkState
+// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里
+// 调用kubelet.runtimeService.Status()（通过cri api查询）查询runtime Status--包括RuntimeReady、NetworkReady
+// NetworkReady Status为false或NetworkReady为nil，会调用s.setNetworkState
 func (s *runtimeState) setNetworkState(err error) {
 	s.Lock()
 	defer s.Unlock()
 	s.networkError = err
 }
 
-// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里调用s.setRuntimeState
+// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里
+// 调用kubelet.runtimeService.Status()（通过cri api查询）查询runtime Status--包括RuntimeReady、NetworkReady
+// RuntimeReady Status为false或RuntimeReady为nil，会调用s.setRuntimeState
 func (s *runtimeState) setRuntimeState(err error) {
 	s.Lock()
 	defer s.Unlock()
@@ -110,6 +114,8 @@ func (s *runtimeState) runtimeErrors() error {
 		}
 	}
 	// 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里调用s.setRuntimeState
+	// 调用kubelet.runtimeService.Status()（通过cri api查询）查询runtime Status--包括RuntimeReady、NetworkReady
+	// 如果RuntimeReady Status为false，则s.runtimeError不为nil
 	if s.runtimeError != nil {
 		errs = append(errs, s.runtimeError)
 	}
@@ -118,6 +124,8 @@ func (s *runtimeState) runtimeErrors() error {
 }
 
 // 在kubelet.updateRuntimeUp(在pkg\kubelet\kubelet.go)里调用s.setNetworkState设置s.networkError
+// 调用kubelet.runtimeService.Status()（通过cri api查询）查询runtime Status--包括RuntimeReady、NetworkReady
+// 如果NetworkReady Status为false，则s.networkError不为nil
 func (s *runtimeState) networkErrors() error {
 	s.RLock()
 	defer s.RUnlock()

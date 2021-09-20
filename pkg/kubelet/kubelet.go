@@ -2257,6 +2257,10 @@ func (kl *Kubelet) updateRuntimeUp() {
 	kl.updateRuntimeMux.Lock()
 	defer kl.updateRuntimeMux.Unlock()
 
+	// 调用cri接口的Status查询 runtime status--包括RuntimeReady、NetworkReady
+	// 如果container runtime是dockershim(在pkg\kubelet\dockershim\docker_service.go里(*dockerService).Status)
+	// RuntimeReady是调用dockerService.client.Version()获取docker版本是否有问题
+	// NetworkReady是调用dockerService.network.Status()获取网络插件状态是否有问题
 	s, err := kl.containerRuntime.Status()
 	if err != nil {
 		klog.Errorf("Container runtime sanity check failed: %v", err)
@@ -2281,7 +2285,6 @@ func (kl *Kubelet) updateRuntimeUp() {
 	// information in RuntimeReady condition will be propagated to NodeReady condition.
 	runtimeReady := s.GetRuntimeCondition(kubecontainer.RuntimeReady)
 	// If RuntimeReady is not set or is false, report an error.
-	//只是查询了docker info
 	if runtimeReady == nil || !runtimeReady.Status {
 		err := fmt.Errorf("Container runtime not ready: %v", runtimeReady)
 		klog.Error(err)

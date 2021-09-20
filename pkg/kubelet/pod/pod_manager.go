@@ -108,12 +108,15 @@ type basicManager struct {
 	lock sync.RWMutex
 
 	// Regular pods indexed by UID.
+	// Regular pods包括普通pod和static pod
 	podByUID map[kubetypes.ResolvedPodUID]*v1.Pod
 	// Mirror pods indexed by UID.
 	mirrorPodByUID map[kubetypes.MirrorPodUID]*v1.Pod
 
 	// Pods indexed by full name for easy access.
+	// Regular pod
 	podByFullName       map[string]*v1.Pod
+	// Mirror pod
 	mirrorPodByFullName map[string]*v1.Pod
 
 	// Mirror pod UID to pod UID map.
@@ -318,6 +321,8 @@ func (pm *basicManager) GetUIDTranslations() (podToMirror map[kubetypes.Resolved
 	// have a corresponding mirror pod instead of using static pod uid directly.
 	for k, v := range pm.translationByUID {
 		mirrorToPod[k] = v
+		// mirror pod里找到static pod，就会覆盖上面的podToMirror[uid] = ""
+		// 即static pod没有mirror pod，则podToMirror[uid] = ""
 		podToMirror[v] = k
 	}
 	return podToMirror, mirrorToPod

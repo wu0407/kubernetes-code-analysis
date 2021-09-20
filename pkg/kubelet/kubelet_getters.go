@@ -290,6 +290,7 @@ func (kl *Kubelet) GetExtraSupplementalGroupsForPod(pod *v1.Pod) []int64 {
 // volume directories for the given pod from the disk.
 func (kl *Kubelet) getPodVolumePathListFromDisk(podUID types.UID) ([]string, error) {
 	volumes := []string{}
+	// 默认为/var/lib/kubelet/pods/{poduid}/volumes
 	podVolDir := kl.getPodVolumesDir(podUID)
 
 	if pathExists, pathErr := mount.PathExists(podVolDir); pathErr != nil {
@@ -318,8 +319,10 @@ func (kl *Kubelet) getPodVolumePathListFromDisk(podUID types.UID) ([]string, err
 	return volumes, nil
 }
 
+// 获取kubelet数据目录里pod的volumes目录下的所有有挂载的目录
 func (kl *Kubelet) getMountedVolumePathListFromDisk(podUID types.UID) ([]string, error) {
 	mountedVolumes := []string{}
+	// 默认为/var/lib/kubelet/pods/{poduid}/volumes/{volumePluginName}/{volume dir}
 	volumePaths, err := kl.getPodVolumePathListFromDisk(podUID)
 	if err != nil {
 		return mountedVolumes, err

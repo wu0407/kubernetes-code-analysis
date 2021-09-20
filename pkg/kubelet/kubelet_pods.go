@@ -929,6 +929,10 @@ func (kl *Kubelet) IsPodDeleted(uid types.UID) bool {
 
 // PodResourcesAreReclaimed returns true if all required node-level resources that a pod was consuming have
 // been reclaimed by the kubelet.  Reclaiming resources is a prerequisite to deleting a pod from the API server.
+// 判断提供的status里的container是否运行
+// 判断podCache里是否还有container运行状态
+// 判断pod是否在node上，存在已挂载的volume
+// 判断pod的cgroup路径是否存在
 func (kl *Kubelet) PodResourcesAreReclaimed(pod *v1.Pod, status v1.PodStatus) bool {
 	if !notRunning(status.ContainerStatuses) {
 		// We shouldn't delete pods that still have running containers
@@ -949,12 +953,14 @@ func (kl *Kubelet) PodResourcesAreReclaimed(pod *v1.Pod, status v1.PodStatus) bo
 		klog.V(3).Infof("Pod %q is terminated, but some containers have not been cleaned up: %s", format.Pod(pod), statusStr)
 		return false
 	}
+	// 判断pod是否在node上，存在已挂载的volume
 	if kl.podVolumesExist(pod.UID) && !kl.keepTerminatedPodVolumes {
 		// We shouldn't delete pods whose volumes have not been cleaned up if we are not keeping terminated pod volumes
 		klog.V(3).Infof("Pod %q is terminated, but some volumes have not been cleaned up", format.Pod(pod))
 		return false
 	}
 	if kl.kubeletConfiguration.CgroupsPerQOS {
+		// 判断pod的cgroup路径是否存在，比如/sys/fs/cgroup/cpu/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-pod6464569d_54d9_4367_a791_745b44623b7b.slice
 		pcm := kl.containerManager.NewPodContainerManager()
 		if pcm.Exists(pod) {
 			klog.V(3).Infof("Pod %q is terminated, but pod cgroup sandbox has not been cleaned up", format.Pod(pod))

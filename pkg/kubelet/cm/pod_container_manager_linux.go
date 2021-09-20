@@ -119,8 +119,10 @@ func (m *podContainerManagerImpl) GetPodContainerName(pod *v1.Pod) (CgroupName, 
 	podContainer := GetPodCgroupNameSuffix(pod.UID)
 
 	// Get the absolute path of the cgroup
+	// 比如["kubepods", "besteffort", "podec7bb47a-07ef-48ff-9201-687474994eab"]
 	cgroupName := NewCgroupName(parentContainer, podContainer)
 	// Get the literal cgroupfs name
+	// /kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podec7bb47a_07ef_48ff_9201_687474994eab.slice
 	cgroupfsName := m.cgroupManager.Name(cgroupName)
 
 	return cgroupName, cgroupfsName

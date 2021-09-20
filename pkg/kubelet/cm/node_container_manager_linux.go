@@ -193,6 +193,7 @@ func (cm *containerManagerImpl) getNodeAllocatableAbsolute() v1.ResourceList {
 	return cm.getNodeAllocatableAbsoluteImpl(cm.capacity)
 }
 
+// 返回node上的Allocatable资源--capacity减去SystemReserved和KubeReserved
 func (cm *containerManagerImpl) getNodeAllocatableAbsoluteImpl(capacity v1.ResourceList) v1.ResourceList {
 	result := make(v1.ResourceList)
 	for k, v := range capacity {

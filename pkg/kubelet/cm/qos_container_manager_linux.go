@@ -69,7 +69,7 @@ func NewQOSContainerManager(subsystems *CgroupSubsystems, cgroupRoot CgroupName,
 		subsystems:    subsystems,
 		cgroupManager: cgroupManager,
 		cgroupRoot:    cgroupRoot,
-		// 默认为0
+		// 默认为nil
 		qosReserved:   nodeConfig.QOSReserved,
 	}, nil
 }
@@ -140,6 +140,7 @@ func (m *qosContainerManagerImpl) Start(getNodeAllocatable func() v1.ResourceLis
 	// update qos cgroup tiers on startup and in periodic intervals
 	// to ensure desired state is in sync with actual state.
 	go wait.Until(func() {
+		// 设置besteffort和BestEffort的cgroup目录的cgroup资源属性
 		err := m.UpdateCgroups()
 		if err != nil {
 			klog.Warningf("[ContainerManager] Failed to reserve QoS requests: %v", err)
@@ -209,6 +210,7 @@ func (m *qosContainerManagerImpl) setMemoryReserve(configs map[v1.PodQOSClass]*C
 	}
 
 	// Sum the pod limits for pods in each QOS class
+	// 计算Guaranteed和Burstable类型的pod的总的memory request
 	pods := m.activePods()
 	for _, pod := range pods {
 		podMemoryRequest := int64(0)
@@ -217,6 +219,7 @@ func (m *qosContainerManagerImpl) setMemoryReserve(configs map[v1.PodQOSClass]*C
 			// limits are not set for Best Effort pods
 			continue
 		}
+		// 所有container的request总和
 		req, _ := resource.PodRequestsAndLimits(pod)
 		if request, found := req[v1.ResourceMemory]; found {
 			podMemoryRequest += request.Value()
@@ -241,6 +244,8 @@ func (m *qosContainerManagerImpl) setMemoryReserve(configs map[v1.PodQOSClass]*C
 	}
 
 	// Calculate QOS memory limits
+	// burstable的内存限制值为 memory的allocatable 减去 Guaranteed类型pod的request的保留内存
+	// bestEffort的内存限制值为 burstable的内存限制值 减去 burstable类型pod的request的保留内存
 	burstableLimit := allocatable - (qosMemoryRequests[v1.PodQOSGuaranteed] * percentReserve / 100)
 	bestEffortLimit := burstableLimit - (qosMemoryRequests[v1.PodQOSBurstable] * percentReserve / 100)
 	configs[v1.PodQOSBurstable].ResourceParameters.Memory = &burstableLimit
@@ -268,6 +273,7 @@ func (m *qosContainerManagerImpl) retrySetMemoryReserve(configs map[v1.PodQOSCla
 		// to set.  If it is, we assume the first attempt to set the limit failed
 		// and try again setting the limit to the usage.  Otherwise we leave
 		// the CgroupConfig as is.
+		// usage大于cgroup里的memory限制，才会设置qos的cgroup目录的memory限制为usage
 		if configs[qos].ResourceParameters.Memory != nil && usage > *configs[qos].ResourceParameters.Memory {
 			configs[qos].ResourceParameters.Memory = &usage
 		}
@@ -297,14 +303,19 @@ func (m *qosContainerManagerImpl) UpdateCgroups() error {
 	}
 
 	// update the qos level cgroup settings for huge pages (ensure they remain unbounded)
+	// 设置qosConfigs["Burstable"].ResourceParameters.HugePageLimit为int64最大值
+	// 设置qosConfigs["BestEffort"].ResourceParameters.HugePageLimit为int64最大值
 	if err := m.setHugePagesConfig(qosConfigs); err != nil {
 		return err
 	}
 
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.QOSReserved) {
+		// m.qosReserved默认为nil
 		for resource, percentReserve := range m.qosReserved {
 			switch resource {
 			case v1.ResourceMemory:
+				// 设置qosConfigs["Burstable"].ResourceParameters.Memory为memory的allocatable 减去 Guaranteed类型pod的request的保留内存
+				// 设置qosConfigs["BestEffort"].ResourceParameters.Memory为burstable的内存限制值 减去 burstable类型pod的request的保留内存
 				m.setMemoryReserve(qosConfigs, percentReserve)
 			}
 		}

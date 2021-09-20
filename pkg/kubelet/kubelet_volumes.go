@@ -53,6 +53,7 @@ func (kl *Kubelet) ListVolumesForPod(podUID types.UID) (map[string]volume.Volume
 // pods for the specified volume are mounted.
 func (kl *Kubelet) podVolumesExist(podUID types.UID) bool {
 	if mountedVolumes :=
+		// 获取pod的已经挂载的volume
 		kl.volumeManager.GetMountedVolumesForPod(
 			volumetypes.UniquePodName(podUID)); len(mountedVolumes) > 0 {
 		return true
@@ -60,6 +61,8 @@ func (kl *Kubelet) podVolumesExist(podUID types.UID) bool {
 	// TODO: This checks pod volume paths and whether they are mounted. If checking returns error, podVolumesExist will return true
 	// which means we consider volumes might exist and requires further checking.
 	// There are some volume plugins such as flexvolume might not have mounts. See issue #61229
+	// 还有可能pod不存在，但是pod的volume目录还存在，且还存在挂载
+	// 获取kubelet数据目录里pod的volumes目录下的所有有挂载的目录
 	volumePaths, err := kl.getMountedVolumePathListFromDisk(podUID)
 	if err != nil {
 		klog.Errorf("pod %q found, but error %v occurred during checking mounted volumes from disk", podUID, err)

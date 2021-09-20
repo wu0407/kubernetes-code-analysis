@@ -323,6 +323,7 @@ type subsystem interface {
 }
 
 // getSupportedSubsystems returns a map of subsystem and if it must be mounted for the kubelet to function.
+// cpu为true、memory为true、pid为true（开启了SupportPodPidsLimit或SupportNodePidsLimit）、hugetlb为false
 func getSupportedSubsystems() map[subsystem]bool {
 	supportedSubsystems := map[subsystem]bool{
 		&cgroupfs.MemoryGroup{}: true,
@@ -570,6 +571,7 @@ func (m *cgroupManagerImpl) ReduceCPULimits(cgroupName CgroupName) error {
 
 func getStatsSupportedSubsystems(cgroupPaths map[string]string) (*libcontainercgroups.Stats, error) {
 	stats := libcontainercgroups.NewStats()
+	// cpu为true、memory为true、pid为true（开启了SupportPodPidsLimit或SupportNodePidsLimit）、hugetlb为false
 	for sys, required := range getSupportedSubsystems() {
 		if _, ok := cgroupPaths[sys.Name()]; !ok {
 			if required {
@@ -595,6 +597,7 @@ func toResourceStats(stats *libcontainercgroups.Stats) *ResourceStats {
 }
 
 // Get sets the ResourceParameters of the specified cgroup as read from the cgroup fs
+// 只返回cgroup里memory的memory.usage_in_bytes 
 func (m *cgroupManagerImpl) GetResourceStats(name CgroupName) (*ResourceStats, error) {
 	cgroupPaths := m.buildCgroupPaths(name)
 	stats, err := getStatsSupportedSubsystems(cgroupPaths)

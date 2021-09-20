@@ -63,11 +63,15 @@ type manager struct {
 	kubeClient clientset.Interface
 	podManager kubepod.Manager
 	// Map from pod UID to sync status of the corresponding pod.
+	// pod能否是mirror pod
 	podStatuses      map[types.UID]versionedPodStatus
 	podStatusesLock  sync.RWMutex
 	podStatusChannel chan podStatusSyncRequest
 	// Map from (mirror) pod UID to latest status version successfully sent to the API server.
 	// apiStatusVersions must only be accessed from the sync thread.
+	// 将podStatuses更新到apiserver后，再更新apiStatusVersions
+	// 所以podStatuses里的version有可能跟apiStatusVersions不一样
+	// static pod的key是mirror pod的uid，普通pod的key是自己uid转成MirrorPodUID类型
 	apiStatusVersions map[kubetypes.MirrorPodUID]uint64
 	podDeletionSafety PodDeletionSafetyProvider
 }
@@ -135,6 +139,7 @@ func NewManager(kubeClient clientset.Interface, podManager kubepod.Manager, podD
 func isPodStatusByKubeletEqual(oldStatus, status *v1.PodStatus) bool {
 	oldCopy := oldStatus.DeepCopy()
 	for _, c := range status.Conditions {
+		// 非kubelet condition不比较（比如readiness gate的condition），只比较kubelet condition--PodScheduled、Ready、Initialized、Unschedulable、ContainersReady
 		if kubetypes.PodConditionByKubelet(c.Type) {
 			_, oc := podutil.GetPodCondition(oldCopy, c.Type)
 			if oc == nil || oc.Status != c.Status || oc.Message != c.Message || oc.Reason != c.Reason {
@@ -398,6 +403,7 @@ func (m *manager) updateStatusInternal(pod *v1.Pod, status v1.PodStatus, forceUp
 	}
 
 	// Check for illegal state transition in containers
+	// 检查是否允许container status由terminated to non-terminated，不允许返回错误
 	if err := checkContainerStateTransition(oldStatus.ContainerStatuses, status.ContainerStatuses, pod.Spec.RestartPolicy); err != nil {
 		klog.Errorf("Status update on pod %v/%v aborted: %v", pod.Namespace, pod.Name, err)
 		return false
@@ -459,6 +465,9 @@ func (m *manager) updateStatusInternal(pod *v1.Pod, status v1.PodStatus, forceUp
 }
 
 // updateLastTransitionTime updates the LastTransitionTime of a pod condition.
+// 没有conditionType的condition就不更新
+// condition.Status没有发生变化，lastTransitionTime为oldCondition.LastTransitionTime，不需要更新
+// 其他情况，更新lastTransitionTime为现在时间
 func updateLastTransitionTime(status, oldStatus *v1.PodStatus, conditionType v1.PodConditionType) {
 	_, condition := podutil.GetPodCondition(status, conditionType)
 	if condition == nil {
@@ -510,21 +519,31 @@ func (m *manager) syncBatch() {
 		}
 
 		for uid, status := range m.podStatuses {
+			// uid是static pod则以mirror pod的uid用在needsUpdate（在apiStatusVersions里查找version）和删除apiStatusVersions里的条目
+			// uid是普通的pod，则使用自己的uid
+			// uid是mirror pod？
 			syncedUID := kubetypes.MirrorPodUID(uid)
 			if mirrorUID, ok := podToMirror[kubetypes.ResolvedPodUID(uid)]; ok {
+				// 因为在m.podManager.GetUIDTranslations()里返回的podToMirror里，只有static pod没有mirror，则mirrorUID为空
 				if mirrorUID == "" {
 					klog.V(5).Infof("Static pod %q (%s/%s) does not have a corresponding mirror pod; skipping", uid, status.podName, status.podNamespace)
 					continue
 				}
 				syncedUID = mirrorUID
 			}
+			// 需要更新满足下面条件：
+			// 状态已经过时--apiStatusVersions状态过时
+			// podManager里有相应pod且pod能够被删除
+			// 即static pod只要满足：状态已经过时--apiStatusVersions状态过时
 			if m.needsUpdate(types.UID(syncedUID), status) {
 				updatedStatuses = append(updatedStatuses, podStatusSyncRequest{uid, status})
+			// pod manager里的pod的status与这里的status不一致
 			} else if m.needsReconcile(uid, status.status) {
 				// Delete the apiStatusVersions here to force an update on the pod status
 				// In most cases the deleted apiStatusVersions here should be filled
 				// soon after the following syncPod() [If the syncPod() sync an update
 				// successfully].
+				// 删除m.apiStatusVersions--syncPod()里的m.needsUpdate(uid, status)就为true，就能继续执行
 				delete(m.apiStatusVersions, syncedUID)
 				updatedStatuses = append(updatedStatuses, podStatusSyncRequest{uid, status})
 			}
@@ -559,6 +578,8 @@ func (m *manager) syncPod(uid types.UID, status versionedPodStatus) {
 
 	translatedUID := m.podManager.TranslatePodUID(pod.UID)
 	// Type convert original uid just for the purpose of comparison.
+	// uid是kubelet内部function能够识别的uid--非mirror pod的uid
+	// 发生uid变化，apiserver获取到的pod的uid（转成非mirror pod的uid）与提供不一样
 	if len(translatedUID) > 0 && translatedUID != kubetypes.ResolvedPodUID(uid) {
 		klog.V(2).Infof("Pod %q was deleted and then recreated, skipping status update; old UID %q, new UID %q", format.Pod(pod), uid, translatedUID)
 		m.deletePodStatus(uid)
@@ -606,6 +627,7 @@ func (m *manager) needsUpdate(uid types.UID, status versionedPodStatus) bool {
 	if !ok || latest < status.version {
 		return true
 	}
+	// mirror pod的uid一定是不存在，return false
 	pod, ok := m.podManager.GetPodByUID(uid)
 	if !ok {
 		return false
@@ -613,6 +635,11 @@ func (m *manager) needsUpdate(uid types.UID, status versionedPodStatus) bool {
 	return m.canBeDeleted(pod, status.status)
 }
 
+// 判断pod是否能够被删除
+// 能够删除满足
+// 1. pod的DeletionTimestamp不为nil
+// 2. 不是mirror pod
+// 3. container不再运行且没有volume挂载和cgroup目录
 func (m *manager) canBeDeleted(pod *v1.Pod, status v1.PodStatus) bool {
 	if pod.DeletionTimestamp == nil || kubetypes.IsMirrorPod(pod) {
 		return false
@@ -647,8 +674,10 @@ func (m *manager) needsReconcile(uid types.UID, status v1.PodStatus) bool {
 	}
 
 	podStatus := pod.Status.DeepCopy()
+	// status里的时间转成RFC3339（秒级精度），对container status按照container名字字母排序，initcontainer status按照pod的里initcontainer出现顺序排序
 	normalizeStatus(pod, podStatus)
 
+	// 比较pod manger里获得的pod status与给定的status
 	if isPodStatusByKubeletEqual(podStatus, &status) {
 		// If the status from the source is the same with the cached status,
 		// reconcile is not needed. Just return.
@@ -665,6 +694,9 @@ func (m *manager) needsReconcile(uid types.UID, status v1.PodStatus) bool {
 // before comparing podStatus to the status returned by apiserver because
 // apiserver does not support RFC339NANO.
 // Related issue #15262/PR #15263 to move apiserver to RFC339NANO is closed.
+// status里的时间转成RFC3339（秒级精度）
+// 对container status按照container名字字母排序
+// initcontainer status按照pod的里initcontainer出现顺序排序
 func normalizeStatus(pod *v1.Pod, status *v1.PodStatus) *v1.PodStatus {
 	bytesPerStatus := kubecontainer.MaxPodTerminationMessageLogLength
 	if containers := len(pod.Spec.Containers) + len(pod.Spec.InitContainers); containers > 0 {
@@ -717,6 +749,7 @@ func normalizeStatus(pod *v1.Pod, status *v1.PodStatus) *v1.PodStatus {
 
 // mergePodStatus merges oldPodStatus and newPodStatus where pod conditions
 // not owned by kubelet is preserved from oldPodStatus
+// 保留oldPodStatus非kubelet condition（比如readiness gate），其他以newPodStatus为准
 func mergePodStatus(oldPodStatus, newPodStatus v1.PodStatus) v1.PodStatus {
 	podConditions := []v1.PodCondition{}
 	for _, c := range oldPodStatus.Conditions {
