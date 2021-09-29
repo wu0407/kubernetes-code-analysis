@@ -105,6 +105,9 @@ func ExecPluginWithoutResult(ctx context.Context, pluginPath string, netconf []b
 // For recent-enough plugins, it uses the information returned by the VERSION
 // command.  For older plugins which do not recognize that command, it reports
 // version 0.1.0
+// 执行类似echo '{"cniVersion":"0.4.0"}' | CNI_COMMAND="VERSION" CNI_CONTAINERID="" CNI_NETNS="dummy" CNI_ARGS=""  CNI_IFNAME="dummy" CNI_PATH="dummy" /usr/local/bin/loopback 
+// 输出{"cniVersion":"0.4.0","supportedVersions":["0.1.0","0.2.0","0.3.0","0.3.1","0.4.0"]}
+// 返回 version.pluginInfo{CNIVersion_: "0.4.0", SupportedVersions_: []string{"0.1.0","0.2.0","0.3.0","0.3.1","0.4.0"}}
 func GetVersionInfo(ctx context.Context, pluginPath string, exec Exec) (version.PluginInfo, error) {
 	if exec == nil {
 		exec = defaultExec

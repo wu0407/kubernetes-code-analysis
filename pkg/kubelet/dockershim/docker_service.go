@@ -135,6 +135,7 @@ type namespaceGetter struct {
 	ds *dockerService
 }
 
+// 返回/proc/{container pid}/ns/net
 func (n *namespaceGetter) GetNetNS(containerID string) (string, error) {
 	return n.ds.GetNetNS(containerID)
 }
@@ -195,6 +196,7 @@ func NewDockerService(config *ClientConfig, podSandboxImage string, streamingCon
 
 	c := libdocker.NewInstrumentedInterface(client)
 
+	// DockershimRootDir默认为"/var/lib/dockershim"
 	checkpointManager, err := checkpointmanager.NewCheckpointManager(filepath.Join(dockershimRootDir, sandboxCheckpointDir))
 	if err != nil {
 		return nil, err
@@ -373,6 +375,7 @@ func (ds *dockerService) UpdateRuntimeConfig(_ context.Context, r *runtimeapi.Up
 // GetNetNS returns the network namespace of the given containerID. The ID
 // supplied is typically the ID of a pod sandbox. This getter doesn't try
 // to map non-sandbox IDs to their respective sandboxes.
+// 返回/proc/{container pid}/ns/net
 func (ds *dockerService) GetNetNS(podSandboxID string) (string, error) {
 	r, err := ds.client.InspectContainer(podSandboxID)
 	if err != nil {
@@ -382,9 +385,11 @@ func (ds *dockerService) GetNetNS(podSandboxID string) (string, error) {
 }
 
 // GetPodPortMappings returns the port mappings of the given podSandbox ID.
+// 从/var/lib/dockershim/sandbox/{podSandboxID}读出sandbox的portMapping列表（[]*PortMapping），然后转成[]*hostport.PortMapping--在("k8s.io/kubernetes/pkg/kubelet/dockershim/network/hostport")
 func (ds *dockerService) GetPodPortMappings(podSandboxID string) ([]*hostport.PortMapping, error) {
 	// TODO: get portmappings from docker labels for backward compatibility
 	checkpoint := NewPodSandboxCheckpoint("", "", &CheckpointData{})
+	// 从/var/lib/dockershim/sandbox/{podSandboxID}中读取出内容写入到checkpoint
 	err := ds.checkpointManager.GetCheckpoint(podSandboxID, checkpoint)
 	// Return empty portMappings if checkpoint is not found
 	if err != nil {

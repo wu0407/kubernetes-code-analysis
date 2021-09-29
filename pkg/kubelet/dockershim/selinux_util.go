@@ -56,6 +56,7 @@ func selinuxLabelLevel(separator rune) string {
 
 // addSELinuxOptions adds SELinux options to config using the given
 // separator.
+// 输出["label<separator>user:<selinuxOpts.User>", "label<separator>role:<selinuxOpts.Role>", "label<separator>type:<selinuxOpts.Type>", "label<separator>level:<selinuxOpts.Level>"]
 func addSELinuxOptions(config []string, selinuxOpts *runtimeapi.SELinuxOption, separator rune) []string {
 	// Note, strictly speaking, we are actually mutating the values of these
 	// keys, rather than formatting name and value into a string.  Docker re-

@@ -56,6 +56,7 @@ type Store interface {
 
 // ValidateKey returns an error if the given key does not meet the requirement
 // of the key format and length.
+// 长度小于等于250且匹配正则"^([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$"
 func ValidateKey(key string) error {
 	if len(key) <= keyMaxLength && keyRegex.MatchString(key) {
 		return nil

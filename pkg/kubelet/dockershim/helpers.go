@@ -157,6 +157,7 @@ func generateMountBindings(mounts []*runtimeapi.Mount) []string {
 	return result
 }
 
+// 返回容器内的端口集合map和容器端口对应宿主机端口映射关系的map
 func makePortsAndBindings(pm []*runtimeapi.PortMapping) (dockernat.PortSet, map[dockernat.Port][]dockernat.PortBinding) {
 	exposedPorts := dockernat.PortSet{}
 	portBindings := map[dockernat.Port][]dockernat.PortBinding{}

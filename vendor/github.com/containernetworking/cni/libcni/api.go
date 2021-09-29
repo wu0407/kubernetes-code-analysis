@@ -80,6 +80,7 @@ type CNI interface {
 	ValidateNetwork(ctx context.Context, net *NetworkConfig) ([]string, error)
 }
 
+// 用于查找插件和执行插件
 type CNIConfig struct {
 	Path []string
 	exec invoke.Exec

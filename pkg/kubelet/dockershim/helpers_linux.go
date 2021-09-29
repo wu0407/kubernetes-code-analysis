@@ -48,9 +48,13 @@ func (ds *dockerService) getSecurityOpts(seccompProfile string, separator rune) 
 	return seccompSecurityOpts, nil
 }
 
+// seccompProfile为空""或unconfined，返回[]dockerOpt{{"seccomp", "unconfined", ""}}
+// "runtime/default"或"docker/default",返回nil
+// "localhost/<filepath>" 返回[]dockerOpt{{"seccomp","<file content>","<filepath>(md5:<md5sum>)"}}
 func getSeccompDockerOpts(seccompProfile string) ([]dockerOpt, error) {
 	if seccompProfile == "" || seccompProfile == "unconfined" {
 		// return early the default
+		// []dockerOpt{{"seccomp", "unconfined", ""}}
 		return defaultSeccompOpt, nil
 	}
 

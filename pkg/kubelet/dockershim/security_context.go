@@ -34,7 +34,10 @@ func applySandboxSecurityContext(lc *runtimeapi.LinuxPodSandboxConfig, config *d
 
 	var sc *runtimeapi.LinuxContainerSecurityContext
 	if lc.SecurityContext != nil {
+		// LinuxSandboxSecurityContext转成LinuxContainerSecurityContext
+		// LinuxSandboxSecurityContext跟LinuxContainerSecurityContext比，没有Capabilities、ApparmorProfile、RunAsUsername、NoNewPrivs、MaskedPaths、ReadonlyPaths
 		sc = &runtimeapi.LinuxContainerSecurityContext{
+			// 忽略lc.SecurityContext里Privileged和SeccompProfilePath
 			SupplementalGroups: lc.SecurityContext.SupplementalGroups,
 			RunAsUser:          lc.SecurityContext.RunAsUser,
 			RunAsGroup:         lc.SecurityContext.RunAsGroup,
@@ -44,14 +47,17 @@ func applySandboxSecurityContext(lc *runtimeapi.LinuxPodSandboxConfig, config *d
 		}
 	}
 
+	// 修改config.User--容器运行用户
 	err := modifyContainerConfig(sc, config)
 	if err != nil {
 		return err
 	}
 
+	// 设置HostConfig的GroupAdd、Privileged（sandbox不设置）、ReadonlyRootfs、CapAdd（不设置）、CapDrop（不设置）、SecurityOpt、MaskedPaths（为nil）、ReadonlyPaths（为nil）
 	if err := modifyHostConfig(sc, hc, separator); err != nil {
 		return err
 	}
+	// 修改HostConfig里各个namespace设置--IpcMode、NetworkMode、PidMode
 	modifySandboxNamespaceOptions(sc.GetNamespaceOptions(), hc, network)
 	return nil
 }
@@ -99,6 +105,7 @@ func modifyContainerConfig(sc *runtimeapi.LinuxContainerSecurityContext, config 
 }
 
 // modifyHostConfig applies security context config to dockercontainer.HostConfig.
+// 设置HostConfig的GroupAdd、Privileged、ReadonlyRootfs、CapAdd、CapDrop、SecurityOpt、MaskedPaths、ReadonlyPaths
 func modifyHostConfig(sc *runtimeapi.LinuxContainerSecurityContext, hostConfig *dockercontainer.HostConfig, separator rune) error {
 	if sc == nil {
 		return nil
@@ -117,6 +124,7 @@ func modifyHostConfig(sc *runtimeapi.LinuxContainerSecurityContext, hostConfig *
 		hostConfig.CapDrop = sc.GetCapabilities().DropCapabilities
 	}
 	if sc.SelinuxOptions != nil {
+		// 输出["label<separator>user:<selinuxOpts.User>", "label<separator>role:<selinuxOpts.Role>", "label<separator>type:<selinuxOpts.Type>", "label<separator>level:<selinuxOpts.Level>"]
 		hostConfig.SecurityOpt = addSELinuxOptions(
 			hostConfig.SecurityOpt,
 			sc.SelinuxOptions,
@@ -125,6 +133,7 @@ func modifyHostConfig(sc *runtimeapi.LinuxContainerSecurityContext, hostConfig *
 	}
 
 	// Apply apparmor options.
+	// apparmorSecurityOpts为["apparmor<separator><profileName>"]
 	apparmorSecurityOpts, err := getApparmorSecurityOpts(sc, separator)
 	if err != nil {
 		return fmt.Errorf("failed to generate apparmor security options: %v", err)

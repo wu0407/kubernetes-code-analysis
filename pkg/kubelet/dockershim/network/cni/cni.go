@@ -74,7 +74,9 @@ type cniNetworkPlugin struct {
 
 type cniNetwork struct {
 	name          string
+	// 网络配置
 	NetworkConfig *libcni.NetworkConfigList
+	// 查找插件和执行插件
 	CNIConfig     libcni.CNI
 	Capabilities  []string
 }
@@ -152,8 +154,9 @@ func ProbeNetworkPlugins(confDir, cacheDir string, binDirs []string) []network.N
 	return []network.NetworkPlugin{plugin}
 }
 
-// 获得binDirs下所有cni配置
+// 获得binDirs下第一个（按照名字排序）符合后缀的文件cni配置
 func getDefaultCNINetwork(confDir string, binDirs []string) (*cniNetwork, error) {
+	// confDir目录下带有这些后缀的文件列表
 	files, err := libcni.ConfFiles(confDir, []string{".conf", ".conflist", ".json"})
 	switch {
 	case err != nil:
@@ -163,7 +166,7 @@ func getDefaultCNINetwork(confDir string, binDirs []string) (*cniNetwork, error)
 	}
 
 	cniConfig := &libcni.CNIConfig{Path: binDirs}
-
+	// 对文件进行排序，只读取第一个文件
 	sort.Strings(files)
 	for _, confFile := range files {
 		var confList *libcni.NetworkConfigList
@@ -199,7 +202,7 @@ func getDefaultCNINetwork(confDir string, binDirs []string) (*cniNetwork, error)
 
 		// Before using this CNI config, we have to validate it to make sure that
 		// all plugins of this config exist on disk
-		// 插件二进制文件是否存在，版本是否支持配置文件里指定的cniversion版本
+		// 插件plugin二进制文件是否存在，版本是否支持配置文件里指定的cniversion版本，返回plugin插件里的所有的Capabiliti
 		caps, err := cniConfig.ValidateNetworkList(context.TODO(), confList)
 		if err != nil {
 			klog.Warningf("Error validating CNI config list %s: %v", string(confList.Bytes[:maxStringLengthInLog(len(confList.Bytes))]), err)
@@ -238,13 +241,13 @@ func (plugin *cniNetworkPlugin) Init(host network.Host, hairpinMode kubeletconfi
 }
 
 func (plugin *cniNetworkPlugin) syncNetworkConfig() {
-	// 获得binDirs下所有cni配置
+	// 获得下第一个（按照名字排序）符合后缀的文件cni配置
 	network, err := getDefaultCNINetwork(plugin.confDir, plugin.binDirs)
 	if err != nil {
 		klog.Warningf("Unable to update cni config: %s", err)
 		return
 	}
-	// 设置defaultNetwork为binDirs下所有cni配置
+	// 设置defaultNetwork--当前的cni配置
 	plugin.setDefaultNetwork(network)
 }
 
@@ -309,6 +312,7 @@ func (plugin *cniNetworkPlugin) SetUpPod(namespace string, name string, id kubec
 	if err := plugin.checkInitialized(); err != nil {
 		return err
 	}
+	//netnsPath为 /proc/{container pid}/ns/net
 	netnsPath, err := plugin.host.GetNetNS(id.ID)
 	if err != nil {
 		return fmt.Errorf("CNI failed to retrieve network namespace path: %v", err)
@@ -397,6 +401,7 @@ func (plugin *cniNetworkPlugin) deleteFromNetwork(ctx context.Context, network *
 	return nil
 }
 
+// 设置libcni.RuntimeConf，其中linux操作系统会设置CapabilityArgs为portMappings、bandwidth、ipRanges，windows操作系统为portMappings、bandwidth、ipRanges、dns
 func (plugin *cniNetworkPlugin) buildCNIRuntimeConf(podName string, podNs string, podSandboxID kubecontainer.ContainerID, podNetnsPath string, annotations, options map[string]string) (*libcni.RuntimeConf, error) {
 	rt := &libcni.RuntimeConf{
 		ContainerID: podSandboxID.ID,
@@ -413,10 +418,12 @@ func (plugin *cniNetworkPlugin) buildCNIRuntimeConf(podName string, podNs string
 
 	// port mappings are a cni capability-based args, rather than parameters
 	// to a specific plugin
+	// 从/var/lib/dockershim/sandbox/{podSandboxID}文件中获取portMappings
 	portMappings, err := plugin.host.GetPodPortMappings(podSandboxID.ID)
 	if err != nil {
 		return nil, fmt.Errorf("could not retrieve port mappings: %v", err)
 	}
+	// ("k8s.io/kubernetes/pkg/kubelet/dockershim/network/hostport")[]*hostport.PortMapping转成[]cniPortMapping
 	portMappingsParam := make([]cniPortMapping, 0, len(portMappings))
 	for _, p := range portMappings {
 		if p.HostPort <= 0 {
@@ -433,6 +440,7 @@ func (plugin *cniNetworkPlugin) buildCNIRuntimeConf(podName string, podNs string
 		portMappingsCapability: portMappingsParam,
 	}
 
+	// 解析annotation里的"kubernetes.io/ingress-bandwidth"和"kubernetes.io/egress-bandwidth"
 	ingress, egress, err := bandwidth.ExtractPodBandwidthResources(annotations)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod bandwidth from annotations: %v", err)
@@ -457,12 +465,15 @@ func (plugin *cniNetworkPlugin) buildCNIRuntimeConf(podName string, podNs string
 	rt.CapabilityArgs[ipRangesCapability] = [][]cniIPRange{{{Subnet: plugin.podCidr}}}
 
 	// Set dns capability args.
+	// linux操作系统不设置rt.CapabilityArgs["dns"]
+	// 何苦从runtimeapi.DNSConfig转成string存在options里，这里还要反解析出runtimeapi.DNSConfig--看commit msg是要支持windows dns能力
 	if dnsOptions, ok := options["dns"]; ok {
 		dnsConfig := runtimeapi.DNSConfig{}
 		err := json.Unmarshal([]byte(dnsOptions), &dnsConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to unmarshal dns config %q: %v", dnsOptions, err)
 		}
+		// 这里linux操作系统为nil，windows操作系统会返回cniDNSConfig
 		if dnsParam := buildDNSCapabilities(&dnsConfig); dnsParam != nil {
 			rt.CapabilityArgs[dnsCapability] = *dnsParam
 		}

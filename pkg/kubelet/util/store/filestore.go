@@ -61,6 +61,7 @@ func (f *FileStore) Write(key string, data []byte) error {
 
 // Read reads the data from the file named key.
 func (f *FileStore) Read(key string) ([]byte, error) {
+	// 验证key是否是合法string--长度小于等于250且匹配正则"^([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$"
 	if err := ValidateKey(key); err != nil {
 		return nil, err
 	}

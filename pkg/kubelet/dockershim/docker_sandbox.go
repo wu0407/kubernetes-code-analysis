@@ -129,6 +129,8 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 	}(&err)
 
 	// Step 3: Create Sandbox Checkpoint.
+	// 默认在"/var/lib/dockershim/sandbox/{container id}"，写入类似
+	// {"version":"v1","name":"traefik2-reserve-ingress-controller-ckhlv","namespace":"kube-system","data":{"port_mappings":[{"protocol":"tcp","container_port":4080,"host_port":4080},{"protocol":"tcp","container_port":4443,"host_port":4443},{"protocol":"tcp","container_port":8080,"host_port":0}]},"checksum":2387122249}
 	if err = ds.checkpointManager.CreateCheckpoint(createResp.ID, constructPodSandboxCheckpoint(config)); err != nil {
 		return nil, err
 	}
@@ -147,12 +149,14 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 	// after sandbox creation to override docker's behaviour. This resolv.conf
 	// file is shared by all containers of the same pod, and needs to be modified
 	// only once per pod.
+	// 容器的/etc/reslove.conf文件在sandbox启动之后修改，而且pod里的所有容器共享同一个/etc/reslove.conf文件，每个pod只会修改一次
 	if dnsConfig := config.GetDnsConfig(); dnsConfig != nil {
 		containerInfo, err := ds.client.InspectContainer(createResp.ID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to inspect sandbox container for pod %q: %v", config.Metadata.Name, err)
 		}
 
+		// 修改/etc/reslove.conf的nameserver、search、options
 		if err := rewriteResolvFile(containerInfo.ResolvConfPath, dnsConfig.Servers, dnsConfig.Searches, dnsConfig.Options); err != nil {
 			return nil, fmt.Errorf("rewrite resolv.conf failed for pod %q: %v", config.Metadata.Name, err)
 		}
@@ -588,6 +592,9 @@ func (ds *dockerService) applySandboxLinuxOptions(hc *dockercontainer.HostConfig
 		return nil
 	}
 	// Apply security context.
+	// 修改createConfig.config.User--容器运行用户
+	// 设置HostConfig的GroupAdd、Privileged（sandbox不设置）、ReadonlyRootfs、CapAdd（不设置）、CapDrop（不设置）、SecurityOpt、MaskedPaths（为nil）、ReadonlyPaths（为nil）
+	// 修改HostConfig里各个namespace设置--IpcMode、NetworkMode、PidMode
 	if err := applySandboxSecurityContext(lc, createConfig.Config, hc, ds.network, separator); err != nil {
 		return err
 	}
@@ -597,9 +604,12 @@ func (ds *dockerService) applySandboxLinuxOptions(hc *dockercontainer.HostConfig
 	return nil
 }
 
+// 设置HostConfig里的MemorySwap为0，CPUShares为2和CgroupParent
 func (ds *dockerService) applySandboxResources(hc *dockercontainer.HostConfig, lc *runtimeapi.LinuxPodSandboxConfig) error {
 	hc.Resources = dockercontainer.Resources{
+		// MemorySwap为0
 		MemorySwap: DefaultMemorySwap(),
+		// CPUShares为2
 		CPUShares:  defaultSandboxCPUshares,
 		// Use docker's default cpu quota/period.
 	}
@@ -640,11 +650,13 @@ func (ds *dockerService) makeSandboxDockerConfig(c *runtimeapi.PodSandboxConfig,
 	}
 
 	// Apply linux-specific options.
+	// 设置hc和createConfig.Config
 	if err := ds.applySandboxLinuxOptions(hc, c.GetLinux(), createConfig, image, securityOptSeparator); err != nil {
 		return nil, err
 	}
 
 	// Set port mappings.
+	// 返回容器内的端口集合map和容器端口对应宿主机端口映射关系的map
 	exposedPorts, portBindings := makePortsAndBindings(c.GetPortMappings())
 	createConfig.Config.ExposedPorts = exposedPorts
 	hc.PortBindings = portBindings
@@ -652,6 +664,7 @@ func (ds *dockerService) makeSandboxDockerConfig(c *runtimeapi.PodSandboxConfig,
 	hc.OomScoreAdj = defaultSandboxOOMAdj
 
 	// Apply resource options.
+	// 设置hc里的MemorySwap为0，CPUShares为2和CgroupParent
 	if err := ds.applySandboxResources(hc, c.GetLinux()); err != nil {
 		return nil, err
 	}
@@ -663,6 +676,7 @@ func (ds *dockerService) makeSandboxDockerConfig(c *runtimeapi.PodSandboxConfig,
 	}
 	hc.SecurityOpt = append(hc.SecurityOpt, securityOpts...)
 
+	// linux系统不做任何事情
 	applyExperimentalCreateConfig(createConfig, c.Annotations)
 	return createConfig, nil
 }
