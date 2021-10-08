@@ -184,6 +184,7 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 		}
 		networkOptions["dns"] = string(dnsOption)
 	}
+	// 设置sandbox的网卡和ip，以及cni插件的特殊功能（比如iptables，nat等）
 	err = ds.network.SetUpPod(config.GetMetadata().Namespace, config.GetMetadata().Name, cID, config.Annotations, networkOptions)
 	if err != nil {
 		errList := []error{fmt.Errorf("failed to set up sandbox container %q network for pod %q: %v", createResp.ID, config.Metadata.Name, err)}
@@ -594,7 +595,7 @@ func (ds *dockerService) applySandboxLinuxOptions(hc *dockercontainer.HostConfig
 	// Apply security context.
 	// 修改createConfig.config.User--容器运行用户
 	// 设置HostConfig的GroupAdd、Privileged（sandbox不设置）、ReadonlyRootfs、CapAdd（不设置）、CapDrop（不设置）、SecurityOpt、MaskedPaths（为nil）、ReadonlyPaths（为nil）
-	// 修改HostConfig里各个namespace设置--IpcMode、NetworkMode、PidMode
+	// 修改HostConfig里各个namespace类型设置--IpcMode、NetworkMode、PidMode
 	if err := applySandboxSecurityContext(lc, createConfig.Config, hc, ds.network, separator); err != nil {
 		return err
 	}

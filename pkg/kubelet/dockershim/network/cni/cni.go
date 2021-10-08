@@ -466,7 +466,7 @@ func (plugin *cniNetworkPlugin) buildCNIRuntimeConf(podName string, podNs string
 
 	// Set dns capability args.
 	// linux操作系统不设置rt.CapabilityArgs["dns"]
-	// 何苦从runtimeapi.DNSConfig转成string存在options里，这里还要反解析出runtimeapi.DNSConfig--看commit msg是要支持windows dns能力
+	// 何苦从runtimeapi.DNSConfig转成string存在options里(在(*dockerService).RunPodSandbox)，这里还要反解析出runtimeapi.DNSConfig--看commit msg是要支持windows dns能力
 	if dnsOptions, ok := options["dns"]; ok {
 		dnsConfig := runtimeapi.DNSConfig{}
 		err := json.Unmarshal([]byte(dnsOptions), &dnsConfig)

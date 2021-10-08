@@ -42,7 +42,9 @@ var resultFactories = []struct {
 	supportedVersions []string
 	newResult         types.ResultFactoryFunc
 }{
+	//current.SupportedVersions为[]string{"0.3.0", "0.3.1"，"0.4.0"},
 	{current.SupportedVersions, current.NewResult},
+	// []string{"", "0.1.0", "0.2.0"}
 	{types020.SupportedVersions, types020.NewResult},
 }
 
@@ -51,6 +53,7 @@ var resultFactories = []struct {
 func NewResult(version string, resultBytes []byte) (types.Result, error) {
 	reconciler := &Reconciler{}
 	for _, resultFactory := range resultFactories {
+		// 检查version是否在resultFactory.supportedVersions里
 		err := reconciler.CheckRaw(version, resultFactory.supportedVersions)
 		if err == nil {
 			// Result supports this version

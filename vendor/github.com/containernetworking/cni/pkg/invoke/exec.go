@@ -85,11 +85,13 @@ func ExecPluginWithResult(ctx context.Context, pluginPath string, netconf []byte
 
 	// Plugin must return result in same version as specified in netconf
 	versionDecoder := &version.ConfigDecoder{}
+	// 返回netconf里的cniVersion
 	confVersion, err := versionDecoder.Decode(netconf)
 	if err != nil {
 		return nil, err
 	}
 
+	// 当confVersion是支持的版本（"0.1.0", "0.2.0", "0.3.0", "0.3.1", "0.4.0"），返回插件执行stdout转成相应版本（020或current）的types.Result
 	return version.NewResult(confVersion, stdoutBytes)
 }
 

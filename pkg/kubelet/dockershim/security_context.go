@@ -57,7 +57,7 @@ func applySandboxSecurityContext(lc *runtimeapi.LinuxPodSandboxConfig, config *d
 	if err := modifyHostConfig(sc, hc, separator); err != nil {
 		return err
 	}
-	// 修改HostConfig里各个namespace设置--IpcMode、NetworkMode、PidMode
+	// 修改HostConfig里各类namespace设置--IpcMode、NetworkMode、PidMode
 	modifySandboxNamespaceOptions(sc.GetNamespaceOptions(), hc, network)
 	return nil
 }

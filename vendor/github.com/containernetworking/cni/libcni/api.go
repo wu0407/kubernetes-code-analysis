@@ -99,6 +99,8 @@ func NewCNIConfig(path []string, exec invoke.Exec) *CNIConfig {
 	}
 }
 
+// 让cniVersion和name覆盖orig.CNIVersion和orig.name，preResult为orig.RawPrevResult，orig.Bytes里添加prevResult
+// 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capabiliti的配置（在rt.CapabilityArgs中）到orig.Bytes里
 func buildOneConfig(name, cniVersion string, orig *NetworkConfig, prevResult types.Result, rt *RuntimeConf) (*NetworkConfig, error) {
 	var err error
 
@@ -112,6 +114,7 @@ func buildOneConfig(name, cniVersion string, orig *NetworkConfig, prevResult typ
 	}
 
 	// Ensure every config uses the same name and version
+	// inject里的字段覆盖orig里的相应字段
 	orig, err = InjectConf(orig, inject)
 	if err != nil {
 		return nil, err
@@ -132,6 +135,7 @@ func buildOneConfig(name, cniVersion string, orig *NetworkConfig, prevResult typ
 // capabilities include "portMappings", and the CapabilityArgs map includes a
 // "portMappings" key, that key and its value are added to the "runtimeConfig"
 // dictionary to be passed to the plugin's stdin.
+// 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capabiliti的配置（在rt.CapabilityArgs中）到orig.Bytes里
 func injectRuntimeConfig(orig *NetworkConfig, rt *RuntimeConf) (*NetworkConfig, error) {
 	var err error
 
@@ -174,6 +178,9 @@ func getResultCacheFilePath(netName string, rt *RuntimeConf) string {
 	return filepath.Join(cacheDir, "results", fmt.Sprintf("%s-%s-%s", netName, rt.ContainerID, rt.IfName))
 }
 
+// 默认在/var/lib/cni/cache/results/下生成保存插件执行输出的文件
+// 比如文件名为kubenet-761f2c6dc1503077db58e85e19873758aae73d2fae4b920f9fe24674c1db920a-eth0，内容{"cniVersion":"0.2.0","ip4":{"ip":"10.252.0.143/25","gateway":"10.252.0.129","routes":[{"dst":"0.0.0.0/0"}]},"dns":{}}
+// 比如文件名为kubenet-loopback-761f2c6dc1503077db58e85e19873758aae73d2fae4b920f9fe24674c1db920a-lo，内容为{"cniVersion":"0.2.0","ip4":{"ip":"127.0.0.1/8"},"dns":{}}
 func setCachedResult(result types.Result, netName string, rt *RuntimeConf) error {
 	data, err := json.Marshal(result)
 	if err != nil {
@@ -236,17 +243,42 @@ func (c *CNIConfig) GetNetworkCachedResult(net *NetworkConfig, rt *RuntimeConf) 
 }
 
 func (c *CNIConfig) addNetwork(ctx context.Context, name, cniVersion string, net *NetworkConfig, prevResult types.Result, rt *RuntimeConf) (types.Result, error) {
+	// cniNetworkPlugin插件的loNetwork和defaultNetwork里的CNIConfig.exec都是nil
+	// 这里如果c.exec为nil，则使用("github.com/containernetworking/cni/pkg/invoke")invoke.DefaultExec
 	c.ensureExec()
+	// 返回插件的绝对路径
 	pluginPath, err := c.exec.FindInPath(net.Network.Type, c.Path)
 	if err != nil {
 		return nil, err
 	}
 
+	// 生成新的*NetworkConfig
+	// 让cniVersion和name覆盖net.CNIVersion和net.name，prevResult为net.Bytes里的PrevResult和net.RawPrevResult, 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capabiliti的配置（在rt.CapabilityArgs中）到net.Bytes里
 	newConf, err := buildOneConfig(name, cniVersion, net, prevResult, rt)
 	if err != nil {
 		return nil, err
 	}
 
+	// cni loopback
+	// 执行
+	// echo '{"cniVersion": "0.2.0","name": "cni-loopback","type": "loopback"}' |  \
+	// CNI_COMMAND="ADD" \
+	// CNI_CONTAINERID="{container id}" \
+	// CNI_NETNS="/proc/pid/ns/net" \
+	// CNI_ARGS="IgnoreUnknown=1;K8S_POD_NAMESPACE={NAMESPACE};K8S_POD_NAME={POD NAME};K8S_POD_INFRA_CONTAINER_ID={container id}" \
+	// CNI_IFNAME="eth0" \
+	// CNI_PATH="/opt/cni/bin" \
+	// /opt/cni/bin/loopback 
+	// 返回
+	// {
+	// "cniVersion": "0.2.0",
+	// "ip4": {
+	//     "ip": "127.0.0.1/8"
+	//        },
+	//  "dns": {}
+	// }
+
+	// 执行相应的插件，如果插件返回的cniVersion是支持的版本，则将插件执行输出（json格式）转成types.Result
 	return invoke.ExecPluginWithResult(ctx, pluginPath, newConf.Bytes, c.args("ADD", rt), c.exec)
 }
 
@@ -255,12 +287,17 @@ func (c *CNIConfig) AddNetworkList(ctx context.Context, list *NetworkConfigList,
 	var err error
 	var result types.Result
 	for _, net := range list.Plugins {
+		// 让list.CNIVersion和list.Name覆盖net.CNIVersion和net.name，result为net.RawPrevResult字段，result为net.Bytes里PrevResult，添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capabiliti的配置（在rt.CapabilityArgs中）到net.Bytes里
+		// 生成新的*NetworkConfig，然后新的*NetworkConfig.Bytes做为执行cni插件二进制文件的stdin
+		// c.args("ADD", rt)（c.Path和rt）转成执行命令的环境变量
+		// 执行cni插件二进制文件stdout为result
 		result, err = c.addNetwork(ctx, list.Name, list.CNIVersion, net, result, rt)
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	// 默认在/var/lib/cni/cache/results/下生成保存插件执行输出的文件
 	if err = setCachedResult(result, list.Name, rt); err != nil {
 		return nil, fmt.Errorf("failed to set network %q cached result: %v", list.Name, err)
 	}

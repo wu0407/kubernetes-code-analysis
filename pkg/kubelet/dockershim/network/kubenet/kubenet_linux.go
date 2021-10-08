@@ -838,6 +838,7 @@ func (plugin *kubenetNetworkPlugin) disableContainerDAD(id kubecontainer.Contain
 		return fmt.Errorf("could not find sysctl binary: %s", err)
 	}
 
+	// netnsPath为 /proc/{container pid}/ns/net
 	netnsPath, err := plugin.host.GetNetNS(id.ID)
 	if err != nil {
 		return fmt.Errorf("failed to get netns: %v", err)
