@@ -237,13 +237,17 @@ type manager struct {
 
 // Start the container manager.
 func (self *manager) Start() error {
+	// 注册plugin插件的ContainerHandlerFactory
 	self.containerWatchers = container.InitializePlugins(self, self.fsInfo, self.includedMetrics)
 
+	// 额外注册raw插件ContainerHandlerFactory
 	err := raw.Register(self, self.fsInfo, self.includedMetrics, self.rawContainerCgroupPathPrefixWhiteList)
 	if err != nil {
 		klog.Errorf("Registration of the raw container factory failed: %v", err)
 	}
 
+	// 添加RawContainerWatcher到containerWatchers
+	// watchers列表只有RawContainerWatcher
 	rawWatcher, err := raw.NewRawContainerWatcher()
 	if err != nil {
 		return err
@@ -251,6 +255,7 @@ func (self *manager) Start() error {
 	self.containerWatchers = append(self.containerWatchers, rawWatcher)
 
 	// Watch for OOMs.
+	// 但是只是将event保存到inmemorycache，没有eventHandler去处理，因为没有调用WatchForEvents来注册eventHandler
 	err = self.watchForNewOoms()
 	if err != nil {
 		klog.Warningf("Could not configure a source for OOM detection, disabling OOM events: %v", err)
@@ -265,11 +270,15 @@ func (self *manager) Start() error {
 	self.nvidiaManager.Setup()
 
 	// Create root and then recover all containers.
+	// 只有raw的ContainerHandlerFactory能处理
+	// 它会创建goroutine，周期性获取cgroup里的cpu、内存指标、io信息和cpu、内存、网卡、磁盘io的使用状态
 	err = self.createContainer("/", watcher.Raw)
 	if err != nil {
 		return err
 	}
 	klog.V(2).Infof("Starting recovery of all containers")
+	// /sys/fs/cgroup 下的所有目录（遍历所有目录，每个目录是一个container）。根据containers里已经拥有的container和目录进行比较
+	// 分析出新增和移除的container，增加目录进行创建containerdata，移除目录移除containerdata
 	err = self.detectSubcontainers("/")
 	if err != nil {
 		return err
@@ -278,6 +287,7 @@ func (self *manager) Start() error {
 
 	// Watch for new container.
 	quitWatcher := make(chan error)
+	// inotify监听cgroup目录的变化事件的，增加目录进行创建containerdata（同时container增加事件到eventHandler），移除目录移除containerdata（同时增加container移除事件到eventHandler）
 	err = self.watchForNewContainers(quitWatcher)
 	if err != nil {
 		return err
@@ -287,10 +297,12 @@ func (self *manager) Start() error {
 	// Look for new containers in the main housekeeping thread.
 	quitGlobalHousekeeping := make(chan error)
 	self.quitChannels = append(self.quitChannels, quitGlobalHousekeeping)
+	// 默认一分钟执行detectSubcontainers("/")
 	go self.globalHousekeeping(quitGlobalHousekeeping)
 
 	quitUpdateMachineInfo := make(chan error)
 	self.quitChannels = append(self.quitChannels, quitUpdateMachineInfo)
+	// 默认5分钟执行更新machineInfo
 	go self.updateMachineInfo(quitUpdateMachineInfo)
 
 	return nil

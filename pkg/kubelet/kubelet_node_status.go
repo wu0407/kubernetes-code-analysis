@@ -472,7 +472,7 @@ func (kl *Kubelet) tryUpdateNodeStatus(tryNumber int) error {
 			// because it does not have access to the Node object.
 			// This also cannot be populated on node status manager init because the volume
 			// may not have been added to dsw at that time.
-			// 将node.Status.VolumesInUse列表里的volume设置volumeManager.desiredStateOfWorld.volumesToMount的reportedInUse为true
+			// 对node.Status.VolumesInUse列表里的volume，设置volumeManager.desiredStateOfWorld.volumesToMount的reportedInUse为true
 			kl.volumeManager.MarkVolumesAsReportedInUse(node.Status.VolumesInUse)
 			return nil
 		}

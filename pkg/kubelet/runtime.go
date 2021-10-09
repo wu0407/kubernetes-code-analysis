@@ -136,6 +136,8 @@ func (s *runtimeState) networkErrors() error {
 	return utilerrors.NewAggregate(errs)
 }
 
+// csi插件是未初始化完成（在pkg\volume\csi\csi_plugin.go里的initializeCSINode调用(kvh *kubeletVolumeHost) SetKubeletError），则s.storageError不为nil
+// 而pkg\kubelet\volume_host.go里的kubeletVolumeHost.SetKubeletError里调用s.setStorageState
 func (s *runtimeState) storageErrors() error {
 	s.RLock()
 	defer s.RUnlock()

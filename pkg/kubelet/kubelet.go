@@ -1495,6 +1495,13 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 		go kl.cloudResourceSyncManager.Run(wait.NeverStop)
 	}
 
+	// 1. 注册metric
+	// 2. 创建kubelet数据目录（pods、plugins、pod-resources）
+	// 3. 创建/var/log/containers目录
+	// 4. 启动image manager
+	// 5. 启动certificate manager，如果启用证书轮转
+	// 6. 启动oomWatcher
+	// 7. 启动资源状态监控
 	if err := kl.initializeModules(); err != nil {
 		kl.recorder.Eventf(kl.nodeRef, v1.EventTypeWarning, events.KubeletSetupFailed, err.Error())
 		klog.Fatal(err)
@@ -1514,6 +1521,8 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 		// start syncing lease
 		go kl.nodeLeaseController.Run(wait.NeverStop)
 	}
+	// 调用cri接口的Status查询 runtime status--包括RuntimeReady、NetworkReady
+	// 设置kl.runtimeState，kl.syncNodeStatus()会通过kl.runtimeState.runtimeErrors()和kl.runtimeState.networkErrors()和kl.runtimeState.storageErrors()检测runtime状态
 	go wait.Until(kl.updateRuntimeUp, 5*time.Second, wait.NeverStop)
 
 	// Set up iptables util rules

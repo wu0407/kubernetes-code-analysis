@@ -230,12 +230,14 @@ func (self *rawContainerHandler) GetStats() (*info.ContainerStats, error) {
 	if *disableRootCgroupStats && isRootCgroup(self.name) {
 		return nil, nil
 	}
+	// 获取cgoup下的cpu、内存、网卡、磁盘io的使用状态
 	stats, err := self.libcontainerHandler.GetStats()
 	if err != nil {
 		return stats, err
 	}
 
 	// Get filesystem stats.
+	// 文件系统状态，比如磁盘大小、剩余空间
 	err = self.getFsStats(stats)
 	if err != nil {
 		return stats, err

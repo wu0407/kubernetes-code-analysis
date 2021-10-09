@@ -519,7 +519,7 @@ func ReadyCondition(
 			Message:           "kubelet is posting ready status",
 			LastHeartbeatTime: currentTime,
 		}
-		// runtimeErrorsFunc检测Kubelet.runtimeState.lastBaseRuntimeSync在30秒内是否更新过，Kubelet.PELG.relistTime是否3分钟更新过，runtime是否有错误
+		// runtimeErrorsFunc检测Kubelet.runtimeState.lastBaseRuntimeSync在30秒内是否更新过，Kubelet.PELG.relistTime是否3分钟更新过，runtime是否有错误（调用kubelet.runtimeService.Status()，返回RuntimeReady为false）
 		// networkErrorsFunc检测是否有网络错误
 		// storageErrorsFunc 检测csi插件是否初始化完成
 		errs := []error{runtimeErrorsFunc(), networkErrorsFunc(), storageErrorsFunc()}
