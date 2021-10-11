@@ -41,6 +41,7 @@ func (ds *dockerService) ListContainers(_ context.Context, r *runtimeapi.ListCon
 	opts.Filters = dockerfilters.NewArgs()
 	f := newDockerFilter(&opts.Filters)
 	// Add filter to get *only* (non-sandbox) containers.
+	// 添加过滤条件Label["io.kubernetes.docker.type"]=="container"
 	f.AddLabel(containerTypeLabelKey, containerTypeLabelContainer)
 
 	if filter != nil {
@@ -60,6 +61,7 @@ func (ds *dockerService) ListContainers(_ context.Context, r *runtimeapi.ListCon
 			}
 		}
 	}
+	// 根据过滤条件获取所有continer
 	containers, err := ds.client.ListContainers(opts)
 	if err != nil {
 		return nil, err

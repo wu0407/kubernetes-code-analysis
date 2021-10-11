@@ -97,23 +97,29 @@ func (self *OomParser) StreamOoms(outStream chan<- *OomInstance) {
 	kmsgEntries := self.parser.Parse()
 	defer self.parser.Close()
 
+	// 从/dev/kmsg读取到合法消息
 	for msg := range kmsgEntries {
 		in_oom_kernel_log := checkIfStartOfOomMessages(msg.Message)
+		// 消息包含"invoked oom-killer:"
 		if in_oom_kernel_log {
 			oomCurrentInstance := &OomInstance{
 				ContainerName:       "/",
 				VictimContainerName: "/",
 				TimeOfDeath:         msg.Timestamp,
 			}
+			// 继续从/dev/kmsg读取消息
 			for msg := range kmsgEntries {
+				// 从消息中解析出ContainerName和VictimContainerName
 				err := getContainerName(msg.Message, oomCurrentInstance)
 				if err != nil {
 					klog.Errorf("%v", err)
 				}
+				// 从消息中解析出Pid和ProcessName
 				finished, err := getProcessNamePid(msg.Message, oomCurrentInstance)
 				if err != nil {
 					klog.Errorf("%v", err)
 				}
+				// 成功解析出Pid和ProcessName
 				if finished {
 					oomCurrentInstance.TimeOfDeath = msg.Timestamp
 					break

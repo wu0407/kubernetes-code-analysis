@@ -67,11 +67,13 @@ const (
 // Start watches for system oom's and records an event for every system oom encountered.
 func (ow *realWatcher) Start(ref *v1.ObjectReference) error {
 	outStream := make(chan *oomparser.OomInstance, 10)
+	// 从/dev/kmsg中读取oom消息
 	go ow.oomStreamer.StreamOoms(outStream)
 
 	go func() {
 		defer runtime.HandleCrash()
 
+		// 系统发生oom事件发送event消息
 		for event := range outStream {
 			if event.ContainerName == recordEventContainerName {
 				klog.V(1).Infof("Got sys oom event: %v", event)

@@ -106,9 +106,12 @@ func (c *controller) sync() {
 		klog.Infof("failed to update lease using latest lease, fallback to ensure lease, err: %v", err)
 	}
 
+	// 不存在lease则进行创建，任何错误则进行指数回退的重试，确保lease存在
+	// 创建成功created为true，否则为false
 	lease, created := c.backoffEnsureLease()
 	c.latestLease = lease
 	// we don't need to update the lease if we just created it
+	// lease已经存在--没有被创建（上面的created为false），则进行更新lease（最多进行5次重试）
 	if !created && lease != nil {
 		if err := c.retryUpdateLease(lease); err != nil {
 			klog.Errorf("%v, will retry after %v", err, c.renewInterval)
@@ -128,6 +131,8 @@ func (c *controller) backoffEnsureLease() (*coordinationv1.Lease, bool) {
 	)
 	sleep := 100 * time.Millisecond
 	for {
+		// 如果lease不存在，则创建一个lease
+		// 成功创建lease则create为true，否则为false
 		lease, created, err = c.ensureLease()
 		if err == nil {
 			break

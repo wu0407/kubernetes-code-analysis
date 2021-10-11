@@ -181,6 +181,7 @@ func (im *realImageGCManager) Start() {
 		if im.initialized {
 			ts = time.Now()
 		}
+		// 同步im.imageRecords为正在使用的镜像
 		_, err := im.detectImages(ts)
 		if err != nil {
 			klog.Warningf("[imageGCManager] Failed to monitor images: %v", err)
@@ -192,10 +193,12 @@ func (im *realImageGCManager) Start() {
 	// Start a goroutine periodically updates image cache.
 	// TODO(random-liu): Merge this with the previous loop.
 	go wait.Until(func() {
+		// 获得node节点上所有镜像列表
 		images, err := im.runtime.ListImages()
 		if err != nil {
 			klog.Warningf("[imageGCManager] Failed to update image list: %v", err)
 		} else {
+			// 保存image list到im.imageCache.images
 			im.imageCache.set(images)
 		}
 	}, 30*time.Second, wait.NeverStop)
@@ -207,25 +210,30 @@ func (im *realImageGCManager) GetImageList() ([]container.Image, error) {
 	return im.imageCache.get(), nil
 }
 
+// 获得正在使用的镜像id集合和同步im.imageRecords为正在使用的镜像
 func (im *realImageGCManager) detectImages(detectTime time.Time) (sets.String, error) {
 	imagesInUse := sets.NewString()
 
 	// Always consider the container runtime pod sandbox image in use
+	// 获得sandbox镜像id或digest
 	imageRef, err := im.runtime.GetImageRef(container.ImageSpec{Image: im.sandboxImage})
 	if err == nil && imageRef != "" {
 		imagesInUse.Insert(imageRef)
 	}
 
+	// 获得node节点上所有镜像列表
 	images, err := im.runtime.ListImages()
 	if err != nil {
 		return imagesInUse, err
 	}
+	// 获得node上的所有pod的容器列表
 	pods, err := im.runtime.GetPods(true)
 	if err != nil {
 		return imagesInUse, err
 	}
 
 	// Make a set of images in use by containers.
+	// 容器的镜像标记为InUse
 	for _, pod := range pods {
 		for _, container := range pod.Containers {
 			klog.V(5).Infof("Pod %s/%s, container %s uses image %s(%s)", pod.Namespace, pod.Name, container.Name, container.Image, container.ImageID)
@@ -261,6 +269,7 @@ func (im *realImageGCManager) detectImages(detectTime time.Time) (sets.String, e
 	}
 
 	// Remove old images from our records.
+	// 移除记录中不存在的镜像
 	for image := range im.imageRecords {
 		if !currentImages.Has(image) {
 			klog.V(5).Infof("Image ID %s is no longer present; removing from imageRecords", image)

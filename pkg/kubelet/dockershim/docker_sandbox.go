@@ -501,6 +501,7 @@ func (ds *dockerService) ListPodSandbox(_ context.Context, r *runtimeapi.ListPod
 	opts.Filters = dockerfilters.NewArgs()
 	f := newDockerFilter(&opts.Filters)
 	// Add filter to select only sandbox containers.
+	// 添加过滤选项Label["io.kubernetes.docker.type"]="podsandbox"
 	f.AddLabel(containerTypeLabelKey, containerTypeLabelSandbox)
 
 	if filter != nil {
@@ -533,12 +534,14 @@ func (ds *dockerService) ListPodSandbox(_ context.Context, r *runtimeapi.ListPod
 	var err error
 	checkpoints := []string{}
 	if filter == nil {
+		// 返回/var/lib/dockershim/sandbox下所有文件列表
 		checkpoints, err = ds.checkpointManager.ListCheckpoints()
 		if err != nil {
 			klog.Errorf("Failed to list checkpoints: %v", err)
 		}
 	}
 
+	// 获得所有sandbox容器列表（根据opts进行过滤）
 	containers, err := ds.client.ListContainers(opts)
 	if err != nil {
 		return nil, err
@@ -565,15 +568,20 @@ func (ds *dockerService) ListPodSandbox(_ context.Context, r *runtimeapi.ListPod
 	// Include sandbox that could only be found with its checkpoint if no filter is applied
 	// These PodSandbox will only include PodSandboxID, Name, Namespace.
 	// These PodSandbox will be in PodSandboxState_SANDBOX_NOTREADY state.
+	// 从checkpoint（/var/lib/dockershim/sandbox）中查找不在上面（通过访问docker api获得的容器id）
+	// 这些容器可能不存在或退出状态--设置状态为PodSandboxState_SANDBOX_NOTREADY
 	for _, id := range checkpoints {
 		if _, ok := sandboxIDs[id]; ok {
 			continue
 		}
 		checkpoint := NewPodSandboxCheckpoint("", "", &CheckpointData{})
+		// 读取/var/lib/dockershim/sandbox/{id}内容，json.Unmashal到checkpoint
 		err := ds.checkpointManager.GetCheckpoint(id, checkpoint)
 		if err != nil {
 			klog.Errorf("Failed to retrieve checkpoint for sandbox %q: %v", id, err)
+			// when checksum does not match
 			if err == errors.ErrCorruptCheckpoint {
+				// 移除/var/lib/dockershim/sandbox/{id}
 				err = ds.checkpointManager.RemoveCheckpoint(id)
 				if err != nil {
 					klog.Errorf("Failed to delete corrupt checkpoint for sandbox %q: %v", id, err)

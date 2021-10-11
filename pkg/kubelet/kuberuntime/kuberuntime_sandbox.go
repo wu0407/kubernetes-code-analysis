@@ -205,6 +205,7 @@ func (m *kubeGenericRuntimeManager) getKubeletSandboxes(all bool) ([]*runtimeapi
 		}
 	}
 
+	// 获得所有的sandbox容器（dockershim会从docker api中和checkpoint目录中获取）
 	resp, err := m.runtimeService.ListPodSandbox(filter)
 	if err != nil {
 		klog.Errorf("ListPodSandbox failed: %v", err)

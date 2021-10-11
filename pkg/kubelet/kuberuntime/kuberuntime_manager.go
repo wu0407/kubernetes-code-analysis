@@ -312,8 +312,10 @@ func (m *kubeGenericRuntimeManager) Status() (*kubecontainer.RuntimeStatus, erro
 // GetPods returns a list of containers grouped by pods. The boolean parameter
 // specifies whether the runtime returns all containers including those already
 // exited and dead containers (used for garbage collection).
+// 获得所有pod的容器列表
 func (m *kubeGenericRuntimeManager) GetPods(all bool) ([]*kubecontainer.Pod, error) {
 	pods := make(map[kubetypes.UID]*kubecontainer.Pod)
+	// 获得所有的sandbox容器
 	sandboxes, err := m.getKubeletSandboxes(all)
 	if err != nil {
 		return nil, err
@@ -341,6 +343,7 @@ func (m *kubeGenericRuntimeManager) GetPods(all bool) ([]*kubecontainer.Pod, err
 		p.Sandboxes = append(p.Sandboxes, converted)
 	}
 
+	// 获得所有非sandbox容器
 	containers, err := m.getKubeletContainers(all)
 	if err != nil {
 		return nil, err
@@ -352,6 +355,7 @@ func (m *kubeGenericRuntimeManager) GetPods(all bool) ([]*kubecontainer.Pod, err
 			continue
 		}
 
+		// 从Label中获取pod name、namespace、pod UID、container name
 		labelledInfo := getContainerInfoFromLabels(c.Labels)
 		pod, found := pods[labelledInfo.PodUID]
 		if !found {

@@ -91,6 +91,7 @@ func (m *kubeGenericRuntimeManager) toKubeContainer(c *runtimeapi.Container) (*k
 		return nil, fmt.Errorf("unable to convert a nil pointer to a runtime container")
 	}
 
+	// 从annotions中解析出TerminationMessagePath、TerminationMessagePolicy、Hash、RestartCount、PodDeletionGracePeriod、PodTerminationGracePeriod、preStopHandler、containerPorts
 	annotatedInfo := getContainerInfoFromAnnotations(c.Annotations)
 	return &kubecontainer.Container{
 		ID:      kubecontainer.ContainerID{Type: m.runtimeName, ID: c.Id},

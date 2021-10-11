@@ -1424,6 +1424,8 @@ func (kl *Kubelet) initializeModules() error {
 	}
 
 	// Start the image manager.
+	// 每5分钟同步正在使用的镜像保存在kl.imageManager.imageRecords
+	// 每30s保存node节点上所有镜像列表到kl.imageManager.imageCache.images
 	kl.imageManager.Start()
 
 	// Start the certificate manager if it was enabled.
@@ -1432,6 +1434,7 @@ func (kl *Kubelet) initializeModules() error {
 	}
 
 	// Start out of memory watcher.
+	// watch /dev/kmsg(监听内核消息), 当系统发生oom事件发送event消息
 	if err := kl.oomWatcher.Start(kl.nodeRef); err != nil {
 		return fmt.Errorf("failed to start OOM watcher %v", err)
 	}
@@ -1500,7 +1503,7 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 	// 3. 创建/var/log/containers目录
 	// 4. 启动image manager
 	// 5. 启动certificate manager，如果启用证书轮转
-	// 6. 启动oomWatcher
+	// 6. 启动oomWatcher，watch /dev/kmsg(监听内核消息), 当系统发生oom事件发送event消息
 	// 7. 启动资源状态监控
 	if err := kl.initializeModules(); err != nil {
 		kl.recorder.Eventf(kl.nodeRef, v1.EventTypeWarning, events.KubeletSetupFailed, err.Error())
@@ -1519,6 +1522,7 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 		go kl.fastStatusUpdateOnce()
 
 		// start syncing lease
+		// 默认为每10秒更新lease
 		go kl.nodeLeaseController.Run(wait.NeverStop)
 	}
 	// 调用cri接口的Status查询 runtime status--包括RuntimeReady、NetworkReady
@@ -1539,6 +1543,7 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 	kl.probeManager.Start()
 
 	// Start syncing RuntimeClasses if enabled.
+	// 启动runtimeClass informer
 	if kl.runtimeClassManager != nil {
 		kl.runtimeClassManager.Start(wait.NeverStop)
 	}

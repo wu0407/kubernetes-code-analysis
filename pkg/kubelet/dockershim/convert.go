@@ -80,6 +80,7 @@ func toRuntimeAPIContainer(c *dockertypes.Container) (*runtimeapi.Container, err
 	if len(c.Names) == 0 {
 		return nil, fmt.Errorf("unexpected empty container name: %+v", c)
 	}
+	// 从容器名中解析出pod中container名字（不是运行时容器名字）和attempt
 	metadata, err := parseContainerName(c.Names[0])
 	if err != nil {
 		return nil, err
@@ -147,10 +148,12 @@ func containerToRuntimeAPISandbox(c *dockertypes.Container) (*runtimeapi.PodSand
 	if len(c.Names) == 0 {
 		return nil, fmt.Errorf("unexpected empty sandbox name: %+v", c)
 	}
+	// 容器名（解析出pod的name、namespace、uid、attempt）转成runtimeapi.PodSandboxMetadata
 	metadata, err := parseSandboxName(c.Names[0])
 	if err != nil {
 		return nil, err
 	}
+	// 从容器的Labels中解析出cri的labels和annotations，过滤掉内置的Labels
 	labels, annotations := extractLabels(c.Labels)
 	// The timestamp in dockertypes.Container is in seconds.
 	createdAt := c.Created * int64(time.Second)
