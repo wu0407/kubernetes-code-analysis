@@ -56,6 +56,7 @@ func StatusWithContext(ctx context.Context) (v1.DockerStatus, error) {
 	return StatusFromDockerInfo(dockerInfo)
 }
 
+// dockertypes.Info转成v1.DockerStatus
 func StatusFromDockerInfo(dockerInfo dockertypes.Info) (v1.DockerStatus, error) {
 	out := v1.DockerStatus{}
 	out.KernelVersion = machine.KernelVersion()

@@ -58,10 +58,12 @@ func FindCgroupMountpoint(cgroupPath, subsystem string) (string, error) {
 	return mnt, err
 }
 
+// 找到subsystem子系统在/proc/self/mountinfo信息里挂载目录和root目录--从/proc/self/mountinfo里每一行的最后一个字段，按照逗号进行分割，得到的切片中是否包含subsystem，如果包含，则返回第5个字段（挂载目录）和第四个字段（root目录--当前目录）
 func FindCgroupMountpointAndRoot(cgroupPath, subsystem string) (string, string, error) {
 	// We are not using mount.GetMounts() because it's super-inefficient,
 	// parsing it directly sped up x10 times because of not using Sscanf.
 	// It was one of two major performance drawbacks in container start.
+	// 在"/proc/self/cgroup"里是否有subsystem
 	if !isSubsystemAvailable(subsystem) {
 		return "", "", NewNotFoundError(subsystem)
 	}
@@ -76,6 +78,8 @@ func FindCgroupMountpointAndRoot(cgroupPath, subsystem string) (string, string, 
 		subsystem = ""
 	}
 
+	// 这里的cgroupPath为"",意味着在findCgroupMountpointAndRootFromReader里strings.HasPrefix(fields[4], cgroupPath)都为true
+	// 即从/proc/self/mountinfo里每一行的最后一个字段，按照逗号进行分割，得到的切片中是否包含subsystem
 	return findCgroupMountpointAndRootFromReader(f, cgroupPath, subsystem)
 }
 
@@ -307,14 +311,17 @@ func GetAllSubsystems() ([]string, error) {
 
 // GetOwnCgroup returns the relative path to the cgroup docker is running in.
 func GetOwnCgroup(subsystem string) (string, error) {
+	// 从/proc/self/cgroup获得各种cgroup系统的路径
 	cgroups, err := ParseCgroupFile("/proc/self/cgroup")
 	if err != nil {
 		return "", err
 	}
 
+	// 获得subsystem的cgroup系统的路径
 	return getControllerPath(subsystem, cgroups)
 }
 
+// 进程的cgroup subsystem的路径
 func GetOwnCgroupPath(subsystem string) (string, error) {
 	cgroup, err := GetOwnCgroup(subsystem)
 	if err != nil {
@@ -342,7 +349,9 @@ func GetInitCgroupPath(subsystem string) (string, error) {
 	return getCgroupPathHelper(subsystem, cgroup)
 }
 
+// 找到subsystem子系统在/proc/self/mountinfo中的挂载目录
 func getCgroupPathHelper(subsystem, cgroup string) (string, error) {
+	// 找到subsystem子系统在/proc/self/mountinfo信息里挂载目录和root目录
 	mnt, root, err := FindCgroupMountpointAndRoot("", subsystem)
 	if err != nil {
 		return "", err

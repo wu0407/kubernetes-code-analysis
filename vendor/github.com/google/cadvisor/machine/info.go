@@ -62,46 +62,56 @@ func Info(sysFs sysfs.SysFs, fsInfo fs.FsInfo, inHostNamespace bool) (*info.Mach
 	if err != nil {
 		return nil, err
 	}
+	// cpu最高主频
 	clockSpeed, err := GetClockSpeed(cpuinfo)
 	if err != nil {
 		return nil, err
 	}
 
+	// 最大内存，单位字节
 	memoryCapacity, err := GetMachineMemoryCapacity()
 	if err != nil {
 		return nil, err
 	}
 
+	// hugepage的各个pagesize和这个pagesize的numPages
 	hugePagesInfo, err := GetHugePagesInfo(hugepagesDirectory)
 	if err != nil {
 		return nil, err
 	}
 
+	// 获取各个挂载源（设备）的总的大小、free大小、非特权用户avail可用大小、inodes容量、free的inode数量、文件系统类型为vfs，设备信息（设备名、主次设备号）、磁盘的读写数据量和耗时统计
 	filesystems, err := fsInfo.GetGlobalFsInfo()
 	if err != nil {
 		klog.Errorf("Failed to get global filesystem information: %v", err)
 	}
 
+	// 获得所有块设备大小、设备号、io调度算法
 	diskMap, err := sysinfo.GetBlockDeviceInfo(sysFs)
 	if err != nil {
 		klog.Errorf("Failed to get disk map: %v", err)
 	}
 
+	// 获得所有网卡的名字、mac、mtu、speed
 	netDevices, err := sysinfo.GetNetworkDevices(sysFs)
 	if err != nil {
 		klog.Errorf("Failed to get network devices: %v", err)
 	}
 
+	// 获得cpu的拓扑，物理cpu下包含多个core和每个core的缓存信息，core下面包含多个线程
 	topology, numCores, err := GetTopology(sysFs, string(cpuinfo))
 	if err != nil {
 		klog.Errorf("Failed to get topology information: %v", err)
 	}
 
+	// 系统的uuid
 	systemUUID, err := sysinfo.GetSystemUUID(sysFs)
 	if err != nil {
 		klog.Errorf("Failed to get system UUID: %v", err)
 	}
 
+	// 获得node节点在云厂商里的instanceType和instanceID
+	// 目前支持aws、azure、gce，其他不支持的cloudProvider为Unknown，instanceType为Unknown、instanceID为None
 	realCloudInfo := cloudinfo.NewRealCloudInfo()
 	cloudProvider := realCloudInfo.GetCloudProvider()
 	instanceType := realCloudInfo.GetInstanceType()
@@ -115,14 +125,18 @@ func Info(sysFs sysfs.SysFs, fsInfo fs.FsInfo, inHostNamespace bool) (*info.Mach
 		DiskMap:        diskMap,
 		NetworkDevices: netDevices,
 		Topology:       topology,
+		// 读取/etc/machine-id或/var/lib/dbus/machine-id
 		MachineID:      getInfoFromFiles(filepath.Join(rootFs, *machineIdFilePath)),
 		SystemUUID:     systemUUID,
+		// 读取/proc/sys/kernel/random/boot_id
 		BootID:         getInfoFromFiles(filepath.Join(rootFs, *bootIdFilePath)),
 		CloudProvider:  cloudProvider,
 		InstanceType:   instanceType,
 		InstanceID:     instanceID,
 	}
 
+	// 将[]fs.Fs转成[]info.FsInfo
+	// 只需要fs.Device、fs.Major、fs.Minor、fs.Type（一般都为"vfs"）,fs.Capacity（总大小），inode
 	for i := range filesystems {
 		fs := filesystems[i]
 		inodes := uint64(0)

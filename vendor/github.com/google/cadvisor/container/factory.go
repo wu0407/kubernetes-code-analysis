@@ -75,6 +75,8 @@ func (ms MetricSet) Add(mk MetricKind) {
 
 // All registered auth provider plugins.
 var pluginsLock sync.Mutex
+// 在pkg\kubelet\cadvisor\cadvisor_linux.go里注册plugins
+// 支持的plugin有containerd、docker、crio、systemd
 var plugins = make(map[string]Plugin)
 
 type Plugin interface {

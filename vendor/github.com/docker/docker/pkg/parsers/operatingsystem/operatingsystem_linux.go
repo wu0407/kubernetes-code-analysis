@@ -26,11 +26,13 @@ var (
 
 // GetOperatingSystem gets the name of the current operating system.
 func GetOperatingSystem() (string, error) {
+	// 打开/etc/os-release
 	osReleaseFile, err := os.Open(etcOsRelease)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return "", fmt.Errorf("Error opening %s: %v", etcOsRelease, err)
 		}
+		// 或者打开/usr/lib/os-release
 		osReleaseFile, err = os.Open(altOsRelease)
 		if err != nil {
 			return "", fmt.Errorf("Error opening %s: %v", altOsRelease, err)

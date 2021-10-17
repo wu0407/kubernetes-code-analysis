@@ -40,6 +40,11 @@ type CloudProvider interface {
 	GetInstanceID() info.InstanceID
 }
 
+// 在pkg\kubelet\cadvisor\cadvisor_linux.go里会import这些
+// _ "github.com/google/cadvisor/utils/cloudinfo/aws"
+// _ "github.com/google/cadvisor/utils/cloudinfo/azure"
+// _ "github.com/google/cadvisor/utils/cloudinfo/gce"
+// 进行添加provider
 var providers = map[info.CloudProvider]CloudProvider{}
 
 // RegisterCloudProvider registers the given cloud provider

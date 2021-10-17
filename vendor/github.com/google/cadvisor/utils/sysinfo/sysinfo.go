@@ -28,13 +28,16 @@ var schedulerRegExp = regexp.MustCompile(`.*\[(.*)\].*`)
 
 // Get information about block devices present on the system.
 // Uses the passed in system interface to retrieve the low level OS information.
+// 获得所有块设备大小、设备号、io调度算法
 func GetBlockDeviceInfo(sysfs sysfs.SysFs) (map[string]info.DiskInfo, error) {
+	// 读取/sys/block目录
 	disks, err := sysfs.GetBlockDevices()
 	if err != nil {
 		return nil, err
 	}
 
 	diskMap := make(map[string]info.DiskInfo)
+	// 比如有文件loop0  sr0  vda  vdb
 	for _, disk := range disks {
 		name := disk.Name()
 		// Ignore non-disk devices.
@@ -45,6 +48,7 @@ func GetBlockDeviceInfo(sysfs sysfs.SysFs) (map[string]info.DiskInfo, error) {
 		disk_info := info.DiskInfo{
 			Name: name,
 		}
+		// 读取/sys/block/{name}/dev，返回 主设备号:次设备号
 		dev, err := sysfs.GetBlockDeviceNumbers(name)
 		if err != nil {
 			return nil, err
@@ -53,6 +57,7 @@ func GetBlockDeviceInfo(sysfs sysfs.SysFs) (map[string]info.DiskInfo, error) {
 		if err != nil || n != 2 {
 			return nil, fmt.Errorf("could not parse device numbers from %s for device %s", dev, name)
 		}
+		// 读取/sys/block/{name}/size，返回块设备大小，单位块
 		out, err := sysfs.GetBlockDeviceSize(name)
 		if err != nil {
 			return nil, err
@@ -66,6 +71,7 @@ func GetBlockDeviceInfo(sysfs sysfs.SysFs) (map[string]info.DiskInfo, error) {
 		disk_info.Size = size * 512
 
 		disk_info.Scheduler = "none"
+		// 读取/sys/block/{name}/queue/scheduler， 返回io调度算法
 		blkSched, err := sysfs.GetBlockDeviceScheduler(name)
 		if err == nil {
 			matches := schedulerRegExp.FindSubmatch([]byte(blkSched))
@@ -80,6 +86,7 @@ func GetBlockDeviceInfo(sysfs sysfs.SysFs) (map[string]info.DiskInfo, error) {
 }
 
 // Get information about network devices present on the system.
+// 获得所有网卡的名字、mac、mtu、speed
 func GetNetworkDevices(sysfs sysfs.SysFs) ([]info.NetInfo, error) {
 	devs, err := sysfs.GetNetworkDevices()
 	if err != nil {
@@ -100,10 +107,12 @@ func GetNetworkDevices(sysfs sysfs.SysFs) ([]info.NetInfo, error) {
 		if ignored {
 			continue
 		}
+		// 读取/sys/class/net/{name}/address，返回mac地址
 		address, err := sysfs.GetNetworkAddress(name)
 		if err != nil {
 			return nil, err
 		}
+		// 读取/sys/class/net/{name}/mtu，返回网卡的mtu大小
 		mtuStr, err := sysfs.GetNetworkMtu(name)
 		if err != nil {
 			return nil, err
@@ -118,6 +127,7 @@ func GetNetworkDevices(sysfs sysfs.SysFs) ([]info.NetInfo, error) {
 			MacAddress: strings.TrimSpace(address),
 			Mtu:        mtu,
 		}
+		// 读取/sys/class/net/{name}/speed，返回网卡的速度
 		speed, err := sysfs.GetNetworkSpeed(name)
 		// Some devices don't set speed.
 		if err == nil {
@@ -133,17 +143,21 @@ func GetNetworkDevices(sysfs sysfs.SysFs) ([]info.NetInfo, error) {
 	return netDevices, nil
 }
 
+// 获得这个id的线程cpu的各级缓存的信息--缓存大小、级别、类型、共享的线程个数
 func GetCacheInfo(sysFs sysfs.SysFs, id int) ([]sysfs.CacheInfo, error) {
+	// 读取/sys/devices/system/cpu/cpu{id}/cache目录
 	caches, err := sysFs.GetCaches(id)
 	if err != nil {
 		return nil, err
 	}
 
 	info := []sysfs.CacheInfo{}
+	// 有以下这个文件 index0  index1  index2  power  uevent
 	for _, cache := range caches {
 		if !strings.HasPrefix(cache.Name(), "index") {
 			continue
 		}
+		// 获取index{index}的size、level、type、shared_cpu_map--缓存大小、级别、类型、共享的线程个数
 		cacheInfo, err := sysFs.GetCacheInfo(id, cache.Name())
 		if err != nil {
 			return nil, err

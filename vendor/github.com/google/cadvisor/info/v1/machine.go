@@ -59,6 +59,7 @@ type Cache struct {
 	Level int `json:"level"`
 }
 
+// cores中是否发现了这个id的core
 func (self *Node) FindCore(id int) (bool, int) {
 	for i, n := range self.Cores {
 		if n.Id == id {
@@ -68,6 +69,7 @@ func (self *Node) FindCore(id int) (bool, int) {
 	return false, -1
 }
 
+// 添加thread到这个core中，如果core没有发现，则添加新的core到nodes
 func (self *Node) AddThread(thread int, core int) {
 	var coreIdx int
 	if core == -1 {
@@ -76,6 +78,7 @@ func (self *Node) AddThread(thread int, core int) {
 	}
 	ok, coreIdx := self.FindCore(core)
 
+	// 没有发现这个core，说明是新发现的core
 	if !ok {
 		// New core
 		core := Core{Id: core}

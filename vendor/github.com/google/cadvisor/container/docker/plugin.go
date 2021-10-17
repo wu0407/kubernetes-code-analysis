@@ -37,8 +37,10 @@ type plugin struct{}
 func (p *plugin) InitializeFSContext(context *fs.Context) error {
 	SetTimeout(dockerClientTimeout)
 	// Try to connect to docker indefinitely on startup.
+	// 获得docker info信息
 	dockerStatus := retryDockerStatus()
 	context.Docker = fs.DockerContext{
+		// docker的root dir
 		Root:         RootDir(),
 		Driver:       dockerStatus.Driver,
 		DriverStatus: dockerStatus.DriverStatus,
@@ -56,6 +58,7 @@ func retryDockerStatus() info.DockerStatus {
 	maxTimeout := 4 * startupTimeout
 	for {
 		ctx, _ := context.WithTimeout(context.Background(), startupTimeout)
+		// 获得docker info信息
 		dockerStatus, err := StatusWithContext(ctx)
 		if err == nil {
 			return dockerStatus

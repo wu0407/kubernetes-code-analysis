@@ -234,6 +234,7 @@ func GetHugePagesInfo(hugepagesDirectory string) ([]info.HugePagesInfo, error) {
 	return hugePagesInfo, nil
 }
 
+// 获得cpu的拓扑，物理cpu下包含多个core和每个core的缓存信息，core下面包含多个线程
 func GetTopology(sysFs sysfs.SysFs, cpuinfo string) ([]info.Node, int, error) {
 	nodes := []info.Node{}
 
@@ -250,23 +251,31 @@ func GetTopology(sysFs sysfs.SysFs, cpuinfo string) ([]info.Node, int, error) {
 		if line == "" {
 			continue
 		}
+		// 当前行否包含的cpu的线程id--匹配`^processor\s*:\s*([0-9]+)$`
 		ok, val, err := extractValue(line, cpuRegExp)
 		if err != nil {
 			return nil, -1, fmt.Errorf("could not parse cpu info from %q: %v", line, err)
 		}
+
+		// 包含cpu的线程id，则进行添加之前发现的thread id到core中
 		if ok {
 			thread := val
 			numCores++
+			// 添加上次发现的线程id（lastThread）
 			if lastThread != -1 {
 				// New cpu section. Save last one.
 				nodeIdx, err := addNode(&nodes, lastNode)
 				if err != nil {
 					return nil, -1, fmt.Errorf("failed to add node %d: %v", lastNode, err)
 				}
+				// 添加thread到这个core中，如果core没有发现，则添加新的core到nodes
 				nodes[nodeIdx].AddThread(lastThread, lastCore)
+				// 后续循环里会找到核心id和node id，设置lastCore和lastNode
+				// 这里设置为-1，是为arm cpu，没有'core id' and 'physical id'
 				lastCore = -1
 				lastNode = -1
 			}
+			// 设置lastThread用于后续循环时候（上面的lastThread != -1为true），添加该thread id到core中
 			lastThread = thread
 
 			/* On Arm platform, no 'core id' and 'physical id' in '/proc/cpuinfo'. */
@@ -298,15 +307,18 @@ func GetTopology(sysFs sysfs.SysFs, cpuinfo string) ([]info.Node, int, error) {
 			continue
 		}
 
+		// 当前行是否包含核心id--匹配`^core id\s*:\s*([0-9]+)$`
 		ok, val, err = extractValue(line, coreRegExp)
 		if err != nil {
 			return nil, -1, fmt.Errorf("could not parse core info from %q: %v", line, err)
 		}
+		// 包含含核心id
 		if ok {
 			lastCore = val
 			continue
 		}
 
+		// 当前行是否包含物理cpu id--匹配`^physical id\s*:\s*([0-9]+)$`
 		ok, val, err = extractValue(line, nodeRegExp)
 		if err != nil {
 			return nil, -1, fmt.Errorf("could not parse node info from %q: %v", line, err)
@@ -317,15 +329,19 @@ func GetTopology(sysFs sysfs.SysFs, cpuinfo string) ([]info.Node, int, error) {
 		}
 	}
 
+	// 确保最后一次发现lastNode，添加到nodes
 	nodeIdx, err := addNode(&nodes, lastNode)
 	if err != nil {
 		return nil, -1, fmt.Errorf("failed to add node %d: %v", lastNode, err)
 	}
+	// 添加最后的一次发现的lastCore、lastThread
 	nodes[nodeIdx].AddThread(lastThread, lastCore)
 	if numCores < 1 {
 		return nil, numCores, fmt.Errorf("could not detect any cores")
 	}
+	// 填充node的cache
 	for idx, node := range nodes {
+		// 获得每个node（物理cpu）上的第一个core的第一个线程cpu的各级缓存的信息--缓存大小、级别、类型、共享的线程个数
 		caches, err := sysinfo.GetCacheInfo(sysFs, node.Cores[0].Threads[0])
 		if err != nil {
 			klog.Errorf("failed to get cache information for node %d: %v", node.Id, err)
@@ -339,11 +355,14 @@ func GetTopology(sysFs sysfs.SysFs, cpuinfo string) ([]info.Node, int, error) {
 				Level: cache.Level,
 				Type:  cache.Type,
 			}
+			// 共享该级缓存的线程cpu数等于这个node（物理cpu）的拥有的线程数，且当前cache.Level大于2（缓存级别为3级缓存）
 			if cache.Cpus == numThreadsPerNode && cache.Level > 2 {
 				// Add a node-level cache.
+				// 有3级缓存，则添加cache到node层（3级缓存整个物理cpu的线程共享）
 				nodes[idx].AddNodeCache(c)
 			} else if cache.Cpus == numThreadsPerCore {
 				// Add to each core.
+				// 一级和二级缓存，添加到core中
 				nodes[idx].AddPerCoreCache(c)
 			}
 			// Ignore unknown caches.
@@ -373,6 +392,7 @@ func findNode(nodes []info.Node, id int) (bool, int) {
 	return false, -1
 }
 
+// 物理cpu节点id不在nodes里面，则增加新的物理cpu节点到nodes，包括id，Memory，HugePages
 func addNode(nodes *[]info.Node, id int) (int, error) {
 	var idx int
 	if id == -1 {
@@ -380,6 +400,7 @@ func addNode(nodes *[]info.Node, id int) (int, error) {
 		id = 0
 	}
 
+	// id是否在已经在nodes中
 	ok, idx := findNode(*nodes, id)
 	if !ok {
 		// New node
@@ -389,6 +410,7 @@ func addNode(nodes *[]info.Node, id int) (int, error) {
 		out, err := ioutil.ReadFile(meminfo)
 		// Ignore if per-node info is not available.
 		if err == nil {
+			// 解析node上总的memory，单位是kb
 			m, err := parseCapacity(out, memoryCapacityRegexp)
 			if err != nil {
 				return -1, err
@@ -398,6 +420,7 @@ func addNode(nodes *[]info.Node, id int) (int, error) {
 		// Look for per-node hugepages info using node id
 		// Such as: /sys/devices/system/node/node%d/hugepages
 		hugepagesDirectory := fmt.Sprintf("%s/node%d/hugepages/", nodePath, id)
+		// 解析出所有hugepage的PageSize和这个PageSize的numPages
 		hugePagesInfo, err := GetHugePagesInfo(hugepagesDirectory)
 		if err != nil {
 			return -1, err

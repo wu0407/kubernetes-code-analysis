@@ -139,6 +139,7 @@ func New(memoryCache *memory.InMemoryCache, sysfs sysfs.SysFs, maxHousekeepingIn
 	}
 
 	// Detect the container we are running on.
+	// 获得kubelet进程的cpu cgroup子系统的路径，默认为/sys/fs/cgroup/cpu,cpuacct/system.slice/kubelet.service
 	selfContainer, err := cgroups.GetOwnCgroupPath("cpu")
 	if err != nil {
 		return nil, err
@@ -147,10 +148,12 @@ func New(memoryCache *memory.InMemoryCache, sysfs sysfs.SysFs, maxHousekeepingIn
 
 	context := fs.Context{}
 
+	// 获得docker的root directory、storage driver信息和crio的root directory
 	if err := container.InitializeFSContext(&context); err != nil {
 		return nil, err
 	}
 
+	// 磁盘设备和文件系统挂载信息和镜像目录、根目录的挂载源（设备）
 	fsInfo, err := fs.NewFsInfo(context)
 	if err != nil {
 		return nil, err
@@ -185,6 +188,9 @@ func New(memoryCache *memory.InMemoryCache, sysfs sysfs.SysFs, maxHousekeepingIn
 		rawContainerCgroupPathPrefixWhiteList: rawContainerCgroupPathPrefixWhiteList,
 	}
 
+	// 获得cpu最高主频、最大内存、hugepage、各个挂载源的总大小、设备名、设备号、inode
+	// 所有块设备大小、设备号、io调度算法、获得所有网卡的名字、mac、mtu、speed、获得cpu的拓扑、系统uuid、bootid
+	// 云厂商的类型和实例id和实例类型
 	machineInfo, err := machine.Info(sysfs, fsInfo, inHostNamespace)
 	if err != nil {
 		return nil, err
@@ -192,12 +198,14 @@ func New(memoryCache *memory.InMemoryCache, sysfs sysfs.SysFs, maxHousekeepingIn
 	newManager.machineInfo = *machineInfo
 	klog.V(1).Infof("Machine: %+v", newManager.machineInfo)
 
+	// 获得docker版本、docker api版本、内核版本、操作系统版本、cadvisor版本（由于kubelet没有初始化或编译时设置version.Info，所以这里为nil）
 	versionInfo, err := getVersionInfo()
 	if err != nil {
 		return nil, err
 	}
 	klog.V(1).Infof("Version: %+v", *versionInfo)
 
+	// 默认// DefaultMaxAge为24 * time.Hour，DefaultMaxNumEvents:为100000
 	newManager.eventHandler = events.NewEventManager(parseEventsStoragePolicy())
 	return newManager, nil
 }
@@ -1226,9 +1234,11 @@ func (self *manager) CloseEventChannel(watch_id int) {
 
 // Parses the events StoragePolicy from the flags.
 func parseEventsStoragePolicy() events.StoragePolicy {
+	// DefaultMaxAge:       24 * time.Hour,	DefaultMaxNumEvents: 100000
 	policy := events.DefaultStoragePolicy()
 
 	// Parse max age.
+	// eventStorageAgeLimit默认为"default=24h"
 	parts := strings.Split(*eventStorageAgeLimit, ",")
 	for _, part := range parts {
 		items := strings.Split(part, "=")
@@ -1249,6 +1259,7 @@ func parseEventsStoragePolicy() events.StoragePolicy {
 	}
 
 	// Parse max number.
+	// eventStorageEventLimit为"default=100000"
 	parts = strings.Split(*eventStorageEventLimit, ",")
 	for _, part := range parts {
 		items := strings.Split(part, "=")
@@ -1333,12 +1344,16 @@ func (self *manager) getFsInfoByDeviceName(deviceName string) (v2.FsInfo, error)
 
 func getVersionInfo() (*info.VersionInfo, error) {
 
+	// 类似uname -r
 	kernel_version := machine.KernelVersion()
+	// 发行版
 	container_os := machine.ContainerOsVersion()
+	// docker版本
 	docker_version, err := docker.VersionString()
 	if err != nil {
 		return nil, err
 	}
+	// docker api版本
 	docker_api_version, err := docker.APIVersionString()
 	if err != nil {
 		return nil, err
@@ -1349,6 +1364,7 @@ func getVersionInfo() (*info.VersionInfo, error) {
 		ContainerOsVersion: container_os,
 		DockerVersion:      docker_version,
 		DockerAPIVersion:   docker_api_version,
+		// 由于kubelet没有初始化或编译时设置version.Info，所以这里为nil
 		CadvisorVersion:    version.Info["version"],
 		CadvisorRevision:   version.Info["revision"],
 	}, nil

@@ -76,6 +76,8 @@ func RootDir() string {
 		if err == nil && status.RootDir != "" {
 			dockerRootDir = status.RootDir
 		} else {
+			// 如果开机时候kubelet和docker同时启动或kubelet在docker之前启动，且status.RootDir不是默认目录，就会导致dockerRootDir与status.RootDir不一致--没有监控数据
+			// 类似的报错 Failed to create existing container: /kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podd0990749_3644_4c93_83d2_78b7ec103e23.slice/docker-48c05890810634e4f4429a07030f36759b3acf8e0965b1f6e7a76574d5f715bd.scope: failed to identify the read-write layer ID for container "48c05890810634e4f4429a07030f36759b3acf8e0965b1f6e7a76574d5f715bd". - open/var/lib/docker/image/overlay2/layerdb/mounts/48c05890810634e4f4429a07030f36759b3acf8e0965b1f6e7a76574d5f715bd/mount-id: no such file or directory
 			dockerRootDir = *dockerRootDirFlag
 		}
 	})

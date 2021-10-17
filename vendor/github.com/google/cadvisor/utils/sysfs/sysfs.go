@@ -78,6 +78,7 @@ func (self *realSysFs) GetBlockDevices() ([]os.FileInfo, error) {
 	return ioutil.ReadDir(blockDir)
 }
 
+// 读取/sys/block/{name}/dev，返回 主设备号:次设备号
 func (self *realSysFs) GetBlockDeviceNumbers(name string) (string, error) {
 	dev, err := ioutil.ReadFile(path.Join(blockDir, name, "/dev"))
 	if err != nil {
@@ -86,6 +87,7 @@ func (self *realSysFs) GetBlockDeviceNumbers(name string) (string, error) {
 	return string(dev), nil
 }
 
+// 读取/sys/block/{name}/queue/scheduler， 返回io调度算法
 func (self *realSysFs) GetBlockDeviceScheduler(name string) (string, error) {
 	sched, err := ioutil.ReadFile(path.Join(blockDir, name, "/queue/scheduler"))
 	if err != nil {
@@ -94,6 +96,7 @@ func (self *realSysFs) GetBlockDeviceScheduler(name string) (string, error) {
 	return string(sched), nil
 }
 
+// 读取/sys/block/{name}/size，返回块设备大小，单位字节
 func (self *realSysFs) GetBlockDeviceSize(name string) (string, error) {
 	size, err := ioutil.ReadFile(path.Join(blockDir, name, "/size"))
 	if err != nil {
@@ -102,6 +105,7 @@ func (self *realSysFs) GetBlockDeviceSize(name string) (string, error) {
 	return string(size), nil
 }
 
+// 读取/sys/class/net目录，返回软链目标为目录的文件列表
 func (self *realSysFs) GetNetworkDevices() ([]os.FileInfo, error) {
 	files, err := ioutil.ReadDir(netDir)
 	if err != nil {
@@ -110,13 +114,16 @@ func (self *realSysFs) GetNetworkDevices() ([]os.FileInfo, error) {
 
 	// Filter out non-directory & non-symlink files
 	var dirs []os.FileInfo
+	// 文件列表 比如cbr0  dummy0  eth0  kube-ipvs0  lo  veth6e857310  veth7f2330c4  vethcf0898a5
 	for _, f := range files {
+		// 文件是软链
 		if f.Mode()|os.ModeSymlink != 0 {
 			f, err = os.Stat(path.Join(netDir, f.Name()))
 			if err != nil {
 				continue
 			}
 		}
+		// 真实文件是个目录
 		if f.IsDir() {
 			dirs = append(dirs, f)
 		}
@@ -124,6 +131,7 @@ func (self *realSysFs) GetNetworkDevices() ([]os.FileInfo, error) {
 	return dirs, nil
 }
 
+// 读取/sys/class/net/{name}/address，返回mac地址
 func (self *realSysFs) GetNetworkAddress(name string) (string, error) {
 	address, err := ioutil.ReadFile(path.Join(netDir, name, "/address"))
 	if err != nil {
@@ -132,6 +140,7 @@ func (self *realSysFs) GetNetworkAddress(name string) (string, error) {
 	return string(address), nil
 }
 
+// 读取/sys/class/net/{name}/mtu，返回网卡的mtu大小
 func (self *realSysFs) GetNetworkMtu(name string) (string, error) {
 	mtu, err := ioutil.ReadFile(path.Join(netDir, name, "/mtu"))
 	if err != nil {
@@ -140,6 +149,7 @@ func (self *realSysFs) GetNetworkMtu(name string) (string, error) {
 	return string(mtu), nil
 }
 
+// 读取/sys/class/net/{name}/speed，返回网卡的速度
 func (self *realSysFs) GetNetworkSpeed(name string) (string, error) {
 	speed, err := ioutil.ReadFile(path.Join(netDir, name, "/speed"))
 	if err != nil {
@@ -162,6 +172,7 @@ func (self *realSysFs) GetNetworkStatValue(dev string, stat string) (uint64, err
 	return s, nil
 }
 
+// 读取/sys/devices/system/cpu/cpu{id}/cache目录
 func (self *realSysFs) GetCaches(id int) ([]os.FileInfo, error) {
 	cpuPath := fmt.Sprintf("%s%d/cache", cacheDir, id)
 	return ioutil.ReadDir(cpuPath)
@@ -194,6 +205,10 @@ func getCpuCount(cache string) (count int, err error) {
 	return
 }
 
+// 读取/sys/devices/system/cpu/cpu{id}/cache/{name}/size 获得cpu缓存大小，比如 /sys/devices/system/cpu/cpu0/cache/index1/size
+// 读取/sys/devices/system/cpu/cpu{id}/cache/{name}/level 获得cpu缓存级别
+// 读取/sys/devices/system/cpu/cpu{id}/cache/{name}/type 获得cpu缓存类型
+// 读取/sys/devices/system/cpu/cpu{id}/cache/{name}/shared_cpu_map 统计共享缓存的cpu数量 
 func (self *realSysFs) GetCacheInfo(id int, name string) (CacheInfo, error) {
 	cachePath := fmt.Sprintf("%s%d/cache/%s", cacheDir, id, name)
 	out, err := ioutil.ReadFile(path.Join(cachePath, "/size"))
@@ -222,6 +237,7 @@ func (self *realSysFs) GetCacheInfo(id int, name string) (CacheInfo, error) {
 		return CacheInfo{}, err
 	}
 	cacheType := strings.TrimSpace(string(out))
+	// 读取/sys/devices/system/cpu/cpu{id}/cache/{name}/shared_cpu_map，获取共享缓存的线程cpu数量
 	cpuCount, err := getCpuCount(cachePath)
 	if err != nil {
 		return CacheInfo{}, err
@@ -235,12 +251,16 @@ func (self *realSysFs) GetCacheInfo(id int, name string) (CacheInfo, error) {
 }
 
 func (self *realSysFs) GetSystemUUID() (string, error) {
+	// 读取文件/sys/class/dmi/id/product_uuid
 	if id, err := ioutil.ReadFile(path.Join(dmiDir, "id", "product_uuid")); err == nil {
 		return strings.TrimSpace(string(id)), nil
+	// 或读取/proc/device-tree/system-id
 	} else if id, err = ioutil.ReadFile(path.Join(ppcDevTree, "system-id")); err == nil {
 		return strings.TrimSpace(string(id)), nil
+	// 或读取/proc/device-tree/vm,uuid
 	} else if id, err = ioutil.ReadFile(path.Join(ppcDevTree, "vm,uuid")); err == nil {
 		return strings.TrimSpace(string(id)), nil
+	// 或读取/etc/machine-id
 	} else if id, err = ioutil.ReadFile(path.Join(s390xDevTree, "machine-id")); err == nil {
 		return strings.TrimSpace(string(id)), nil
 	} else {

@@ -91,11 +91,13 @@ type RealFsInfo struct {
 }
 
 func NewFsInfo(context Context) (FsInfo, error) {
+	// 解析/proc/self/mountinfo信息
 	mounts, err := mount.GetMounts(nil)
 	if err != nil {
 		return nil, err
 	}
 
+	// 返回map[uuid]"磁盘设备"
 	fsUUIDToDeviceName, err := getFsUUIDToDeviceNameMap()
 	if err != nil {
 		// UUID is not always available across different OS distributions.
@@ -106,24 +108,32 @@ func NewFsInfo(context Context) (FsInfo, error) {
 	// Avoid devicemapper container mounts - these are tracked by the ThinPoolWatcher
 	excluded := []string{fmt.Sprintf("%s/devicemapper/mnt", context.Docker.Root)}
 	fsInfo := &RealFsInfo{
+		// 从mount信息中过滤掉不支持的文件系统，排除非tmpfs的bind mounts
+		// 如果是tmpfs类型，返回的key值为mount.Mountpoint
+		// 如果是overlay类型，返回key值为fmt.Sprintf("%s_%d-%d", mount.Source, mount.Major, mount.Minor)
 		partitions:         processMounts(mounts, excluded),
 		labels:             make(map[string]string, 0),
+		// 挂载点和对应的挂载信息
 		mounts:             make(map[string]*mount.Info, 0),
 		dmsetup:            devicemapper.NewDmsetupClient(),
 		fsUUIDToDeviceName: fsUUIDToDeviceName,
 	}
 
 	for _, mount := range mounts {
+		// 挂载点和对应的挂载信息
 		fsInfo.mounts[mount.Mountpoint] = mount
 	}
 
 	// need to call this before the log line below printing out the partitions, as this function may
 	// add a "partition" for devicemapper to fsInfo.partitions
+	// 添加labels["docker-images"]={镜像保存路径的挂载源（设备）}和partitions里添加挂载源信息（一般不会新增，mountinfo里都已经有了这个挂载源）
 	fsInfo.addDockerImagesLabel(context, mounts)
+	// 添加labels["crio-images"]={镜像保存路径的挂载源（设备）}和partitions里添加挂载源信息（一般不会新增，mountinfo里都已经有了这个挂载源）
 	fsInfo.addCrioImagesLabel(context, mounts)
 
 	klog.V(1).Infof("Filesystem UUIDs: %+v", fsInfo.fsUUIDToDeviceName)
 	klog.V(1).Infof("Filesystem partitions: %+v", fsInfo.partitions)
+	// 添加labels["root"]={根路径的挂载源（设备）}和partitions里添加挂载源信息（一般不会新增，mountinfo里都已经有了这个挂载源）
 	fsInfo.addSystemRootLabel(mounts)
 	return fsInfo, nil
 }
@@ -138,6 +148,7 @@ func getFsUUIDToDeviceNameMap() (map[string]string, error) {
 		return make(map[string]string), nil
 	}
 
+	// 文件列表类似 "2020-03-03-17-30-39-00"  "21dbe030-aa71-4b3a-8610-3b942dd447fa"  "227c075a-362a-40db-861d-263399d6e130"
 	files, err := ioutil.ReadDir(dir)
 	if err != nil {
 		return nil, err
@@ -146,11 +157,13 @@ func getFsUUIDToDeviceNameMap() (map[string]string, error) {
 	fsUUIDToDeviceName := make(map[string]string)
 	for _, file := range files {
 		path := filepath.Join(dir, file.Name())
+		// 返回类似 "../../vda1"
 		target, err := os.Readlink(path)
 		if err != nil {
 			klog.Warningf("Failed to resolve symlink for %q", path)
 			continue
 		}
+		// 返回/dev/vda1
 		device, err := filepath.Abs(filepath.Join(dir, target))
 		if err != nil {
 			return nil, fmt.Errorf("failed to resolve the absolute path of %q", filepath.Join(dir, target))
@@ -160,6 +173,9 @@ func getFsUUIDToDeviceNameMap() (map[string]string, error) {
 	return fsUUIDToDeviceName, nil
 }
 
+// 从mount信息中过滤掉不支持的文件系统，排除非tmpfs的bind mounts
+// 如果是tmpfs类型，返回的key值为mount.Mountpoint
+// 如果是overlay类型，返回key值为fmt.Sprintf("%s_%d-%d", mount.Source, mount.Major, mount.Minor)
 func processMounts(mounts []*mount.Info, excludedMountpointPrefixes []string) map[string]partition {
 	partitions := make(map[string]partition, 0)
 
@@ -279,6 +295,8 @@ func (self *RealFsInfo) addDockerImagesLabel(context Context, mounts []*mount.In
 		self.partitions[dockerDev] = *dockerPartition
 		self.labels[LabelDockerImages] = dockerDev
 	} else {
+		// 非devicemapper的docker strorage driver，找到docker image存储路径的挂载点
+		// 添加labels["docker-images"]={镜像保存路径的挂载源（设备）}和partitions里添加挂载源信息
 		self.updateContainerImagesPath(LabelDockerImages, mounts, getDockerImagePaths(context))
 	}
 }
@@ -303,6 +321,16 @@ func (self *RealFsInfo) addCrioImagesLabel(context Context, mounts []*mount.Info
 // Generate a list of possible mount points for docker image management from the docker root directory.
 // Right now, we look for each type of supported graph driver directories, but we can do better by parsing
 // some of the context from `docker info`.
+// 返回所有可能的docker image存储路径
+// 路径列表：
+// "/"
+// {dockerRoot}/devicemapper
+// {dockerRoot}/btrfs
+// {dockerRoot}/aufs
+// {dockerRoot}/overlay
+// {dockerRoot}/overlay2
+// {dockerRoot}/zfs
+// {dockerRoot}的各级目录
 func getDockerImagePaths(context Context) map[string]struct{} {
 	dockerImagePaths := map[string]struct{}{
 		"/": {},
@@ -313,6 +341,7 @@ func getDockerImagePaths(context Context) map[string]struct{} {
 	for _, dir := range []string{"devicemapper", "btrfs", "aufs", "overlay", "overlay2", "zfs"} {
 		dockerImagePaths[path.Join(dockerRoot, dir)] = struct{}{}
 	}
+	// 依次遍历dockerRoot的各级目录，比如/a/b/c,/a/b,/a
 	for dockerRoot != "/" && dockerRoot != "." {
 		dockerImagePaths[dockerRoot] = struct{}{}
 		dockerRoot = filepath.Dir(dockerRoot)
@@ -322,22 +351,28 @@ func getDockerImagePaths(context Context) map[string]struct{} {
 
 // This method compares the mountpoints with possible container image mount points. If a match is found,
 // the label is added to the partition.
+// containerImagePaths与mounts挂载信息进行比对，找出容器镜像保存目录对应的挂载点，添加挂载源到labels和partitions里添加挂载源信息
 func (self *RealFsInfo) updateContainerImagesPath(label string, mounts []*mount.Info, containerImagePaths map[string]struct{}) {
 	var useMount *mount.Info
 	for _, m := range mounts {
 		if _, ok := containerImagePaths[m.Mountpoint]; ok {
+			// 如果以前没有找到，现在找到。或现在找到的挂载路径比之前找到的挂载路径长度更长（比如/a是已经找到挂载点，又找到/a/b也是挂载点）
+			// 则现在的挂载点为使用的挂载点
 			if useMount == nil || (len(useMount.Mountpoint) < len(m.Mountpoint)) {
 				useMount = m
 			}
 		}
 	}
+	// 已经找到挂载点
 	if useMount != nil {
+		// 添加partitions
 		self.partitions[useMount.Source] = partition{
 			fsType:     useMount.Fstype,
 			mountpoint: useMount.Mountpoint,
 			major:      uint(useMount.Major),
 			minor:      uint(useMount.Minor),
 		}
+		// 添加labels
 		self.labels[label] = useMount.Source
 	}
 }
@@ -368,9 +403,11 @@ func (self *RealFsInfo) GetMountpointForDevice(dev string) (string, error) {
 	return p.mountpoint, nil
 }
 
+// 获取各个挂载源（设备）的总的大小、free大小、非特权用户avail可用大小、inodes容量、free的inode数量、文件系统类型为vfs，设备信息（设备名、主次设备号）、磁盘的读写数据量和耗时统计
 func (self *RealFsInfo) GetFsInfoForPath(mountSet map[string]struct{}) ([]Fs, error) {
 	filesystems := make([]Fs, 0)
 	deviceSet := make(map[string]struct{})
+	// 各个磁盘的读写数据量和耗时统计
 	diskStatsMap, err := getDiskStatsMap("/proc/diskstats")
 	if err != nil {
 		return nil, err
@@ -399,6 +436,7 @@ func (self *RealFsInfo) GetFsInfoForPath(mountSet map[string]struct{}) ([]Fs, er
 			default:
 				var inodes, inodesFree uint64
 				if utils.FileExists(partition.mountpoint) {
+					// 总的大小、free大小、非特权用户avail可用大小、inodes容量、free的inode数量
 					fs.Capacity, fs.Free, fs.Available, inodes, inodesFree, err = getVfsStats(partition.mountpoint)
 					fs.Inodes = &inodes
 					fs.InodesFree = &inodesFree
@@ -479,6 +517,7 @@ func getDiskStatsMap(diskStatsFile string) (map[string]DiskStats, error) {
 	return diskStatsMap, nil
 }
 
+// 获取各个挂载源（设备）的总的大小、free大小、非特权用户avail可用大小、inodes容量、free的inode数量、文件系统类型为vfs，设备信息（设备名、主次设备号）、磁盘的读写数据量和耗时统计
 func (self *RealFsInfo) GetGlobalFsInfo() ([]Fs, error) {
 	return self.GetFsInfoForPath(nil)
 }
@@ -614,6 +653,7 @@ func (self *RealFsInfo) GetDirUsage(dir string) (UsageInfo, error) {
 	return GetDirUsage(dir)
 }
 
+// 获得path里的磁盘设备的总的大小、free大小、非特权用户avail可用大小、inodes容量、free的inode数量
 func getVfsStats(path string) (total uint64, free uint64, avail uint64, inodes uint64, inodesFree uint64, err error) {
 	var s syscall.Statfs_t
 	if err = syscall.Statfs(path, &s); err != nil {
