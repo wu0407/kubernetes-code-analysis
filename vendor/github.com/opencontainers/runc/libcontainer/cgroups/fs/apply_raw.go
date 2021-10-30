@@ -32,6 +32,7 @@ var (
 		&FreezerGroup{},
 		&NameGroup{GroupName: "name=systemd", Join: true},
 	}
+	// hugepage类型列表
 	HugePageSizes, _ = cgroups.GetHugePageSize()
 )
 
@@ -39,6 +40,7 @@ var errSubsystemDoesNotExist = fmt.Errorf("cgroup: subsystem does not exist")
 
 type subsystemSet []subsystem
 
+// 返回相应name的cgroup子系统--实现subsystem的对应结构体
 func (s subsystemSet) Get(name string) (subsystem, error) {
 	for _, ss := range s {
 		if ss.Name() == name {
@@ -128,6 +130,7 @@ func isIgnorableError(rootless bool, err error) bool {
 	return errno == unix.EROFS || errno == unix.EPERM || errno == unix.EACCES
 }
 
+// 返回所有cgroup子系统集合--各个子系统结构体（实现subsystem接口）集合
 func (m *Manager) getSubsystems() subsystemSet {
 	return subsystemsLegacy
 }
@@ -216,15 +219,37 @@ func (m *Manager) GetUnifiedPath() (string, error) {
 	return "", errors.New("unified path is only supported when running in unified mode")
 }
 
+// 获取cgroup里的cpu、memory、hugetlb、pid、blkio状态
 func (m *Manager) GetStats() (*cgroups.Stats, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	stats := cgroups.NewStats()
+	// m.Paths为cgroup子系统和对应的cgroup挂载路径
 	for name, path := range m.Paths {
+		// 返回相应为name的cgroup子系统结构体--实现subsystem结构体
 		sys, err := m.getSubsystems().Get(name)
+		// 不支持cgroup子系统或相应的cgroup路径不存在，则跳过
 		if err == errSubsystemDoesNotExist || !cgroups.PathExists(path) {
 			continue
 		}
+		// cpu读取cpu.stat文件，设置stats.CpuStats.ThrottlingData.Periods、stats.CpuStats.ThrottlingData.ThrottledPeriods、stats.CpuStats.ThrottlingData.ThrottledTime
+		// cpuacct读取cpuacct.stat文件，设置stats.CpuStats.CpuUsage.UsageInUsermode、stats.CpuStats.CpuUsage.UsageInKernelmode。读取cpuacct.usage文件，设置stats.CpuStats.CpuUsage.TotalUsage。读取cpuacct.usage_percpu，设置stats.CpuStats.CpuUsage.PercpuUsage
+		// cpuset不做任何事
+		// devices不做任何事
+		// freezer不做任何事
+		// hugetlb读取每种pagesize的hugetlb.{pageSize}.usage_in_bytes，设置stats.HugetlbStats[pageSize].Usage。读取hugetlb.{pageSize}.max_usage_in_bytes，设置stats.HugetlbStats[pageSize].MaxUsage。读取hugetlb.{pageSize}.usage_in_bytes.failcnt，设置stats.HugetlbStats[pageSize].Failcnt
+		// memory读取memory.stat，设置stats.MemoryStats.Stats[{各项内存项}]、stats.MemoryStats.Cache。读取memory.usage_in_bytes，设置stats.MemoryStats.Usage.Usage。读取memory.max_usage_in_bytes，设置stats.MemoryStats.Usage.MaxUsage。读取memory.failcnt，设置stats.MemoryStats.Usage.Failcnt。读取memory.limit_in_bytes，设置stats.MemoryStats.Usage.Limit。
+		// 读取memory.memsw.usage_in_bytes，设置stats.MemoryStats.SwapUsage.Usage。读取memory.memsw.max_usage_in_bytes，设置stats.MemoryStats.SwapUsage.MaxUsage。读取memory.memsw.failcnt，设置stats.memsw.MemoryStats.SwapUsage.Failcnt。读取memory.memsw.limit_in_bytes，设置stats.MemoryStats.SwapUsage.Limit。
+		// 读取memory.kmem.usage_in_bytes，设置stats.MemoryStats.KernelUsage.Usage。读取memory.kmem.max_usage_in_bytes，设置stats.MemoryStats.KernelUsage.MaxUsage。读取memory.kmem.failcnt，设置stats.kmem.MemoryStats.KernelUsage.Failcnt。读取memory.kmem.limit_in_bytes，设置stats.MemoryStats.KernelUsage.Limit。
+		// 读取memory.kmem.tcp.usage_in_bytes，设置stats.MemoryStats.KernelTCPUsage.Usage。读取memory.kmem.tcp.max_usage_in_bytes，设置stats.MemoryStats.KernelTCPUsage.MaxUsage。读取memory.kmem.tcp.failcnt，设置stats.kmem.MemoryStats.KernelTCPUsage.Failcnt。读取memory.kmem.tcp.limit_in_bytes，设置stats.MemoryStats.KernelTCPUsage.Limit。
+		// 读取memory.use_hierarchy，设置stats.MemoryStats.UseHierarchy
+		// name=systemd不做任何事
+		// net_cls不做任何事
+		// net_prio不做任何事
+		// perf_event不做任何事
+		// pids读取pids.current，设置stats.PidsStats.Current。读取pids.max，设置stats.PidsStats.Limit。
+		// blkio 读取blkio.io_serviced_recursive，如果有数据，则读取blkio.sectors_recursive，设置stats.BlkioStats.SectorsRecursive。读取blkio.io_service_bytes_recursive，设置stats.BlkioStats.IoServiceBytesRecursive。读取blkio.io_serviced_recursive，设置stats.BlkioStats.IoServicedRecursive。读取blkio.io_queued_recursive，设置stats.BlkioStats.IoQueuedRecursive。读取blkio.io_service_time_recursive，设置stats.BlkioStats.IoServiceTimeRecursive。读取blkio.io_wait_time_recursive，设置stats.BlkioStats.IoWaitTimeRecursive。读取blkio.io_merged_recursive，设置stats.BlkioStats.IoMergedRecursive。读取blkio.time_recursive，设置stats.BlkioStats.IoTimeRecursive
+		// 否则读取blkio.throttle.io_service_bytes，设置stats.BlkioStats.IoServiceBytesRecursive。读取blkio.throttle.io_serviced，设置stats.BlkioStats.IoServicedRecursive
 		if err := sys.GetStats(path, stats); err != nil {
 			return nil, err
 		}
@@ -298,8 +323,11 @@ func (m *Manager) GetPids() ([]int, error) {
 	return cgroups.GetPids(paths["devices"])
 }
 
+// 读取devices子系统的cgroup目录和子目录下的cgroup.procs，返回所有pid
 func (m *Manager) GetAllPids() ([]int, error) {
+	// 获得所有cgroup子系统与相应的目录
 	paths := m.GetPaths()
+	// 读取devices子系统的cgroup目录和子目录下的cgroup.procs，返回所有pid
 	return cgroups.GetAllPids(paths["devices"])
 }
 

@@ -45,28 +45,35 @@ func (s *SamplesBuffer) Size() int {
 }
 
 // Add an element to the buffer. Oldest one is overwritten if required.
+// SamplesBuffer为环形buffer，添加一个sample，可能会覆盖老的sample
 func (s *SamplesBuffer) Add(stat info.Usage) {
+	// SamplesBuffe没有满，则直接append和更新最后的sample的index
 	if len(s.samples) < s.maxSize {
 		s.samples = append(s.samples, stat)
 		s.index++
 		return
 	}
+	// 环形缓存，进行覆盖
 	s.index = (s.index + 1) % s.maxSize
 	s.samples[s.index] = stat
 }
 
 // Returns pointers to the last 'n' stats.
+// 返回最近n个sample
 func (s *SamplesBuffer) RecentStats(n int) []*info.Usage {
 	if n > len(s.samples) {
 		n = len(s.samples)
 	}
+	// 计算开始的索引值s.index - n + 1 
 	start := s.index - (n - 1)
+	// start小于0，说明一些老的sample已经被覆盖，start位置需要再加上s.samples长度
 	if start < 0 {
 		start += len(s.samples)
 	}
 
 	out := make([]*info.Usage, n)
 	for i := 0; i < n; i++ {
+		// 由于是环形缓存，所以要取余数
 		index := (start + i) % len(s.samples)
 		out[i] = &s.samples[index]
 	}

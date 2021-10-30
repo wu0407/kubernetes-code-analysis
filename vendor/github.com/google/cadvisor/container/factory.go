@@ -119,6 +119,7 @@ func InitializePlugins(factory info.MachineInfoFactory, fsInfo fs.FsInfo, includ
 
 	containerWatchers := []watcher.ContainerWatcher{}
 	for name, plugin := range plugins {
+		// docker、containerd、crio、systemd返回watcher为nil
 		watcher, err := plugin.Register(factory, fsInfo, includedMetrics)
 		if err != nil {
 			klog.V(5).Infof("Registration of the %s container factory failed: %v", name, err)
@@ -139,6 +140,11 @@ var (
 
 // Register a ContainerHandlerFactory. These should be registered from least general to most general
 // as they will be asked in order whether they can handle a particular container.
+// docker plugin注册factory为dockerFactory，watchTypes为[]watcher.ContainerWatchSource{watcher.Raw}
+// containerd plugin注册factory为containerdFactory，watchTypes为[]watcher.ContainerWatchSource{watcher.Raw}
+// crio plugin注册factory为crioFactory，watchTypes为[]watcher.ContainerWatchSource{watcher.Raw}
+// systemd plugin注册factory为systemdFactory，watchTypes为[]watcher.ContainerWatchSource{watcher.Raw}
+// raw plugin注册factory为rawFactory，watchTypes为[]watcher.ContainerWatchSource{watcher.Raw}
 func RegisterContainerHandlerFactory(factory ContainerHandlerFactory, watchTypes []watcher.ContainerWatchSource) {
 	factoriesLock.Lock()
 	defer factoriesLock.Unlock()

@@ -51,8 +51,10 @@ func isRootCgroup(name string) bool {
 }
 
 func newRawContainerHandler(name string, cgroupSubsystems *libcontainer.CgroupSubsystems, machineInfoFactory info.MachineInfoFactory, fsInfo fs.FsInfo, watcher *common.InotifyWatcher, rootFs string, includedMetrics container.MetricSet) (container.ContainerHandler, error) {
+	// 所有cgroup子系统的挂载路径后面都添加name
 	cgroupPaths := common.MakeCgroupPaths(cgroupSubsystems.MountPoints, name)
 
+	// 默认common.ArgContainerHints为/etc/cadvisor/container_hints.json，kubelet主机上一般不存在这个文件，返回为空
 	cHints, err := common.GetContainerHintsFromFile(*common.ArgContainerHints)
 	if err != nil {
 		return nil, err
@@ -91,6 +93,7 @@ func newRawContainerHandler(name string, cgroupSubsystems *libcontainer.CgroupSu
 		fsInfo:              fsInfo,
 		externalMounts:      externalMounts,
 		includedMetrics:     includedMetrics,
+		// 用于读取cgroup信息，获取监控信息
 		libcontainerHandler: handler,
 	}, nil
 }
@@ -120,20 +123,27 @@ func (self *rawContainerHandler) Start() {}
 // Nothing to clean up.
 func (self *rawContainerHandler) Cleanup() {}
 
+// 返回container的cgroup的cpu、memory和pid属性，以及是否有文件系统、是否有网络、是否有blkio
+// 如果self.name为"/"，则其中Memory.Limit和Memory.SwapLimit修正为机器上真实值，根据是否有网卡确认是否有网络HasNetwork
 func (self *rawContainerHandler) GetSpec() (info.ContainerSpec, error) {
 	const hasNetwork = false
+	// self.name为"/"或self.externalMounts不为空（/etc/cadvisor/container_hints.json里面有定义Mounts）
 	hasFilesystem := isRootCgroup(self.name) || len(self.externalMounts) > 0
+	// 获得container的CreationTime、cpu cgroup的各种属性（cpu.shares，cpu.cfs_period_us，cpu.cfs_quota_us）、memory的（memory.limit_in_bytes、memory.memsw.limit_in_bytes、memory.soft_limit_in_bytes）、pid的pids.max、是否有文件系统、是否有网络（这里没有网络，如果self.name为"/"会进行修正）、是否有blkio
 	spec, err := common.GetSpec(self.cgroupPaths, self.machineInfoFactory, hasNetwork, hasFilesystem)
 	if err != nil {
 		return spec, err
 	}
 
+	// self.name为"/"
 	if isRootCgroup(self.name) {
 		// Check physical network devices for root container.
+		// 获得所有网卡的Name、MacAddress、Speed、Mtu
 		nd, err := self.GetRootNetworkDevices()
 		if err != nil {
 			return spec, err
 		}
+		// 当有网卡时候，修改spec.HasNetwork为true
 		spec.HasNetwork = spec.HasNetwork || len(nd) != 0
 
 		// Get memory and swap limits of the running machine
@@ -142,6 +152,7 @@ func (self *rawContainerHandler) GetSpec() (info.ContainerSpec, error) {
 			klog.Warningf("failed to obtain memory limit for machine container")
 			spec.HasMemory = false
 		} else {
+			// 修改spec.Memory.Limit为真实的机器最大内存
 			spec.Memory.Limit = uint64(memLimit)
 			// Spec is marked to have memory only if the memory limit is set
 			spec.HasMemory = true
@@ -151,6 +162,7 @@ func (self *rawContainerHandler) GetSpec() (info.ContainerSpec, error) {
 		if err != nil {
 			klog.Warningf("failed to obtain swap limit for machine container")
 		} else {
+			// 修改spec.Memory.SwapLimit为真实的机器swap大小
 			spec.Memory.SwapLimit = uint64(swapLimit)
 		}
 	}
@@ -194,10 +206,12 @@ func (self *rawContainerHandler) getFsStats(stats *info.ContainerStats) error {
 	var err error
 	// Get Filesystem information only for the root cgroup.
 	if isRootCgroup(self.name) {
+		// 获取各个挂载源（设备）的总的大小、free大小、非特权用户avail可用大小、inodes容量、free的inode数量、文件系统类型为vfs，设备信息（设备名、主次设备号）、磁盘的读写数据量和耗时统计
 		filesystems, err = self.fsInfo.GetGlobalFsInfo()
 		if err != nil {
 			return err
 		}
+	// kubelet包含container.DiskIOMetrics
 	} else if self.includedMetrics.Has(container.DiskUsageMetrics) || self.includedMetrics.Has(container.DiskIOMetrics) {
 		if len(self.externalMounts) > 0 {
 			var mountSet map[string]struct{}
@@ -205,6 +219,7 @@ func (self *rawContainerHandler) getFsStats(stats *info.ContainerStats) error {
 			for _, mount := range self.externalMounts {
 				mountSet[mount.HostDir] = struct{}{}
 			}
+			// 获得挂载目录的总的大小、free大小、非特权用户avail可用大小、inodes容量、free的inode数量、文件系统类型为vfs，设备信息（设备名、主次设备号）、磁盘的读写数据量和耗时统计
 			filesystems, err = self.fsInfo.GetFsInfoForPath(mountSet)
 			if err != nil {
 				return err
@@ -220,6 +235,7 @@ func (self *rawContainerHandler) getFsStats(stats *info.ContainerStats) error {
 	}
 
 	if isRootCgroup(self.name) || self.includedMetrics.Has(container.DiskIOMetrics) {
+		// 补全stats.DiskIo里磁盘io读写状态项的设备名
 		common.AssignDeviceNamesToDiskStats(&fsNamer{fs: filesystems, factory: self.machineInfoFactory}, &stats.DiskIo)
 
 	}
@@ -227,17 +243,20 @@ func (self *rawContainerHandler) getFsStats(stats *info.ContainerStats) error {
 }
 
 func (self *rawContainerHandler) GetStats() (*info.ContainerStats, error) {
+	// 默认disableRootCgroupStats为false
 	if *disableRootCgroupStats && isRootCgroup(self.name) {
 		return nil, nil
 	}
 	// 获取cgoup下的cpu、内存、网卡、磁盘io的使用状态
+	// 获取cpu、memory、hugetlb、pids、blkio、网卡发送接收、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制
 	stats, err := self.libcontainerHandler.GetStats()
 	if err != nil {
 		return stats, err
 	}
 
 	// Get filesystem stats.
-	// 文件系统状态，比如磁盘大小、剩余空间
+	// 文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）和补全stats.DiskIo里磁盘io读写状态项的设备名
+	// 通过statfs系统调用获取，https://man7.org/linux/man-pages/man2/statfs.2.html
 	err = self.getFsStats(stats)
 	if err != nil {
 		return stats, err
@@ -263,6 +282,9 @@ func (self *rawContainerHandler) GetContainerIPAddress() string {
 	return "127.0.0.1"
 }
 
+// 获得所有cgroup子系统路径下的所有目录（不同子系统下的目录名一样会覆盖），当listType == container.ListRecursive，会递归获取所有子目录。
+// 返回的目录为/{self.name}/{子目录}，/{self.name}/{子目录}/{子目录}
+// 并封装成info.ContainerReference，返回[]info.ContainerReference
 func (self *rawContainerHandler) ListContainers(listType container.ListType) ([]info.ContainerReference, error) {
 	return common.ListContainers(self.name, self.cgroupPaths, listType)
 }

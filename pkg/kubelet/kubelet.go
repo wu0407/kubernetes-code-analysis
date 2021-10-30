@@ -1447,6 +1447,10 @@ func (kl *Kubelet) initializeModules() error {
 
 // initializeRuntimeDependentModules will initialize internal modules that require the container runtime to be up.
 func (kl *Kubelet) initializeRuntimeDependentModules() {
+	//  watch /dev/kmsg里的oom事件，将事件保存在cadvisor内部eventStore中
+	// 监听cgroup的所有子系统目录的变化，每个子目录是一个container，根据目录的变化，生成container或移除container。kubelet里能够处理"/kubepods.slice", "/system.slice/kubelet.service", "/system.slice/docker.service"下的所有子目录，包括自身
+	// 生成container会启动一个goroutine，读取cgroup子系统的文件生成监控信息保存在cadvisor内部的containers字段中。移除container则停止goroutine，在cadvisor内部的containers字段中移除这个容器的监控数据
+	// 默认每5分钟执行更新machineInfo（node节点的所有属性，比如cpu、内存、磁盘、操作系统、内核等），kl.updateNodeStatus更新node state会用到
 	if err := kl.cadvisor.Start(); err != nil {
 		// Fail kubelet and rely on the babysitter to retry starting kubelet.
 		// TODO(random-liu): Add backoff logic in the babysitter

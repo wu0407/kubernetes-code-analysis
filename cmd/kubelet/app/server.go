@@ -658,6 +658,9 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 		cgroupRoots = append(cgroupRoots, s.SystemCgroups)
 	}
 
+	// cgroup driver为systemd，containerRutime为docker，CgroupRoot为空，SystemCgroups为空
+	// 最后cgroupRoots为[]string{"/kubepods.slice", "/system.slice/kubelet.service", "/system.slice/docker.service"}
+
 	if kubeDeps.CAdvisorInterface == nil {
 		imageFsInfoProvider := cadvisor.NewImageFsInfoProvider(s.ContainerRuntime, s.RemoteRuntimeEndpoint)
 		kubeDeps.CAdvisorInterface, err = cadvisor.New(imageFsInfoProvider, s.RootDirectory, cgroupRoots, cadvisor.UsingLegacyCadvisorStats(s.ContainerRuntime, s.RemoteRuntimeEndpoint))

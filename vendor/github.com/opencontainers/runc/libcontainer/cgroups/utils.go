@@ -120,6 +120,7 @@ func isSubsystemAvailable(subsystem string) bool {
 		return false
 	}
 
+	// 从/proc/self/cgroup获得各种cgroup系统的路径，解析出map[{cgroup subsystem}]{cgroup-path}
 	cgroups, err := ParseCgroupFile("/proc/self/cgroup")
 	if err != nil {
 		return false
@@ -194,6 +195,7 @@ func (m Mount) GetOwnCgroup(cgroups map[string]string) (string, error) {
 	return getControllerPath(m.Subsystems[0], cgroups)
 }
 
+// 从mi中读取出cgroup系统挂载的信息，返回各个cgroup系统的Mountpoint、Root、对应的Subsystems列表
 func getCgroupMountsHelper(ss map[string]bool, mi io.Reader, all bool) ([]Mount, error) {
 	res := make([]Mount, 0, len(ss))
 	scanner := bufio.NewScanner(mi)
@@ -204,6 +206,7 @@ func getCgroupMountsHelper(ss map[string]bool, mi io.Reader, all bool) ([]Mount,
 		if sepIdx == -1 {
 			return nil, fmt.Errorf("invalid mountinfo format")
 		}
+		// 非cgroup文件系统挂载跳过
 		if txt[sepIdx+3:sepIdx+10] == "cgroup2" || txt[sepIdx+3:sepIdx+9] != "cgroup" {
 			continue
 		}
@@ -214,10 +217,12 @@ func getCgroupMountsHelper(ss map[string]bool, mi io.Reader, all bool) ([]Mount,
 		}
 		for _, opt := range strings.Split(fields[len(fields)-1], ",") {
 			seen, known := ss[opt]
+			// 不是已知的cgroup子系统，或只获取部分cgroup子系统（all为false）且是已经出现过cgroup子系统，则跳过
 			if !known || (!all && seen) {
 				continue
 			}
 			ss[opt] = true
+			// subsystem匹配前缀为"name="（比如name=systemd），则取后面部分string（一般是systemd）
 			if strings.HasPrefix(opt, CgroupNamePrefix) {
 				opt = opt[len(CgroupNamePrefix):]
 			}
@@ -236,6 +241,7 @@ func getCgroupMountsHelper(ss map[string]bool, mi io.Reader, all bool) ([]Mount,
 
 // GetCgroupMounts returns the mounts for the cgroup subsystems.
 // all indicates whether to return just the first instance or all the mounts.
+// 从/proc/self/mountinfo中获得所有cgroup子系统的Mountpoint、Root、对应的Subsystems列表
 func GetCgroupMounts(all bool) ([]Mount, error) {
 	if IsCgroup2UnifiedMode() {
 		availableControllers, err := GetAllSubsystems()
@@ -256,6 +262,7 @@ func GetCgroupMounts(all bool) ([]Mount, error) {
 	}
 	defer f.Close()
 
+	// 从/proc/self/cgroup获得各种cgroup系统的路径，解析出map[{cgroup subsystem}]{cgroup-path}
 	allSubsystems, err := ParseCgroupFile("/proc/self/cgroup")
 	if err != nil {
 		return nil, err
@@ -265,6 +272,7 @@ func GetCgroupMounts(all bool) ([]Mount, error) {
 	for s := range allSubsystems {
 		allMap[s] = false
 	}
+	// 获得各个cgroup系统的Mountpoint、Root、对应的Subsystems列表
 	return getCgroupMountsHelper(allMap, f, all)
 }
 
@@ -311,7 +319,7 @@ func GetAllSubsystems() ([]string, error) {
 
 // GetOwnCgroup returns the relative path to the cgroup docker is running in.
 func GetOwnCgroup(subsystem string) (string, error) {
-	// 从/proc/self/cgroup获得各种cgroup系统的路径
+	// 从/proc/self/cgroup获得各种cgroup系统的路径，解析出map[{cgroup subsystem}]{cgroup-path}
 	cgroups, err := ParseCgroupFile("/proc/self/cgroup")
 	if err != nil {
 		return "", err
@@ -332,6 +340,7 @@ func GetOwnCgroupPath(subsystem string) (string, error) {
 }
 
 func GetInitCgroup(subsystem string) (string, error) {
+	// 从/proc/1/cgroup获得各种cgroup系统的路径，解析出map[{cgroup subsystem}]{cgroup-path}
 	cgroups, err := ParseCgroupFile("/proc/1/cgroup")
 	if err != nil {
 		return "", err
@@ -393,6 +402,7 @@ func readProcsFile(dir string) ([]int, error) {
 
 // ParseCgroupFile parses the given cgroup file, typically from
 // /proc/<pid>/cgroup, into a map of subgroups to cgroup names.
+// 从/proc/{pid}/cgroup中解析出map[{cgroup subsystem}]{cgroup-path}
 func ParseCgroupFile(path string) (map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -529,6 +539,7 @@ func GetPids(path string) ([]int, error) {
 
 // GetAllPids returns all pids, that were added to cgroup at path and to all its
 // subcgroups.
+// 读取path目录和子目录下的cgroup.procs，返回所有pid
 func GetAllPids(path string) ([]int, error) {
 	var pids []int
 	// collect pids from all sub-cgroups

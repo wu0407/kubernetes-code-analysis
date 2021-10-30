@@ -176,6 +176,41 @@ func (s *MemoryGroup) GetStats(path string, stats *cgroups.Stats) error {
 		if err != nil {
 			return fmt.Errorf("failed to parse memory.stat (%q) - %v", sc.Text(), err)
 		}
+		// 文件内容
+		// cache 264740864
+		// rss 33488896
+		// rss_huge 8388608
+		// mapped_file 14606336
+		// dirty 0
+		// writeback 0
+		// swap 0
+		// pgpgin 1559268850
+		// pgpgout 1559225167
+		// pgfault 3068145981
+		// pgmajfault 2008
+		// inactive_anon 12288
+		// active_anon 34803712
+		// inactive_file 28155904
+		// active_file 235257856
+		// unevictable 0
+		// hierarchical_memory_limit 9223372036854771712
+		// hierarchical_memsw_limit 9223372036854771712
+		// total_cache 5992853504
+		// total_rss 6287826944
+		// total_rss_huge 4563402752
+		// total_mapped_file 773763072
+		// total_dirty 516096
+		// total_writeback 0
+		// total_swap 0
+		// total_pgpgin 60338571536
+		// total_pgpgout 60634333050
+		// total_pgfault 95384652626
+		// total_pgmajfault 319533
+		// total_inactive_anon 806912
+		// total_active_anon 6289612800
+		// total_inactive_file 3443367936
+		// total_active_file 2546778112
+		// total_unevictable 0
 		stats.MemoryStats.Stats[t] = v
 	}
 	stats.MemoryStats.Cache = stats.MemoryStats.Stats["cache"]

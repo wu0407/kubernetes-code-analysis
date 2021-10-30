@@ -45,6 +45,7 @@ type rawContainerWatcher struct {
 }
 
 func NewRawContainerWatcher() (watcher.ContainerWatcher, error) {
+	// 获得所有cgroup子系统的Mounts(cgroup子系统的Mountpoint（挂载点唯一）、Root、对应的Subsystems列表)和MountPoints(map["cgroup子系统"]["对应挂载点"])
 	cgroupSubsystems, err := libcontainer.GetAllCgroupSubsystems()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get cgroup subsystems: %v", err)
@@ -59,6 +60,7 @@ func NewRawContainerWatcher() (watcher.ContainerWatcher, error) {
 	}
 
 	rawWatcher := &rawContainerWatcher{
+		// 所有cgroup子系统的挂载路径后面添加"/"
 		cgroupPaths:      common.MakeCgroupPaths(cgroupSubsystems.MountPoints, "/"),
 		cgroupSubsystems: &cgroupSubsystems,
 		watcher:          watcher,
@@ -70,6 +72,7 @@ func NewRawContainerWatcher() (watcher.ContainerWatcher, error) {
 
 func (self *rawContainerWatcher) Start(events chan watcher.ContainerEvent) error {
 	// Watch this container (all its cgroups) and all subdirectories.
+	// 添加inotify监听所有cgroup子系统的目录和所有子目录，如果发现之前没有监听的目录，发送watcher.ContainerAdd类型的event到events通道中
 	for _, cgroupPath := range self.cgroupPaths {
 		_, err := self.watchDirectory(events, cgroupPath, "/")
 		if err != nil {
@@ -81,7 +84,11 @@ func (self *rawContainerWatcher) Start(events chan watcher.ContainerEvent) error
 	go func() {
 		for {
 			select {
+			// 读取self.watcher.Event通道里读取inotify事件
 			case event := <-self.watcher.Event():
+				// 解析inotify的event消息
+				// 如果是inotify.InCreate或inotify.InMovedTo类型事件，则解析出container name，监听这个event事件的目录和其下面的所有子目录，发送watcher.ContainerAdd类型的事件到events通道
+				// 如果是inotify.InDelete或inotify.InMovedFrom类型的事件，则解析出container name，移除这个目录的监听，发送watcher.ContainerDelete类型的事件到events通道
 				err := self.processEvent(event, events)
 				if err != nil {
 					klog.Warningf("Error while processing event (%+v): %v", event, err)
@@ -115,6 +122,7 @@ func (self *rawContainerWatcher) watchDirectory(events chan watcher.ContainerEve
 	if strings.HasSuffix(containerName, ".mount") {
 		return false, nil
 	}
+	// 增加inotify监听dir（inotify.InCreate|inotify.InDelete|inotify.InMove），返回dir是否已经监听
 	alreadyWatching, err := self.watcher.AddWatch(containerName, dir)
 	if err != nil {
 		return alreadyWatching, err
@@ -124,6 +132,7 @@ func (self *rawContainerWatcher) watchDirectory(events chan watcher.ContainerEve
 	cleanup := true
 	defer func() {
 		if cleanup {
+			// 移除dir的inotify监听（inotify.InCreate|inotify.InDelete|inotify.InMove）
 			_, err := self.watcher.RemoveWatch(containerName, dir)
 			if err != nil {
 				klog.Warningf("Failed to remove inotify watch for %q: %v", dir, err)
@@ -137,6 +146,7 @@ func (self *rawContainerWatcher) watchDirectory(events chan watcher.ContainerEve
 	if err != nil {
 		return alreadyWatching, err
 	}
+	// inotify监听dir下面的所有的子目录
 	for _, entry := range entries {
 		if entry.IsDir() {
 			entryPath := path.Join(dir, entry.Name())
@@ -168,6 +178,9 @@ func (self *rawContainerWatcher) watchDirectory(events chan watcher.ContainerEve
 	return alreadyWatching, nil
 }
 
+// 解析inotify的event消息
+// 如果是inotify.InCreate或inotify.InMovedTo类型事件，则解析出container name，监听这个event事件的目录和其下面的所有子目录，发送watcher.ContainerAdd类型的事件到events通道
+// 如果是inotify.InDelete或inotify.InMovedFrom类型的事件，则解析出container name，移除这个目录的监听，发送watcher.ContainerDelete类型的事件到events通道
 func (self *rawContainerWatcher) processEvent(event *inotify.Event, events chan watcher.ContainerEvent) error {
 	// Convert the inotify event type to a container create or delete.
 	var eventType watcher.ContainerEventType
@@ -187,9 +200,12 @@ func (self *rawContainerWatcher) processEvent(event *inotify.Event, events chan 
 
 	// Derive the container name from the path name.
 	var containerName string
+	// 通过比对event.Name（发生inotify事件的目录）与cgroup的挂载路径，获得containerName
 	for _, mount := range self.cgroupSubsystems.Mounts {
 		mountLocation := path.Clean(mount.Mountpoint) + "/"
+		// 发生inotify事件的目录在cgroup子系统的挂载目录里
 		if strings.HasPrefix(event.Name, mountLocation) {
+			// 去除挂载点之后路径，比如/sys/fs/cgroup/cpu/asdsd，返回/asdsd
 			containerName = event.Name[len(mountLocation)-1:]
 			break
 		}
@@ -202,6 +218,7 @@ func (self *rawContainerWatcher) processEvent(event *inotify.Event, events chan 
 	switch eventType {
 	case watcher.ContainerAdd:
 		// New container was created, watch it.
+		// 新目录添加，则监听这个新目录和其下面的所有子目录
 		alreadyWatched, err := self.watchDirectory(events, event.Name, containerName)
 		if err != nil {
 			return err

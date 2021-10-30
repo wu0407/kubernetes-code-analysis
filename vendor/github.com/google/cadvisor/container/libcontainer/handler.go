@@ -55,7 +55,9 @@ func NewHandler(cgroupManager cgroups.Manager, rootFs string, pid int, includedM
 }
 
 // Get cgroup and networking stats of the specified container
+// 获取cpu、memory、hugetlb、pids、blkio、schedstat、网卡发送接收、tcp连接统计、udp连接的状态、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制
 func (h *Handler) GetStats() (*info.ContainerStats, error) {
+	// 获取cgroup里的cpu、memory、hugetlb、pids、blkio状态
 	cgroupStats, err := h.cgroupManager.GetStats()
 	if err != nil {
 		return nil, err
@@ -63,13 +65,17 @@ func (h *Handler) GetStats() (*info.ContainerStats, error) {
 	libcontainerStats := &libcontainer.Stats{
 		CgroupStats: cgroupStats,
 	}
+	// 将libcontainer.Stats转成*info.ContainerStats，添加Timestamp为time.Now()
 	stats := newContainerStats(libcontainerStats, h.includedMetrics)
 
+	// kubelet没有container.ProcessSchedulerMetrics
 	if h.includedMetrics.Has(container.ProcessSchedulerMetrics) {
+		// 读取devices子系统的cgroup目录和子目录下的cgroup.procs，返回所有pid
 		pids, err := h.cgroupManager.GetAllPids()
 		if err != nil {
 			klog.V(4).Infof("Could not get PIDs for container %d: %v", h.pid, err)
 		} else {
+			// 读取所有/proc/{pid}/schedstat，计算总的RunTime、RunqueueTime、RunPeriods
 			stats.Cpu.Schedstat, err = schedulerStatsFromProcs(h.rootFs, pids, h.pidMetricsCache)
 			if err != nil {
 				klog.V(4).Infof("Unable to get Process Scheduler Stats: %v", err)
@@ -82,6 +88,7 @@ func (h *Handler) GetStats() (*info.ContainerStats, error) {
 		return stats, nil
 	}
 	if h.includedMetrics.Has(container.NetworkUsageMetrics) {
+		// 从/{h.rootFs}/proc/{pid}/net/dev读取出各个网卡（忽略"lo", "veth", "docker"网卡）的状态数据
 		netStats, err := networkStatsFromProc(h.rootFs, h.pid)
 		if err != nil {
 			klog.V(4).Infof("Unable to get network stats from pid %d: %v", h.pid, err)
@@ -89,7 +96,9 @@ func (h *Handler) GetStats() (*info.ContainerStats, error) {
 			stats.Network.Interfaces = append(stats.Network.Interfaces, netStats...)
 		}
 	}
+	// kubelet没有container.NetworkTcpUsageMetrics
 	if h.includedMetrics.Has(container.NetworkTcpUsageMetrics) {
+		// 读取/{h.rootFs}/proc/{pid}/net/tcp，解析出tcp连接的状态数据
 		t, err := tcpStatsFromProc(h.rootFs, h.pid, "net/tcp")
 		if err != nil {
 			klog.V(4).Infof("Unable to get tcp stats from pid %d: %v", h.pid, err)
@@ -97,6 +106,7 @@ func (h *Handler) GetStats() (*info.ContainerStats, error) {
 			stats.Network.Tcp = t
 		}
 
+		// 读取/{h.rootFs}/proc/{pid}/net/tcp6
 		t6, err := tcpStatsFromProc(h.rootFs, h.pid, "net/tcp6")
 		if err != nil {
 			klog.V(4).Infof("Unable to get tcp6 stats from pid %d: %v", h.pid, err)
@@ -104,7 +114,9 @@ func (h *Handler) GetStats() (*info.ContainerStats, error) {
 			stats.Network.Tcp6 = t6
 		}
 	}
+	// kubelet没有container.NetworkUdpUsageMetrics
 	if h.includedMetrics.Has(container.NetworkUdpUsageMetrics) {
+		// 读取/{h.rootFs}/proc/{pid}/net/udp
 		u, err := udpStatsFromProc(h.rootFs, h.pid, "net/udp")
 		if err != nil {
 			klog.V(4).Infof("Unable to get udp stats from pid %d: %v", h.pid, err)
@@ -112,6 +124,7 @@ func (h *Handler) GetStats() (*info.ContainerStats, error) {
 			stats.Network.Udp = u
 		}
 
+		// 读取/{h.rootFs}/proc/{pid}/net/udp6
 		u6, err := udpStatsFromProc(h.rootFs, h.pid, "net/udp6")
 		if err != nil {
 			klog.V(4).Infof("Unable to get udp6 stats from pid %d: %v", h.pid, err)
@@ -125,6 +138,8 @@ func (h *Handler) GetStats() (*info.ContainerStats, error) {
 		if !ok {
 			klog.V(4).Infof("Could not find cgroups CPU for container %d", h.pid)
 		} else {
+			// 读取/h.rootFs/（cpu cgroup子系统的路径中cgroup.procs），获取所有cgroup下所有进程pid
+			// 返回cgroup下所有进程的数量，所有进程总的FD数量，FD中的总socket数量
 			stats.Processes, err = processStatsFromProcs(h.rootFs, path)
 			if err != nil {
 				klog.V(4).Infof("Unable to get Process Stats: %v", err)
@@ -132,6 +147,9 @@ func (h *Handler) GetStats() (*info.ContainerStats, error) {
 		}
 
 		// if include processes metrics, just set threads metrics if exist, and has no relationship with cpu path
+		// 设置Threads当前数量和限制
+		// 设置stats.Processes.ThreadsCurrent = cgroupStats.PidsStats.Current
+		// 设置stats.Processes.ThreadsMax = cgroupStats.PidsStats.Limit
 		setThreadsStats(cgroupStats, stats)
 	}
 
@@ -190,6 +208,7 @@ func processStatsFromProcs(rootFs string, cgroupPath string) (info.ProcessStats,
 	return processStats, nil
 }
 
+// 读取所有/proc/{pid}/schedstat，计算总的RunTime、RunqueueTime、RunPeriods
 func schedulerStatsFromProcs(rootFs string, pids []int, pidMetricsCache map[int]*info.CpuSchedstat) (info.CpuSchedstat, error) {
 	for _, pid := range pids {
 		f, err := os.Open(path.Join(rootFs, "proc", strconv.Itoa(pid), "schedstat"))
@@ -234,9 +253,11 @@ func schedulerStatsFromProcs(rootFs string, pids []int, pidMetricsCache map[int]
 	return schedstats, nil
 }
 
+// 从/proc/{pid}/net/dev读取出各个网卡（忽略"lo", "veth", "docker"网卡）的状态数据
 func networkStatsFromProc(rootFs string, pid int) ([]info.InterfaceStats, error) {
 	netStatsFile := path.Join(rootFs, "proc", strconv.Itoa(pid), "/net/dev")
 
+	// 解析/proc/{pid}/net/dev数据
 	ifaceStats, err := scanInterfaceStats(netStatsFile)
 	if err != nil {
 		return []info.InterfaceStats{}, fmt.Errorf("couldn't read network stats: %v", err)
@@ -287,6 +308,7 @@ func scanInterfaceStats(netStatsFile string) ([]info.InterfaceStats, error) {
 		}
 
 		devName := fields[0]
+		// 忽略"lo", "veth", "docker"网卡
 		if isIgnoredDevice(devName) {
 			continue
 		}
@@ -502,11 +524,13 @@ func setCpuStats(s *cgroups.Stats, ret *info.ContainerStats, withPerCPU bool) {
 		return
 	}
 
+	// cgroup cpu状态里的cpu个数
 	numPossible := uint32(len(s.CpuStats.CpuUsage.PercpuUsage))
 	// Note that as of https://patchwork.kernel.org/patch/8607101/ (kernel v4.7),
 	// the percpu usage information includes extra zero values for all additional
 	// possible CPUs. This is to allow statistic collection after CPU-hotplug.
 	// We intentionally ignore these extra zeroes.
+	// 默认通过当前线程的CPU affinity确定真实的cpu数量
 	numActual, err := numCpusFunc()
 	if err != nil {
 		klog.Errorf("unable to determine number of actual cpus; defaulting to maximum possible number: errno %v", err)
@@ -612,12 +636,14 @@ func setThreadsStats(s *cgroups.Stats, ret *info.ContainerStats) {
 
 }
 
+// 将libcontainer.Stats转成*info.ContainerStats
 func newContainerStats(libcontainerStats *libcontainer.Stats, includedMetrics container.MetricSet) *info.ContainerStats {
 	ret := &info.ContainerStats{
 		Timestamp: time.Now(),
 	}
 
 	if s := libcontainerStats.CgroupStats; s != nil {
+		// kubelet里不包含container.PerCpuUsageMetrics
 		setCpuStats(s, ret, includedMetrics.Has(container.PerCpuUsageMetrics))
 		if includedMetrics.Has(container.DiskIOMetrics) {
 			setDiskIoStats(s, ret)

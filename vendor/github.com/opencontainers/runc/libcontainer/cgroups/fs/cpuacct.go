@@ -20,6 +20,7 @@ const (
 	nanosecondsInSecond = 1000000000
 )
 
+// 每一秒钟时钟的频率，一般为100hz。https://stackoverflow.com/a/19919970/6059840
 var clockTicks = uint64(system.GetClockTicks())
 
 type CpuacctGroup struct {

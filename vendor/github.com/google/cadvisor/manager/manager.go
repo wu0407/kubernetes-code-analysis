@@ -205,7 +205,7 @@ func New(memoryCache *memory.InMemoryCache, sysfs sysfs.SysFs, maxHousekeepingIn
 	}
 	klog.V(1).Infof("Version: %+v", *versionInfo)
 
-	// 默认// DefaultMaxAge为24 * time.Hour，DefaultMaxNumEvents:为100000
+	// 默认DefaultMaxAge为24 * time.Hour，DefaultMaxNumEvents:为100000
 	newManager.eventHandler = events.NewEventManager(parseEventsStoragePolicy())
 	return newManager, nil
 }
@@ -220,8 +220,10 @@ type namespacedContainerName struct {
 }
 
 type manager struct {
+	// 记录所有发现的容器和对应的容器属性配置
 	containers               map[namespacedContainerName]*containerData
 	containersLock           sync.RWMutex
+	// 保存container的cgroup状态信息（监控数据），这个也是容器对应的containerData里memoryCache
 	memoryCache              *memory.InMemoryCache
 	fsInfo                   fs.FsInfo
 	sysFs                    sysfs.SysFs
@@ -245,10 +247,11 @@ type manager struct {
 
 // Start the container manager.
 func (self *manager) Start() error {
-	// 注册plugin插件的ContainerHandlerFactory
+	// 执行各个plugin插件的Register注册各个plugin的ContainerHandlerFactory到factories（在vendor\github.com\google\cadvisor\container\factory.go）
+	// docker、containerd、crio、systemd返回watcher为nil，所以这里的self.containerWatchers为nil
 	self.containerWatchers = container.InitializePlugins(self, self.fsInfo, self.includedMetrics)
 
-	// 额外注册raw插件ContainerHandlerFactory
+	// 额外注册raw插件ContainerHandlerFactory到factories（在vendor\github.com\google\cadvisor\container\factory.go）
 	err := raw.Register(self, self.fsInfo, self.includedMetrics, self.rawContainerCgroupPathPrefixWhiteList)
 	if err != nil {
 		klog.Errorf("Registration of the raw container factory failed: %v", err)
@@ -263,7 +266,8 @@ func (self *manager) Start() error {
 	self.containerWatchers = append(self.containerWatchers, rawWatcher)
 
 	// Watch for OOMs.
-	// 但是只是将event保存到inmemorycache，没有eventHandler去处理，因为没有调用WatchForEvents来注册eventHandler
+	// watch /dev/kmsg里的oom事件，让eventHandler进行处理（添加事件到eventStore和发送oom、oomkill事件到关注这个event的watch的chanle中）
+	// 但是只是将event保存到eventStore，没有eventHandler去处理，因为没有注册的eventHandler（所有代码里没有调用WatchForEvents来注册的eventHandler）
 	err = self.watchForNewOoms()
 	if err != nil {
 		klog.Warningf("Could not configure a source for OOM detection, disabling OOM events: %v", err)
@@ -279,14 +283,15 @@ func (self *manager) Start() error {
 
 	// Create root and then recover all containers.
 	// 只有raw的ContainerHandlerFactory能处理
-	// 它会创建goroutine，周期性获取cgroup里的cpu、内存指标、io信息和cpu、内存、网卡、磁盘io的使用状态
+	// 它会创建goroutine，周期性（默认为1s）获取cgroup里的cpu、内存指标、io信息和cpu、内存、网卡、磁盘io的使用状态（网卡发送接收）、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制、文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）状态
 	err = self.createContainer("/", watcher.Raw)
 	if err != nil {
 		return err
 	}
 	klog.V(2).Infof("Starting recovery of all containers")
-	// /sys/fs/cgroup 下的所有目录（遍历所有目录，每个目录是一个container）。根据containers里已经拥有的container和目录进行比较
+	// container cgroup子系统下的所有目录（遍历所有目录和子目录，每个目录是一个container）。根据containers里已经拥有的container和目录进行比较
 	// 分析出新增和移除的container，增加目录进行创建containerdata，移除目录移除containerdata
+	// 只有raw的ContainerHandlerFactory(rawContainerHandler)能处理
 	err = self.detectSubcontainers("/")
 	if err != nil {
 		return err
@@ -295,7 +300,7 @@ func (self *manager) Start() error {
 
 	// Watch for new container.
 	quitWatcher := make(chan error)
-	// inotify监听cgroup目录的变化事件的，增加目录进行创建containerdata（同时container增加事件到eventHandler），移除目录移除containerdata（同时增加container移除事件到eventHandler）
+	// inotify监听cgroup子系统目录和子目录的inotify变化事件的，增加目录进行创建containerdata（同时container增加事件到eventHandler），移除目录移除containerdata（同时增加container移除事件到eventHandler）
 	err = self.watchForNewContainers(quitWatcher)
 	if err != nil {
 		return err
@@ -321,10 +326,12 @@ func (self *manager) Stop() error {
 	// Stop and wait on all quit channels.
 	for i, c := range self.quitChannels {
 		// Send the exit signal and wait on the thread to exit (by closing the channel).
+		// 发送消息给c，让监听这个chan的goroutine退出，由于c没有buffer，必须等待goroutine消费这个消息，才能继续执行
 		c <- nil
 		err := <-c
 		if err != nil {
 			// Remove the channels that quit successfully.
+			// 这里并没有close c，应该是让gc自己回收
 			self.quitChannels = self.quitChannels[i:]
 			return err
 		}
@@ -909,6 +916,7 @@ func (m *manager) createContainer(containerName string, watchSource watcher.Cont
 	return m.createContainerLocked(containerName, watchSource)
 }
 
+// 从注册的handler中，找到能够处理的handler，通过这个handler，每秒获取container的cgroup系统的状态，保存到containerData.memoryCache（只保留2分钟内的状态数据，每秒一个数据，理论是120个数据）中，containerData保存到m.containers中
 func (m *manager) createContainerLocked(containerName string, watchSource watcher.ContainerWatchSource) error {
 	namespacedName := namespacedContainerName{
 		Name: containerName,
@@ -919,6 +927,7 @@ func (m *manager) createContainerLocked(containerName string, watchSource watche
 		return nil
 	}
 
+	// 找到能够处理的containerHandler（在self.Start()中会注册containerHandlerFactory，找到能够accept的containerHandlerFactory，让containerHandlerFactory创建containerHandler）
 	handler, accept, err := container.NewContainerHandler(containerName, watchSource, m.inHostNamespace)
 	if err != nil {
 		return err
@@ -933,7 +942,10 @@ func (m *manager) createContainerLocked(containerName string, watchSource watche
 		return err
 	}
 
+	// 默认logCadvisorUsage为false
 	logUsage := *logCadvisorUsage && containerName == m.cadvisorContainer
+	// m.maxHousekeepingInterval为15s，m.allowDynamicHousekeeping为true
+	// containerData包含container的信息（cgroup信息）和获取container信息的一些配置（如何获取这些信息）
 	cont, err := newContainerData(containerName, m.memoryCache, handler, logUsage, collectorManager, m.maxHousekeepingInterval, m.allowDynamicHousekeeping, clock.RealClock{})
 	if err != nil {
 		return err
@@ -951,8 +963,10 @@ func (m *manager) createContainerLocked(containerName string, watchSource watche
 	}
 
 	// Add collectors
+	// 如果是rawContainerHandler，则labels为空，collectorConfigs也为空
 	labels := handler.GetContainerLabels()
 	collectorConfigs := collector.GetCollectorConfigs(labels)
+	// 调用cont.collectorManager.RegisterCollector(newCollector)，注册collectorConfigs中定义的collector
 	err = m.registerCollectors(collectorConfigs, cont)
 	if err != nil {
 		klog.Warningf("Failed to register collectors for %q: %v", containerName, err)
@@ -969,27 +983,36 @@ func (m *manager) createContainerLocked(containerName string, watchSource watche
 
 	klog.V(3).Infof("Added container: %q (aliases: %v, namespace: %q)", containerName, cont.info.Aliases, cont.info.Namespace)
 
+	// 再次执行handler.GetSpec()，为获取CreationTime
 	contSpec, err := cont.handler.GetSpec()
 	if err != nil {
 		return err
 	}
 
+	// 如果是rawContainerHandler，返回
+	// info.ContainerReference{
+	// 	Name: self.name,
+	// }
 	contRef, err := cont.handler.ContainerReference()
 	if err != nil {
 		return err
 	}
 
+	// 生成containerCreation事件
 	newEvent := &info.Event{
 		ContainerName: contRef.Name,
 		Timestamp:     contSpec.CreationTime,
 		EventType:     info.EventContainerCreation,
 	}
+	// 添加这个newEvent到eventHandler里的eventStore中，且维护相应event类型的TimedStore（默认只会保存24小时且100000个event事件）
+	// 发送event到关注这个event的watch的channel中（这里没有注册的watch，所以这个不会执行）
 	err = m.eventHandler.AddEvent(newEvent)
 	if err != nil {
 		return err
 	}
 
 	// Start the container's housekeeping.
+	// 如果是rawContainerHandler，启动一个goroutine，每一秒执行获取container的cgroup系统的cpu、memory、hugetlb、pids、blkio、网卡发送接收、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制、文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）状态信息，添加container状态数据到containerData里的InMemoryCache中
 	return cont.Start()
 }
 
@@ -1000,6 +1023,9 @@ func (m *manager) destroyContainer(containerName string) error {
 	return m.destroyContainerLocked(containerName)
 }
 
+// 从m.containers获取这个容器的containerData，停止houskeeping（每一秒获取cgroup子系统的状态），从containerData.memoryCache.containerCacheMap移除cgroup子系统的状态数据集合
+// 从m.containers中移除这个容器
+// 生成containerDeletion事件，添加这个newEvent到eventHandler里的eventStore中，发送event到关注这个event的watch的channel中
 func (m *manager) destroyContainerLocked(containerName string) error {
 	namespacedName := namespacedContainerName{
 		Name: containerName,
@@ -1011,6 +1037,7 @@ func (m *manager) destroyContainerLocked(containerName string) error {
 	}
 
 	// Tell the container to stop.
+	// 停止houskeeping（每一秒获取cgroup子系统的状态），从cont.memoryCache.containerCacheMap移除cgroup子系统的状态数据集合
 	err := cont.Stop()
 	if err != nil {
 		return err
@@ -1031,11 +1058,14 @@ func (m *manager) destroyContainerLocked(containerName string) error {
 		return err
 	}
 
+	// 生成containerDeletion事件
 	newEvent := &info.Event{
 		ContainerName: contRef.Name,
 		Timestamp:     time.Now(),
 		EventType:     info.EventContainerDeletion,
 	}
+	// 添加这个newEvent到eventHandler里的eventStore中，且维护相应event类型的TimedStore（默认只会保存24小时且100000个event事件）
+	// 发送event到关注这个event的watch的channel中（这里没有注册的watch，所以这个不会执行）
 	err = m.eventHandler.AddEvent(newEvent)
 	if err != nil {
 		return err
@@ -1044,6 +1074,7 @@ func (m *manager) destroyContainerLocked(containerName string) error {
 }
 
 // Detect all containers that have been added or deleted from the specified container.
+// 获取所有container下的子路径（最新的路径列表），跟m.containers（保存已经发现的路径与对应的containerData）进行对比，过滤出新增加的路径added和不存在的路径removed
 func (m *manager) getContainersDiff(containerName string) (added []info.ContainerReference, removed []info.ContainerReference, err error) {
 	// Get all subcontainers recursively.
 	m.containersLock.RLock()
@@ -1054,18 +1085,26 @@ func (m *manager) getContainersDiff(containerName string) (added []info.Containe
 	if !ok {
 		return nil, nil, fmt.Errorf("failed to find container %q while checking for new containers", containerName)
 	}
+	// 如果handler是rawContainerHandler
+	// 获得所有cgroup子系统路径下的所有目录（不同子系统下的目录名一样会覆盖），当listType == container.ListRecursive，会递归获取所有子目录。
+	// 返回的目录为/{self.name}/{子目录}，/{self.name}/{子目录}/{子目录}
+	// 比如/system.slice、/system.slice/kubelet.service，就是真实路径去除/sys/fs/cgroup
+	// 并封装成info.ContainerReference，返回[]info.ContainerReference
 	allContainers, err := cont.handler.ListContainers(container.ListRecursive)
 
 	if err != nil {
 		return nil, nil, err
 	}
+	// container自身也添加进allContainers
 	allContainers = append(allContainers, info.ContainerReference{Name: containerName})
 
 	m.containersLock.RLock()
 	defer m.containersLock.RUnlock()
 
 	// Determine which were added and which were removed.
+	// 利用map来过滤出，增加的和移除的
 	allContainersSet := make(map[string]*containerData)
+	// 查询已经保存在m.containers的，过滤出d.info.Name（value里的info.Name） == name.Name（key里的Name），保存在allContainersSet
 	for name, d := range m.containers {
 		// Only add the canonical name.
 		if d.info.Name == name.Name {
@@ -1075,10 +1114,12 @@ func (m *manager) getContainersDiff(containerName string) (added []info.Containe
 
 	// Added containers
 	for _, c := range allContainers {
+		// 删除（路径存在）存在的containerData，allContainersSet只剩下不存在的路径
 		delete(allContainersSet, c.Name)
 		_, ok := m.containers[namespacedContainerName{
 			Name: c.Name,
 		}]
+		// 不在m.containers，说明是新添加的，append到added中
 		if !ok {
 			added = append(added, c)
 		}
@@ -1094,6 +1135,7 @@ func (m *manager) getContainersDiff(containerName string) (added []info.Containe
 
 // Detect the existing subcontainers and reflect the setup here.
 func (m *manager) detectSubcontainers(containerName string) error {
+	// 获取所有container下的cgroup子路径下的目录和子目录（返回的路径是 /{containerName} + 去除（cgroup子系统的路径）子目录的绝对路径）--最新的路径列表，跟m.containers（保存已经发现的路径与对应的containerData）进行对比，过滤出新增加的路径added和不存在的路径removed
 	added, removed, err := m.getContainersDiff(containerName)
 	if err != nil {
 		return err
@@ -1101,6 +1143,7 @@ func (m *manager) detectSubcontainers(containerName string) error {
 
 	// Add the new containers.
 	for _, cont := range added {
+		// 从注册的handler中，找到能够处理的handler，通过这个handler，每秒获取container的cgroup系统的状态，保存到containerData.memoryCache（只保留2分钟内的状态数据，每秒一个数据，理论是120个数据）中，containerData保存到m.containers中。
 		err = m.createContainer(cont.Name, watcher.Raw)
 		if err != nil {
 			klog.Errorf("Failed to create existing container: %s: %s", cont.Name, err)
@@ -1109,6 +1152,9 @@ func (m *manager) detectSubcontainers(containerName string) error {
 
 	// Remove the old containers.
 	for _, cont := range removed {
+		// 从m.containers获取这个容器的containerData，停止houskeeping（每一秒获取cgroup子系统的状态），从containerData.memoryCache.containerCacheMap移除cgroup子系统的状态数据集合
+		// 从m.containers中移除这个容器
+		// 生成containerDeletion事件，添加这个newEvent到eventHandler里的eventStore中，发送event到关注这个event的watch的channel中
 		err = m.destroyContainer(cont.Name)
 		if err != nil {
 			klog.Errorf("Failed to destroy existing container: %s: %s", cont.Name, err)
@@ -1121,6 +1167,8 @@ func (m *manager) detectSubcontainers(containerName string) error {
 // Watches for new containers started in the system. Runs forever unless there is a setup error.
 func (self *manager) watchForNewContainers(quit chan error) error {
 	for _, watcher := range self.containerWatchers {
+		// 添加inotify监听所有cgroup子系统的目录和所有子目录，如果发现之前没有监听的目录，发送watcher.ContainerAdd类型的event到self.eventsChannel通道中
+		// 启动一个gorutine，处理inotify事件，发送watcher.ContainerAdd或watcher.ContainerDelete事件到self.eventsChannel通道中
 		err := watcher.Start(self.eventsChannel)
 		if err != nil {
 			return err
@@ -1128,6 +1176,9 @@ func (self *manager) watchForNewContainers(quit chan error) error {
 	}
 
 	// There is a race between starting the watch and new container creation so we do a detection before we read new containers.
+	// 目前能够处理的只有rawContainerHandler
+	// container cgroup子系统下的所有目录（遍历所有目录和子目录，每个目录是一个container）。根据containers里已经拥有的container和目录进行比较
+	// 分析出新增和移除的container，增加目录进行创建containerdata，移除目录移除containerdata
 	err := self.detectSubcontainers("/")
 	if err != nil {
 		return err
@@ -1142,6 +1193,7 @@ func (self *manager) watchForNewContainers(quit chan error) error {
 				case event.EventType == watcher.ContainerAdd:
 					switch event.WatchSource {
 					default:
+						// event.Name是container name
 						err = self.createContainer(event.Name, event.WatchSource)
 					}
 				case event.EventType == watcher.ContainerDelete:
@@ -1181,22 +1233,28 @@ func (self *manager) watchForNewOoms() error {
 	if err != nil {
 		return err
 	}
+	// 从/dev/kmsg读取出oom消息发送到outStream通道中
 	go oomLog.StreamOoms(outStream)
 
+	// 从outStream取出oom消息，生成oom类型的event和oomKill类型的event，并通过eventHandler进行处理
 	go func() {
 		for oomInstance := range outStream {
 			// Surface OOM and OOM kill events.
+			// 生成oom类型的event
 			newEvent := &info.Event{
 				ContainerName: oomInstance.ContainerName,
 				Timestamp:     oomInstance.TimeOfDeath,
 				EventType:     info.EventOom,
 			}
+			// 添加这个newEvent到eventHandler里的eventStore中，且维护相应event类型的TimedStore
+			// 发送event到关注这个event的watch的channel中
 			err := self.eventHandler.AddEvent(newEvent)
 			if err != nil {
 				klog.Errorf("failed to add OOM event for %q: %v", oomInstance.ContainerName, err)
 			}
 			klog.V(3).Infof("Created an OOM event in container %q at %v", oomInstance.ContainerName, oomInstance.TimeOfDeath)
 
+			// 生成oomKill类型的event
 			newEvent = &info.Event{
 				ContainerName: oomInstance.VictimContainerName,
 				Timestamp:     oomInstance.TimeOfDeath,

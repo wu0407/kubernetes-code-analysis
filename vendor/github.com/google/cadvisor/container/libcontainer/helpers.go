@@ -35,8 +35,10 @@ type CgroupSubsystems struct {
 }
 
 // Get information about the cgroup subsystems those we want
+// 获得所有includedMetrics对应的cgroup子系统的Mounts(cgroup子系统的Mountpoint（挂载点唯一）、Root、对应的Subsystems列表)和MountPoints(map["cgroup子系统"]["对应挂载点"])
 func GetCgroupSubsystems(includedMetrics container.MetricSet) (CgroupSubsystems, error) {
 	// Get all cgroup mounts.
+	// 从/proc/self/mountinfo中获得所有cgroup子系统的Mountpoint、Root、对应的Subsystems列表
 	allCgroups, err := cgroups.GetCgroupMounts(true)
 	if err != nil {
 		return CgroupSubsystems{}, err
@@ -45,6 +47,7 @@ func GetCgroupSubsystems(includedMetrics container.MetricSet) (CgroupSubsystems,
 	disableCgroups := map[string]struct{}{}
 
 	//currently we only support disable blkio subsystem
+	// 如果includedMetrics里没有diskIO，则disableCgroups里添加blkio、io
 	if !includedMetrics.Has(container.DiskIOMetrics) {
 		disableCgroups["blkio"] = struct{}{}
 		disableCgroups["io"] = struct{}{}
@@ -53,8 +56,10 @@ func GetCgroupSubsystems(includedMetrics container.MetricSet) (CgroupSubsystems,
 }
 
 // Get information about all the cgroup subsystems.
+// 获得所有cgroup子系统的Mounts(cgroup子系统的Mountpoint（挂载点唯一）、Root、对应的Subsystems列表)和MountPoints(map["cgroup子系统"]["对应挂载点"])
 func GetAllCgroupSubsystems() (CgroupSubsystems, error) {
 	// Get all cgroup mounts.
+	// 从/proc/self/mountinfo中获得所有cgroup子系统的Mountpoint、Root、对应的Subsystems列表
 	allCgroups, err := cgroups.GetCgroupMounts(true)
 	if err != nil {
 		return CgroupSubsystems{}, err
@@ -64,6 +69,7 @@ func GetAllCgroupSubsystems() (CgroupSubsystems, error) {
 	return getCgroupSubsystemsHelper(allCgroups, emptyDisableCgroups)
 }
 
+// 返回Mounts(cgroup子系统的Mountpoint（挂载点唯一）、Root、对应的Subsystems列表)和MountPoints(map["cgroup子系统"]["对应挂载点"])，过滤掉disableCgroups里的cgroup子系统
 func getCgroupSubsystemsHelper(allCgroups []cgroups.Mount, disableCgroups map[string]struct{}) (CgroupSubsystems, error) {
 	if len(allCgroups) == 0 {
 		return CgroupSubsystems{}, fmt.Errorf("failed to find cgroup mounts")
@@ -75,18 +81,22 @@ func getCgroupSubsystemsHelper(allCgroups []cgroups.Mount, disableCgroups map[st
 	mountPoints := make(map[string]string, len(allCgroups))
 	for _, mount := range allCgroups {
 		for _, subsystem := range mount.Subsystems {
+			// 在subsystem为disableCgroups（禁用cgroup）里，则跳过
 			if _, exists := disableCgroups[subsystem]; exists {
 				continue
 			}
+			// 不支持的cgroup系统，则跳过
 			if _, ok := supportedSubsystems[subsystem]; !ok {
 				// Unsupported subsystem
 				continue
 			}
+			// 已经设置过(重复)的cgroup系统，则跳过
 			if _, ok := mountPoints[subsystem]; ok {
 				// duplicate mount for this subsystem; use the first one we saw
 				klog.V(5).Infof("skipping %s, already using mount at %s", mount.Mountpoint, mountPoints[subsystem])
 				continue
 			}
+			// 不是已经发现cgroup的挂载点（多个cgroup子系统对同一个挂载点，比如cpu和cpuacct），则记录到supportedCgroups，recordedMountpoints
 			if _, ok := recordedMountpoints[mount.Mountpoint]; !ok {
 				// avoid appending the same mount twice in e.g. `cpu,cpuacct` case
 				supportedCgroups = append(supportedCgroups, mount)

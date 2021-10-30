@@ -80,6 +80,7 @@ func (self *InMemoryCache) AddStats(cInfo *info.ContainerInfo, stats *info.Conta
 	func() {
 		self.lock.Lock()
 		defer self.lock.Unlock()
+		// 不在containerCacheMap中，则新建一个containerCache
 		if cstore, ok = self.containerCacheMap[cInfo.ContainerReference.Name]; !ok {
 			cstore = newContainerStore(cInfo.ContainerReference, self.maxAge)
 			self.containerCacheMap[cInfo.ContainerReference.Name] = cstore

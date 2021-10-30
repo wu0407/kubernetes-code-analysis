@@ -109,12 +109,12 @@ func (self *OomParser) StreamOoms(outStream chan<- *OomInstance) {
 			}
 			// 继续从/dev/kmsg读取消息
 			for msg := range kmsgEntries {
-				// 从消息中解析出ContainerName和VictimContainerName
+				// 从消息中解析出ContainerName和VictimContainerName，消息匹配`Task in (.*) killed as a result of limit of (.*)`
 				err := getContainerName(msg.Message, oomCurrentInstance)
 				if err != nil {
 					klog.Errorf("%v", err)
 				}
-				// 从消息中解析出Pid和ProcessName
+				// 从消息中解析出Pid和ProcessName，消息匹配`Killed process ([0-9]+) \((.+)\)`
 				finished, err := getProcessNamePid(msg.Message, oomCurrentInstance)
 				if err != nil {
 					klog.Errorf("%v", err)

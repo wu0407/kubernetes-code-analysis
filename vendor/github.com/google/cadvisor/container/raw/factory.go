@@ -65,13 +65,16 @@ func (self *rawFactory) NewContainerHandler(name string, inHostNamespace bool) (
 }
 
 // The raw factory can handle any container. If --docker_only is set to true, non-docker containers are ignored except for "/" and those whitelisted by raw_cgroup_prefix_whitelist flag.
+// kubelet里能够处理"/", "/kubepods.slice", "/system.slice/kubelet.service", "/system.slice/docker.service"下的所有子目录，包括自身
 func (self *rawFactory) CanHandleAndAccept(name string) (bool, bool, error) {
 	if name == "/" {
 		return true, true, nil
 	}
+	// kubelet里self.rawPrefixWhiteList为[]string{"/kubepods.slice", "/system.slice/kubelet.service", "/system.slice/docker.service"}
 	if *dockerOnly && self.rawPrefixWhiteList[0] == "" {
 		return true, false, nil
 	}
+	// kubelet里能够处理"/kubepods.slice", "/system.slice/kubelet.service", "/system.slice/docker.service"下的所有子目录，包括自身
 	for _, prefix := range self.rawPrefixWhiteList {
 		if strings.HasPrefix(name, prefix) {
 			return true, true, nil
@@ -85,6 +88,7 @@ func (self *rawFactory) DebugInfo() map[string][]string {
 }
 
 func Register(machineInfoFactory info.MachineInfoFactory, fsInfo fs.FsInfo, includedMetrics map[container.MetricKind]struct{}, rawPrefixWhiteList []string) error {
+	// 获得所有includedMetrics对应的cgroup子系统的Mounts(cgroup子系统的Mountpoint（挂载点唯一）、Root、对应的Subsystems列表)和MountPoints(map["cgroup子系统"]["对应挂载点"])
 	cgroupSubsystems, err := libcontainer.GetCgroupSubsystems(includedMetrics)
 	if err != nil {
 		return fmt.Errorf("failed to get cgroup subsystems: %v", err)

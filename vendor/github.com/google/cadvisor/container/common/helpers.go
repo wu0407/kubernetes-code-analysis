@@ -68,6 +68,7 @@ func findFileInAncestorDir(current, file, limit string) (string, error) {
 	}
 }
 
+// 获得container的CreationTime、cpu cgroup的各种属性（cpu.shares，cpu.cfs_period_us，cpu.cfs_quota_us）、memory的（memory.limit_in_bytes、memory.memsw.limit_in_bytes、memory.soft_limit_in_bytes）、pid的pids.max、是否有文件系统、是否有网络、是否有blkio
 func GetSpec(cgroupPaths map[string]string, machineInfoFactory info.MachineInfoFactory, hasNetwork, hasFilesystem bool) (info.ContainerSpec, error) {
 	var spec info.ContainerSpec
 
@@ -97,7 +98,9 @@ func GetSpec(cgroupPaths map[string]string, machineInfoFactory info.MachineInfoF
 	}
 
 	// CPU.
+	// 容器的cpu cgroup路径
 	cpuRoot, ok := cgroupPaths["cpu"]
+	// 获得cpu cgroup的各种属性（cpu.shares，cpu.cfs_period_us，cpu.cfs_quota_us）
 	if ok {
 		if utils.FileExists(cpuRoot) {
 			spec.HasCpu = true
@@ -142,6 +145,7 @@ func GetSpec(cgroupPaths map[string]string, machineInfoFactory info.MachineInfoF
 				spec.Memory.Reservation = readUInt64(memoryRoot, "memory.soft_limit_in_bytes")
 			}
 		} else {
+			// 从{memoryRoot}到各级的上级目录中查找memory.max文件，如果没有查找则在/sys/fs/cgroup停止查找。返回找到的文件的目录
 			memoryRoot, err := findFileInAncestorDir(memoryRoot, "memory.max", "/sys/fs/cgroup")
 			if err != nil {
 				return spec, err
@@ -230,6 +234,7 @@ func listDirectories(dirpath string, parent string, recursive bool, output map[s
 		}
 		dirname := dirent.Name()
 
+		// output返回为{parent}/{dirname}，去除了cgroup子系统的路径，比如dirpath为/sys/fs/cgroup/cpu， parent为/，/sys/fs/cgroup/cpu目录下面有system.service目录，则name为"/system.service"
 		name := path.Join(parent, dirname)
 		output[name] = struct{}{}
 
@@ -244,6 +249,7 @@ func listDirectories(dirpath string, parent string, recursive bool, output map[s
 	return nil
 }
 
+// 所有mountPoints的路径后面都添加name
 func MakeCgroupPaths(mountPoints map[string]string, name string) map[string]string {
 	cgroupPaths := make(map[string]string, len(mountPoints))
 	for key, val := range mountPoints {
@@ -263,8 +269,14 @@ func CgroupExists(cgroupPaths map[string]string) bool {
 	return false
 }
 
+// 获得所有cgroup子系统路径下的所有目录，当listType == container.ListRecursive，会递归获取所有子目录。
+// 返回的目录为/{name}/{子目录}，/{name}/{子目录}/{子目录}
+// 并封装成info.ContainerReference，返回[]info.ContainerReference
 func ListContainers(name string, cgroupPaths map[string]string, listType container.ListType) ([]info.ContainerReference, error) {
 	containers := make(map[string]struct{})
+	// 获得所有cgroup子系统路径下的所有目录，当listType == container.ListRecursive，会递归获取所有子目录
+	// 返回的目录为/{name}/{子目录}，/{name}/{子目录}/{子目录}
+	// 比如/system.slice、/system.slice/kubelet.service，就是真实路径去除/sys/fs/cgroup
 	for _, cgroupPath := range cgroupPaths {
 		err := ListDirectories(cgroupPath, name, listType == container.ListRecursive, containers)
 		if err != nil {

@@ -317,16 +317,23 @@ func Register(factory info.MachineInfoFactory, fsInfo fs.FsInfo, includedMetrics
 		return fmt.Errorf("unable to communicate with docker daemon: %v", err)
 	}
 
+	// 验证能否连上docker服务端
+	// 验证能否获得docker info信息
+	// 验证docker版本是否合法且是否大于1.0.0
+	// 验证docker必须有driver信息
 	dockerInfo, err := ValidateInfo()
 	if err != nil {
 		return fmt.Errorf("failed to validate Docker info: %v", err)
 	}
 
 	// Version already validated above, assume no error here.
+	// 得到docker版本号的每个字段的int[]，比如"1.2.3"返回[]int{1, 2, 3}
 	dockerVersion, _ := parseVersion(dockerInfo.ServerVersion, version_re, 3)
 
+	// docker api版本
 	dockerAPIVersion, _ := APIVersion()
 
+	// 获得所有includedMetrics对应的cgroup子系统的Mounts(cgroup子系统的Mountpoint（挂载点唯一）、Root、对应的Subsystems列表)和MountPoints(map["cgroup子系统"]["对应挂载点"])
 	cgroupSubsystems, err := libcontainer.GetCgroupSubsystems(includedMetrics)
 	if err != nil {
 		return fmt.Errorf("failed to get cgroup subsystems: %v", err)

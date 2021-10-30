@@ -129,6 +129,7 @@ func Register(factory info.MachineInfoFactory, fsInfo fs.FsInfo, includedMetrics
 		return fmt.Errorf("failed to fetch containerd client version: %v", err)
 	}
 
+	// 获得所有includedMetrics对应的cgroup子系统的Mounts(cgroup子系统的Mountpoint（挂载点唯一）、Root、对应的Subsystems列表)和MountPoints(map["cgroup子系统"]["对应挂载点"])
 	cgroupSubsystems, err := libcontainer.GetCgroupSubsystems(includedMetrics)
 	if err != nil {
 		return fmt.Errorf("failed to get cgroup subsystems: %v", err)

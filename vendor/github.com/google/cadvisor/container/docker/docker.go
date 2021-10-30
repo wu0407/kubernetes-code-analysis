@@ -116,6 +116,10 @@ func Images() ([]v1.DockerImage, error) {
 
 // Checks whether the dockerInfo reflects a valid docker setup, and returns it if it does, or an
 // error otherwise.
+// 验证能否连上docker服务端
+// 验证能否获得docker info信息
+// 验证docker版本是否合法且是否大于1.0.0
+// 验证docker必须有driver信息
 func ValidateInfo() (*dockertypes.Info, error) {
 	client, err := Client()
 	if err != nil {
@@ -135,6 +139,7 @@ func ValidateInfo() (*dockertypes.Info, error) {
 		}
 		dockerInfo.ServerVersion = version.Version
 	}
+	// 得到版本号的每个字段的int[]，比如"1.2.3"返回[]int{1, 2, 3}
 	version, err := parseVersion(dockerInfo.ServerVersion, version_re, 3)
 	if err != nil {
 		return nil, err
@@ -196,6 +201,7 @@ func parseVersion(version_string string, regex *regexp.Regexp, length int) ([]in
 	if len(matches) != 1 {
 		return nil, fmt.Errorf("version string \"%v\" doesn't match expected regular expression: \"%v\"", version_string, regex.String())
 	}
+	// 用"."分隔之后，各个数字 比如"1.2.3"，得到["1","2","3"]
 	version_string_array := matches[0][1:]
 	version_array := make([]int, length)
 	for index, version_str := range version_string_array {

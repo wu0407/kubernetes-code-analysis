@@ -653,7 +653,7 @@ func (self *RealFsInfo) GetDirUsage(dir string) (UsageInfo, error) {
 	return GetDirUsage(dir)
 }
 
-// 获得path里的磁盘设备的总的大小、free大小、非特权用户avail可用大小、inodes容量、free的inode数量
+// 获得path（挂载点）里的磁盘设备的总的大小、free大小、非特权用户avail可用大小、inodes容量、free的inode数量
 func getVfsStats(path string) (total uint64, free uint64, avail uint64, inodes uint64, inodesFree uint64, err error) {
 	var s syscall.Statfs_t
 	if err = syscall.Statfs(path, &s); err != nil {

@@ -197,12 +197,16 @@ func getMaxEventsReturned(request *Request, eSlice []*info.Event) []*info.Event 
 // equivalent
 func checkIfIsSubcontainer(request *Request, event *info.Event) bool {
 	if request.IncludeSubcontainers == true {
+		// request.ContainerName为"/"，则event.ContainerName一定包含request.ContainerName。event.ContainerName前缀包含request.ContainerName，比如event.ContainerName为/a/b,request.ContainerName为/a
 		return request.ContainerName == "/" || strings.HasPrefix(event.ContainerName+"/", request.ContainerName+"/")
 	}
 	return event.ContainerName == request.ContainerName
 }
 
 // determines if an event occurs within the time set in the request object and is the right type
+// 1. event.Timestamp在request.StartTime和request.EndTime范围内
+// 2. event.EventType是request需要的类型
+// 3. event的ContainerName是request需要的（相同的，或当包含子路径时候，event.ContainerName前缀包含request.ContainerName--event.ContainerName是request.ContainerName的子路径）
 func checkIfEventSatisfiesRequest(request *Request, event *info.Event) bool {
 	startTime := request.StartTime
 	endTime := request.EndTime
@@ -277,10 +281,13 @@ func (self *events) WatchEvents(request *Request) (*EventChannel, error) {
 }
 
 // helper function to update the event manager's eventStore
+// 添加info.Event到eventStore中，确保info.Event相应的EventType的TimedStore存在且维护其保存的数量和删除过期的元素
 func (self *events) updateEventStore(e *info.Event) {
 	self.eventsLock.Lock()
 	defer self.eventsLock.Unlock()
+	// TimedStore不存在，则创建一个新的TimedStore
 	if _, ok := self.eventStore[e.EventType]; !ok {
+		// 根据storagePolicy，如果有e.EventType的PerTypeMaxNumEvents，则使用这个值，否则使用默认的DefaultMaxNumEvents
 		maxNumEvents := self.storagePolicy.DefaultMaxNumEvents
 		if numEvents, ok := self.storagePolicy.PerTypeMaxNumEvents[e.EventType]; ok {
 			maxNumEvents = numEvents
@@ -290,20 +297,25 @@ func (self *events) updateEventStore(e *info.Event) {
 			return
 		}
 
+		// 根据storagePolicy，如果有e.EventType的PerTypeMaxAge，则使用这个值，否则使用默认的DefaultMaxAge
 		maxAge := self.storagePolicy.DefaultMaxAge
 		if age, ok := self.storagePolicy.PerTypeMaxAge[e.EventType]; ok {
 			maxAge = age
 		}
 
+		// 创建TimedStore
 		self.eventStore[e.EventType] = utils.NewTimedStore(maxAge, maxNumEvents)
 	}
+	// 添加到TimeStore
 	self.eventStore[e.EventType].Add(e.Timestamp, e)
 }
 
+// 查找关注这个Event的watch
 func (self *events) findValidWatchers(e *info.Event) []*watch {
 	watchesToSend := make([]*watch, 0)
 	for _, watcher := range self.watchers {
 		watchRequest := watcher.request
+		// 检测event是否为watchRequest关注的对象
 		if checkIfEventSatisfiesRequest(watchRequest, e) {
 			watchesToSend = append(watchesToSend, watcher)
 		}
@@ -315,9 +327,11 @@ func (self *events) findValidWatchers(e *info.Event) []*watch {
 // eventStore. It also feeds the event to a set of watch channels
 // held by the manager if it satisfies the request keys of the channels
 func (self *events) AddEvent(e *info.Event) error {
+	// 添加info.Event到self.eventStore中，且维护相应的TimedStore（确保info.Event相应的EventType的TimedStore存在且维护其保存的数量和删除过期的元素）
 	self.updateEventStore(e)
 	self.watcherLock.RLock()
 	defer self.watcherLock.RUnlock()
+	// 查找关注这个Event的watch
 	watchesToSend := self.findValidWatchers(e)
 	for _, watchObject := range watchesToSend {
 		watchObject.eventChannel.GetChannel() <- e

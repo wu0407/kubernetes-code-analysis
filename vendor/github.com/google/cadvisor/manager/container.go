@@ -60,6 +60,7 @@ type containerInfo struct {
 type containerData struct {
 	handler                  container.ContainerHandler
 	info                     containerInfo
+	// 保存container的cgroup状态信息（监控数据）
 	memoryCache              *memory.InMemoryCache
 	lock                     sync.Mutex
 	loadReader               cpuload.CpuLoadReader
@@ -110,6 +111,7 @@ func (c *containerData) Start() error {
 }
 
 func (c *containerData) Stop() error {
+	// 移除container的状态数据（从c.memoryCache.containerCacheMap移除）
 	err := c.memoryCache.RemoveContainer(c.info.Name)
 	if err != nil {
 		return err
@@ -130,6 +132,7 @@ func (c *containerData) allowErrorLogging() bool {
 // It is designed to be used in conjunction with periodic housekeeping, and will cause the timer for
 // periodic housekeeping to reset.  This should be used sparingly, as calling OnDemandHousekeeping frequently
 // can have serious performance costs.
+// housekeeping执行超出maxAge，才会执行
 func (c *containerData) OnDemandHousekeeping(maxAge time.Duration) {
 	if c.clock.Since(c.statsLastUpdatedTime) > maxAge {
 		housekeepingFinishedChan := make(chan struct{})
@@ -363,6 +366,7 @@ func (c *containerData) GetProcessList(cadvisorContainer string, inHostNamespace
 	return processes, nil
 }
 
+// ContainerData包含container的信息（cgroup信息）和获取container信息的一些配置（如何获取这些信息）
 func newContainerData(containerName string, memoryCache *memory.InMemoryCache, handler container.ContainerHandler, logUsage bool, collectorManager collector.CollectorManager, maxHousekeepingInterval time.Duration, allowDynamicHousekeeping bool, clock clock.Clock) (*containerData, error) {
 	if memoryCache == nil {
 		return nil, fmt.Errorf("nil memory storage")
@@ -392,6 +396,7 @@ func newContainerData(containerName string, memoryCache *memory.InMemoryCache, h
 
 	cont.loadDecay = math.Exp(float64(-cont.housekeepingInterval.Seconds() / 10))
 
+	// 默认enableLoadReader为false
 	if *enableLoadReader {
 		// Create cpu load reader.
 		loadReader, err := cpuload.New()
@@ -402,6 +407,7 @@ func newContainerData(containerName string, memoryCache *memory.InMemoryCache, h
 		}
 	}
 
+	// handler是rawContainerHandler，设置cont.info.Spec--获取container的cgroup属性值（cpu、memory和pid属性，以及是否有文件系统、是否有网络、是否有blkio）和自定义指标
 	err = cont.updateSpec()
 	if err != nil {
 		return nil, err
@@ -427,11 +433,14 @@ func (self *containerData) nextHousekeepingInterval() time.Duration {
 		} else if len(stats) == 2 {
 			// TODO(vishnuk): Use no processes as a signal.
 			// Raise the interval if usage hasn't changed in the last housekeeping.
+			// 如果两个stats一样且self.housekeepingInterval小于self.maxHousekeepingInterval，则self.housekeepingInterval扩大一倍
 			if stats[0].StatsEq(stats[1]) && (self.housekeepingInterval < self.maxHousekeepingInterval) {
 				self.housekeepingInterval *= 2
 				if self.housekeepingInterval > self.maxHousekeepingInterval {
 					self.housekeepingInterval = self.maxHousekeepingInterval
 				}
+			// 如果两个stats不一样或self.housekeepingInterval大于等于self.maxHousekeepingInterval，且self.housekeepingInterval与默认的HousekeepingInterval不一样
+			// 重置self.housekeepingInterval为默认的HousekeepingInterval
 			} else if self.housekeepingInterval != *HousekeepingInterval {
 				// Lower interval back to the baseline.
 				self.housekeepingInterval = *HousekeepingInterval
@@ -445,10 +454,12 @@ func (self *containerData) nextHousekeepingInterval() time.Duration {
 // TODO(vmarmol): Implement stats collecting as a custom collector.
 func (c *containerData) housekeeping() {
 	// Start any background goroutines - must be cleaned up in c.handler.Cleanup().
+	// 如果是rawContainerHandler，则c.handler.Start()和c.handler.Cleanup()不做任何事情
 	c.handler.Start()
 	defer c.handler.Cleanup()
 
 	// Initialize cpuload reader - must be cleaned up in c.loadReader.Stop()
+	// 默认enableLoadReader为false，所以c.loadReader为nil
 	if c.loadReader != nil {
 		err := c.loadReader.Start()
 		if err != nil {
@@ -459,6 +470,7 @@ func (c *containerData) housekeeping() {
 
 	// Long housekeeping is either 100ms or half of the housekeeping interval.
 	longHousekeeping := 100 * time.Millisecond
+	// HousekeepingInterval默认为1s
 	if *HousekeepingInterval/2 < longHousekeeping {
 		longHousekeeping = *HousekeepingInterval / 2
 	}
@@ -472,6 +484,7 @@ func (c *containerData) housekeeping() {
 			return
 		}
 		// Stop and drain the timer so that it is safe to reset it
+		// 定时器已经停止，ensure the channel is empty after a call to Stop
 		if !houseKeepingTimer.Stop() {
 			select {
 			case <-houseKeepingTimer.C():
@@ -482,6 +495,7 @@ func (c *containerData) housekeeping() {
 		if c.logUsage {
 			const numSamples = 60
 			var empty time.Time
+			// 获得最近60个containerData
 			stats, err := c.memoryCache.RecentStats(c.info.Name, empty, empty, numSamples)
 			if err != nil {
 				if c.allowErrorLogging() {
@@ -493,12 +507,15 @@ func (c *containerData) housekeeping() {
 				usageCpuNs := uint64(0)
 				for i := range stats {
 					if i > 0 {
+						// 计算总的cpu使用
 						usageCpuNs += (stats[i].Cpu.Usage.Total - stats[i-1].Cpu.Usage.Total)
 					}
 				}
 				usageMemory := stats[numSamples-1].Memory.Usage
 
+				//最近的cpu使用率--最后两个cpu差值除以最后两个时间间隔 
 				instantUsageInCores := float64(stats[numSamples-1].Cpu.Usage.Total-stats[numSamples-2].Cpu.Usage.Total) / float64(stats[numSamples-1].Timestamp.Sub(stats[numSamples-2].Timestamp).Nanoseconds())
+				// 总的cpu使用率
 				usageInCores := float64(usageCpuNs) / float64(stats[numSamples-1].Timestamp.Sub(stats[0].Timestamp).Nanoseconds())
 				usageInHuman := units.HumanSize(float64(usageMemory))
 				// Don't set verbosity since this is already protected by the logUsage flag.
@@ -514,12 +531,19 @@ func (c *containerData) housekeepingTick(timer <-chan time.Time, longHousekeepin
 	case <-c.stop:
 		// Stop housekeeping when signaled.
 		return false
+	// 收到onDemandChan里的消息，代表手动需要执行housekeeping
 	case finishedChan := <-c.onDemandChan:
 		// notify the calling function once housekeeping has completed
+		// close(finishedChan)通知OnDemandHousekeeping的调用者已经完成housekeeping
 		defer close(finishedChan)
 	case <-timer:
 	}
 	start := c.clock.Now()
+	// 获取container的cpu、memory、hugetlb、pids、blkio、网卡发送接收、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制、文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）状态
+	// 添加container状态数据到InMemoryCache中
+	// 更新cpu load数据
+	// 更新聚合数据summaryReader，生成分钟、小时、天的聚合数据
+	// 更新自定义metric
 	err := c.updateStats()
 	if err != nil {
 		if c.allowErrorLogging() {
@@ -531,12 +555,19 @@ func (c *containerData) housekeepingTick(timer <-chan time.Time, longHousekeepin
 	if duration >= longHousekeeping {
 		klog.V(3).Infof("[%s] Housekeeping took %s", c.info.Name, duration)
 	}
+	// close(finishedChan)通知OnDemandHousekeeping的调用者已经完成housekeeping
+	// 这里再次调用close(finishedChan)，是为了在执行这个函数的时候，在select结束之后，调用OnDemandHousekeeping，需要通知调用者已经完成
 	c.notifyOnDemand()
+	// 执行完成，更新statsLastUpdatedTime
 	c.statsLastUpdatedTime = c.clock.Now()
 	return true
 }
 
+// 获取container的cgroup属性值和自定义指标
 func (c *containerData) updateSpec() error {
+	// 如果为rawContainerHandler
+	// 返回container的cgroup的cpu、memory和pid属性，以及是否有文件系统、是否有网络、是否有blkio
+	// 如果self.name为"/"，则其中Memory.Limit和Memory.SwapLimit修正为机器上真实值，根据是否有网卡确认是否有网络HasNetwork
 	spec, err := c.handler.GetSpec()
 	if err != nil {
 		// Ignore errors if the container is dead.
@@ -546,6 +577,7 @@ func (c *containerData) updateSpec() error {
 		return err
 	}
 
+	// 获取自定义指标属性
 	customMetrics, err := c.collectorManager.GetSpec()
 	if err != nil {
 		return err
@@ -571,7 +603,13 @@ func (c *containerData) updateLoad(newLoad uint64) {
 	}
 }
 
+// 获取container的cpu、memory、hugetlb、pids、blkio、网卡发送接收、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制、文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）状态
+// 添加container状态数据到InMemoryCache中
+// 更新cpu load数据
+// 更新聚合数据summaryReader，生成分钟、小时、天的聚合数据
+// 更新自定义metric
 func (c *containerData) updateStats() error {
+	// 获取container的cpu、memory、hugetlb、pids、blkio、网卡发送接收、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制、文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）
 	stats, statsErr := c.handler.GetStats()
 	if statsErr != nil {
 		// Ignore errors if the container is dead.
@@ -600,6 +638,7 @@ func (c *containerData) updateStats() error {
 		}
 	}
 	if c.summaryReader != nil {
+		// 提取stats中的cpu和memory数据，生成分钟、小时、天的聚合数据
 		err := c.summaryReader.AddSample(*stats)
 		if err != nil {
 			// Ignore summary errors for now.
@@ -608,7 +647,9 @@ func (c *containerData) updateStats() error {
 	}
 	var customStatsErr error
 	cm := c.collectorManager.(*collector.GenericCollectorManager)
+	// 更新自定义metric
 	if len(cm.Collectors) > 0 {
+		// 如果已经过了NextCollectionTime时间，执行c.updateCustomStats()
 		if cm.NextCollectionTime.Before(c.clock.Now()) {
 			customStats, err := c.updateCustomStats()
 			if customStats != nil {
@@ -639,6 +680,7 @@ func (c *containerData) updateStats() error {
 		ContainerReference: ref,
 	}
 
+	// 添加stats到InMemoryCache中
 	err = c.memoryCache.AddStats(&cInfo, stats)
 	if err != nil {
 		return err

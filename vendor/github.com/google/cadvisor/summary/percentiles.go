@@ -44,11 +44,14 @@ func (self Uint64Slice) GetPercentile(d float64) uint64 {
 		return 0
 	}
 	sort.Sort(self)
+	// 算出需要的是第几个的值，向上取整，比如0.9 * 50 +1= 46.0
 	n := float64(d * (float64(count) + 1))
 	idx, frac := math.Modf(n)
 	index := int(idx)
 	percentile := float64(self[index-1])
+	// 整数部分不是第一个或最后一个
 	if index > 1 && index < count {
+		// 要加上小数位的值（小数位乘以后一个与这一个之间的差值）
 		percentile += frac * float64(self[index]-self[index-1])
 	}
 	return uint64(percentile)
@@ -61,6 +64,7 @@ type mean struct {
 	Mean float64
 }
 
+// self.count加1，计算新的平均值self.Mean
 func (self *mean) Add(value uint64) {
 	self.count++
 	if self.count == 1 {
@@ -69,6 +73,7 @@ func (self *mean) Add(value uint64) {
 	}
 	c := float64(self.count)
 	v := float64(value)
+	// 计算新的平均值，等于原来的count乘以self.Mean加上新加的value，除以现在的count
 	self.Mean = (self.Mean*(c-1) + v) / c
 }
 
@@ -86,15 +91,19 @@ func (self *resource) Add(p info.Percentiles) {
 	if !p.Present {
 		return
 	}
+	// 新的最大值记录，记录到self.max
 	if p.Max > self.max {
 		self.max = p.Max
 	}
+	// self.count加1，计算新的平均值self.Mean
 	self.mean.Add(p.Mean)
 	// Selecting 90p of 90p :(
+	// 90分位值添加到样本列表中
 	self.samples = append(self.samples, p.Ninety)
 }
 
 // Add a single sample. Internally, we convert it to a fake percentile sample.
+// 添加新的sample到self.sample，有新的最大值记录则更新self.max和计算最新的self.Mean
 func (self *resource) AddSample(val uint64) {
 	sample := info.Percentiles{
 		Present:    true,
@@ -104,16 +113,23 @@ func (self *resource) AddSample(val uint64) {
 		Ninety:     val,
 		NinetyFive: val,
 	}
+	// 如果找到新的最大值，则更新self.max
+	// self.count加1，计算新的平均值self.Mean
+	// 添加90分位值到self.samples样本列表中
 	self.Add(sample)
 }
 
 // Get max, average, and 90p from existing samples.
+// 获得所有self.samples的平均值、最大值、0.5分位值、0.9分位值、0.95分位值
 func (self *resource) GetAllPercentiles() info.Percentiles {
 	p := info.Percentiles{}
 	p.Mean = uint64(self.mean.Mean)
 	p.Max = self.max
+	// 获得self.samples列表中0.5分位的值
 	p.Fifty = self.samples.GetPercentile(0.5)
+	// 获得self.samples列表中0.9分位的值
 	p.Ninety = self.samples.GetPercentile(0.9)
+	// 获得self.samples列表中0.95分位的值
 	p.NinetyFive = self.samples.GetPercentile(0.95)
 	p.Present = true
 	return p
@@ -127,6 +143,7 @@ func NewResource(size int) *resource {
 }
 
 // Return aggregated percentiles from the provided percentile samples.
+// 返回所有stats数据中的cpu和memory的聚合值（平均值、最大值、0.5分位值、0.9分位值、0.95分位值）
 func GetDerivedPercentiles(stats []*info.Usage) info.Usage {
 	cpu := NewResource(len(stats))
 	memory := NewResource(len(stats))
@@ -141,6 +158,7 @@ func GetDerivedPercentiles(stats []*info.Usage) info.Usage {
 }
 
 // Calculate part of a minute this sample set represent.
+// 计算stats里的样本的时间跨度占一分钟的百分比--样本的饱和度（是不是头尾间隔60s）
 func getPercentComplete(stats []*secondSample) (percent int32) {
 	numSamples := len(stats)
 	if numSamples > 1 {
@@ -158,6 +176,7 @@ func getPercentComplete(stats []*secondSample) (percent int32) {
 func getCpuRate(latest, previous secondSample) (uint64, error) {
 	var elapsed int64
 	elapsed = latest.Timestamp.Sub(previous.Timestamp).Nanoseconds()
+	// 间隔小于10ms，直接返回0
 	if elapsed < 10*milliSecondsToNanoSeconds {
 		return 0, fmt.Errorf("elapsed time too small: %d ns: time now %s last %s", elapsed, latest.Timestamp.String(), previous.Timestamp.String())
 	}
@@ -170,27 +189,37 @@ func getCpuRate(latest, previous secondSample) (uint64, error) {
 }
 
 // Returns a percentile sample for a minute by aggregating seconds samples.
+// 获得一分钟的聚合值，cpu和memory（平均值、最大值、0.5分位值、0.9分位值、0.95分位值）和样本时间覆盖率
 func GetMinutePercentiles(stats []*secondSample) info.Usage {
+	// 先前sample
 	lastSample := secondSample{}
+	// 包含sample列表和平均值
 	cpu := NewResource(len(stats))
 	memory := NewResource(len(stats))
 	for _, stat := range stats {
+		// 先前的sample不为空，则多添加cpu使用情况
 		if !lastSample.Timestamp.IsZero() {
+			// 计算cpu使用率，通过现在sample与先前的sample
 			cpuRate, err := getCpuRate(*stat, lastSample)
 			if err != nil {
 				continue
 			}
+			// 添加新的sample样本（90分位值）到self.sample，有新的最大值记录则更新self.max和计算最新的self.Mean
 			cpu.AddSample(cpuRate)
 			memory.AddSample(stat.Memory)
 		} else {
 			memory.AddSample(stat.Memory)
 		}
+		// 设置现在的sample为下一个循环的先前的sample
 		lastSample = *stat
 	}
+	// 计算stats里的样本的时间跨度占一分钟的百分比--样本的饱和度（时间覆盖率，是不是头尾间隔60s）
 	percent := getPercentComplete(stats)
 	return info.Usage{
 		PercentComplete: percent,
+		// 获得cpu的平均值、最大值、0.5分位值、0.9分位值、0.95分位值
 		Cpu:             cpu.GetAllPercentiles(),
+		// 获得memory的平均值、最大值、0.5分位值、0.9分位值、0.95分位值
 		Memory:          memory.GetAllPercentiles(),
 	}
 }
