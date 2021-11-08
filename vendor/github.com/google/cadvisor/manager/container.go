@@ -52,13 +52,17 @@ var HousekeepingInterval = flag.Duration("housekeeping_interval", 1*time.Second,
 var cgroupPathRegExp = regexp.MustCompile(`memory[^:]*:(.*?)[,;$]`)
 
 type containerInfo struct {
+	// id、name、namespace、alias
 	info.ContainerReference
+	// 子container列表
 	Subcontainers []info.ContainerReference
+	// 是否有cpu、内存、网络、diskio和创建时间、环境变量、Labels、Image
 	Spec          info.ContainerSpec
 }
 
 type containerData struct {
 	handler                  container.ContainerHandler
+	// 容器的信息，包括各种（是否有cpu、内存、网络、diskio）属性和子container列表和名字
 	info                     containerInfo
 	// 保存container的cgroup状态信息（监控数据）
 	memoryCache              *memory.InMemoryCache
@@ -132,7 +136,8 @@ func (c *containerData) allowErrorLogging() bool {
 // It is designed to be used in conjunction with periodic housekeeping, and will cause the timer for
 // periodic housekeeping to reset.  This should be used sparingly, as calling OnDemandHousekeeping frequently
 // can have serious performance costs.
-// housekeeping执行超出maxAge，才会执行
+// housekeeping执行超出maxAge，才会执行，maxAge为0，则代表强制执行
+// 发送housekeepingFinishedChan到onDemandChan，等待housekeeping执行完就会（close这个housekeepingFinishedChan）通知这个调用方
 func (c *containerData) OnDemandHousekeeping(maxAge time.Duration) {
 	if c.clock.Since(c.statsLastUpdatedTime) > maxAge {
 		housekeepingFinishedChan := make(chan struct{})
@@ -156,14 +161,18 @@ func (c *containerData) notifyOnDemand() {
 	}
 }
 
+// 如果超过5秒没有，则更新c.info.Spec。如果shouldUpdateSubcontainers为true，还需要更新c.info.Subcontainers
+// 返回c.info
 func (c *containerData) GetInfo(shouldUpdateSubcontainers bool) (*containerInfo, error) {
 	// Get spec and subcontainers.
 	if c.clock.Since(c.infoLastUpdatedTime) > 5*time.Second {
+		// 获取container的cgroup属性值（是否有cpu、memory、网络、是否有blkio）和自定义指标，并更新c.info.Spec
 		err := c.updateSpec()
 		if err != nil {
 			return nil, err
 		}
 		if shouldUpdateSubcontainers {
+			// 更新c.info.Subcontainers里的子container列表
 			err = c.updateSubcontainers()
 			if err != nil {
 				return nil, err
@@ -563,7 +572,7 @@ func (c *containerData) housekeepingTick(timer <-chan time.Time, longHousekeepin
 	return true
 }
 
-// 获取container的cgroup属性值和自定义指标
+// 获取container的cgroup属性值（是否有cpu、memory、网络、是否有blkio、pid等）和自定义指标，并更新c.info.Spec
 func (c *containerData) updateSpec() error {
 	// 如果为rawContainerHandler
 	// 返回container的cgroup的cpu、memory和pid属性，以及是否有文件系统、是否有网络、是否有blkio
@@ -705,11 +714,18 @@ func (c *containerData) updateCustomStats() (map[string][]info.MetricVal, error)
 	return customStats, customStatsErr
 }
 
+// 更新c.info.Subcontainers里的子container列表
 func (c *containerData) updateSubcontainers() error {
 	var subcontainers info.ContainerReferenceSlice
+	// 如果handler是rawContainerHandler
+	// 获得所有cgroup子系统路径下的所有目录（不同子系统下的目录名一样会覆盖），当listType == container.ListRecursive，会递归获取所有子目录。
+	// 返回的目录为/{self.name}/{子目录}，/{self.name}/{子目录}/{子目录}
+	// 比如/system.slice、/system.slice/kubelet.service，就是真实路径去除/sys/fs/cgroup
+	// 并封装成info.ContainerReference，返回[]info.ContainerReference
 	subcontainers, err := c.handler.ListContainers(container.ListSelf)
 	if err != nil {
 		// Ignore errors if the container is dead.
+		// 所有的cgroup子系统的路径都不存在，直接返回
 		if !c.handler.Exists() {
 			return nil
 		}

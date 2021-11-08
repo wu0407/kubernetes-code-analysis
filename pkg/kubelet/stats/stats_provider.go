@@ -107,13 +107,17 @@ func (p *StatsProvider) RlimitStats() (*statsapi.RlimitStats, error) {
 
 // GetCgroupStats returns the stats of the cgroup with the cgroupName. Note that
 // this function doesn't generate filesystem stats.
+// 返回容器最近的cpu和memory的使用情况，Accelerators状态（gpu）、UserDefinedMetrics（kubelet没有）、最近的网卡状态
 func (p *StatsProvider) GetCgroupStats(cgroupName string, updateStats bool) (*statsapi.ContainerStats, *statsapi.NetworkStats, error) {
+	// 等待container的housekeeping（更新监控数据）完成后，从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态）
 	info, err := getCgroupInfo(p.cadvisor, cgroupName, updateStats)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get cgroup stats for %q: %v", cgroupName, err)
 	}
 	// Rootfs and imagefs doesn't make sense for raw cgroup.
+	// 返回容器最近的cpu和memory的使用情况，Accelerators状态（gpu）、UserDefinedMetrics（kubelet没有）
 	s := cadvisorInfoToContainerStats(cgroupName, info, nil, nil)
+	// 返回容器最近的网卡状态
 	n := cadvisorInfoToNetworkStats(cgroupName, info)
 	return s, n, nil
 }

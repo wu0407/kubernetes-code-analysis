@@ -96,6 +96,7 @@ func MachineStatsFromV1(cont *v1.ContainerInfo) []MachineStats {
 	return stats
 }
 
+// []*v1.ContainerStats转成v2的ContainerStats
 func ContainerStatsFromV1(containerName string, spec *v1.ContainerSpec, stats []*v1.ContainerStats) []*ContainerStats {
 	newStats := make([]*ContainerStats, 0, len(stats))
 	var last *v1.ContainerStats
@@ -105,6 +106,7 @@ func ContainerStatsFromV1(containerName string, spec *v1.ContainerSpec, stats []
 		}
 		if spec.HasCpu {
 			stat.Cpu = &val.Cpu
+			// 计算cpu的总的使用率、每个cpu的使用率、user空间的cpu使用率、system空间的cpu使用率
 			cpuInst, err := InstCpuStats(last, val)
 			if err != nil {
 				klog.Warningf("Could not get instant cpu stats: %v", err)
@@ -201,6 +203,7 @@ func DeprecatedStatsFromV1(cont *v1.ContainerInfo) []DeprecatedContainerStats {
 	return stats
 }
 
+// 计算cpu的总的使用率、每个cpu的使用率、user空间的cpu使用率、system空间的cpu使用率
 func InstCpuStats(last, cur *v1.ContainerStats) (*CpuInstStats, error) {
 	if last == nil {
 		return nil, nil

@@ -1459,8 +1459,11 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 
 	// trigger on-demand stats collection once so that we have capacity information for ephemeral storage.
 	// ignore any errors, since if stats collection is not successful, the container manager will fail to start below.
+	// 等待container的housekeeping（更新监控数据）完成后，返回容器最近的cpu和memory的使用情况，Accelerators状态（没有gpu）、UserDefinedMetrics（kubelet没有）、最近的网卡状态
+	// 这里传入true，只是为了等待container的housekeeping（更新监控数据）完成，保证下面执行kl.containerManager.Start不会报错
 	kl.StatsProvider.GetCgroupStats("/", true)
 	// Start container manager.
+	// 如果先从apiserver get node，不存在则创建node
 	node, err := kl.getNodeAnyWay()
 	if err != nil {
 		// Fail kubelet and rely on the babysitter to retry starting kubelet.

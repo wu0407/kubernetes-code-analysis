@@ -293,6 +293,7 @@ func (self *rawContainerHandler) ListProcesses(listType container.ListType) ([]i
 	return self.libcontainerHandler.GetProcesses()
 }
 
+// 只要一个cgroup子系统的路径（self.cgroupPaths里的一个路径）存在，返回true
 func (self *rawContainerHandler) Exists() bool {
 	return common.CgroupExists(self.cgroupPaths)
 }

@@ -450,7 +450,9 @@ func (self *manager) GetContainerSpec(containerName string, options v2.RequestOp
 
 // Get V2 container spec from v1 container info.
 func (self *manager) getV2Spec(cinfo *containerInfo) v2.ContainerSpec {
+	// cinfo.spec.Memory.Limit为0，则调整为node的内存总大小
 	spec := self.getAdjustedSpec(cinfo)
+	// 转换为v2版本的ContainerSpec
 	return v2.ContainerSpecFromV1(&spec, cinfo.Aliases, cinfo.Namespace)
 }
 
@@ -477,7 +479,10 @@ func (self *manager) GetContainerInfo(containerName string, query *info.Containe
 	return self.containerDataToContainerInfo(cont, query)
 }
 
+// 获得容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态）
+// 如果options.Recursive为true,则包含所有子容器的ContainerInfo。如果options.MaxAge不为nil则等待所有的container的housekeeping完成
 func (self *manager) GetContainerInfoV2(containerName string, options v2.RequestOptions) (map[string]v2.ContainerInfo, error) {
+	// 获得containerName的containerData。如果options.Recursive为true，则额外获取所有子container的containerData。如果options.MaxAge不为nil则等待所有的container的housekeeping完成
 	containers, err := self.getRequestedContainers(containerName, options)
 	if err != nil {
 		return nil, err
@@ -489,14 +494,17 @@ func (self *manager) GetContainerInfoV2(containerName string, options v2.Request
 	infos := make(map[string]v2.ContainerInfo, len(containers))
 	for name, container := range containers {
 		result := v2.ContainerInfo{}
+		// 获得最近5秒的container.info(容器的信息，包括各种（是否有cpu、内存、网络、blkio、pid等）属性和子container列表和容器名字)
 		cinfo, err := container.GetInfo(false)
 		if err != nil {
 			errs.append(name, "GetInfo", err)
 			infos[name] = result
 			continue
 		}
+		// 从cinfo里提取v2版本的ContainerSpec
 		result.Spec = self.getV2Spec(cinfo)
 
+		// 从memoryCache获得最近options.Count个的监控数据info.ContainerStats
 		stats, err := self.memoryCache.RecentStats(name, nilTime, nilTime, options.Count)
 		if err != nil {
 			errs.append(name, "RecentStats", err)
@@ -504,6 +512,7 @@ func (self *manager) GetContainerInfoV2(containerName string, options v2.Request
 			continue
 		}
 
+		// []*v1.ContainerStats转成v2的ContainerStats
 		result.Stats = v2.ContainerStatsFromV1(containerName, &cinfo.Spec, stats)
 		infos[name] = result
 	}
@@ -543,6 +552,7 @@ func (self *manager) getContainer(containerName string) (*containerData, error) 
 	return cont, nil
 }
 
+// 获得containerName和所有子container的containerData
 func (self *manager) getSubcontainers(containerName string) map[string]*containerData {
 	self.containersLock.RLock()
 	defer self.containersLock.RUnlock()
@@ -684,17 +694,23 @@ func (self *manager) GetRequestedContainersInfo(containerName string, options v2
 	return containersMap, errs.OrNil()
 }
 
+// options.IdType为name
+// 从self.containers获得containerName对应的containerData
+// 如果options.Recursive为true，获得containerName和所有子container的containerData
+// 如果options.MaxAge不为nil，则等待所有的container的housekeeping完成
 func (self *manager) getRequestedContainers(containerName string, options v2.RequestOptions) (map[string]*containerData, error) {
 	containersMap := make(map[string]*containerData)
 	switch options.IdType {
 	case v2.TypeName:
 		if options.Recursive == false {
+			// 从self.containers获得containerName对应的containerData
 			cont, err := self.getContainer(containerName)
 			if err != nil {
 				return containersMap, err
 			}
 			containersMap[cont.info.Name] = cont
 		} else {
+			// 获得containerName和所有子container的containerData
 			containersMap = self.getSubcontainers(containerName)
 			if len(containersMap) == 0 {
 				return containersMap, fmt.Errorf("unknown container: %q", containerName)
@@ -721,12 +737,15 @@ func (self *manager) getRequestedContainers(containerName string, options v2.Req
 		// update stats for all containers in containersMap
 		var waitGroup sync.WaitGroup
 		waitGroup.Add(len(containersMap))
+		// 每个container启动一个gorutine，等待这个contianer的housekeeping完成
 		for _, container := range containersMap {
 			go func(cont *containerData) {
+				// 等待这个contianer的housekeeping完成
 				cont.OnDemandHousekeeping(*options.MaxAge)
 				waitGroup.Done()
 			}(container)
 		}
+		// 等待所有的container的housekeeping完成（containerData更新）
 		waitGroup.Wait()
 	}
 	return containersMap, nil

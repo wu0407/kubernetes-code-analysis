@@ -33,7 +33,9 @@ import (
 // is not reliable.
 const defaultNetworkInterfaceName = "eth0"
 
+// 从info.Stats里的最后一个ContainerStats，获取最后的cpu和memory的使用情况
 func cadvisorInfoToCPUandMemoryStats(info *cadvisorapiv2.ContainerInfo) (*statsapi.CPUStats, *statsapi.MemoryStats) {
+	// 返回info.Stats里的最后一个ContainerStats
 	cstat, found := latestContainerStats(info)
 	if !found {
 		return nil, nil
@@ -47,6 +49,7 @@ func cadvisorInfoToCPUandMemoryStats(info *cadvisorapiv2.ContainerInfo) (*statsa
 	}
 	if info.Spec.HasCpu {
 		if cstat.CpuInst != nil {
+			// CPU core-nanoseconds per second，cpu使用率
 			cpuStats.UsageNanoCores = &cstat.CpuInst.Usage.Total
 		}
 		if cstat.Cpu != nil {
@@ -65,6 +68,7 @@ func cadvisorInfoToCPUandMemoryStats(info *cadvisorapiv2.ContainerInfo) (*statsa
 			MajorPageFaults: &majorPageFaults,
 		}
 		// availableBytes = memory limit (if known) - workingset
+		// info.Spec.Memory.Limit不大于2^62次方
 		if !isMemoryUnlimited(info.Spec.Memory.Limit) {
 			availableBytes := info.Spec.Memory.Limit - cstat.Memory.WorkingSet
 			memoryStats.AvailableBytes = &availableBytes
@@ -80,27 +84,32 @@ func cadvisorInfoToCPUandMemoryStats(info *cadvisorapiv2.ContainerInfo) (*statsa
 
 // cadvisorInfoToContainerStats returns the statsapi.ContainerStats converted
 // from the container and filesystem info.
+// 返回最近的cpu和memory的使用情况，容器日志所在文件系统的状态，容器根文件系统的使用状态，Accelerators状态、UserDefinedMetrics
 func cadvisorInfoToContainerStats(name string, info *cadvisorapiv2.ContainerInfo, rootFs, imageFs *cadvisorapiv2.FsInfo) *statsapi.ContainerStats {
 	result := &statsapi.ContainerStats{
 		StartTime: metav1.NewTime(info.Spec.CreationTime),
 		Name:      name,
 	}
+	// 返回info.Stats里的最后一个ContainerStats
 	cstat, found := latestContainerStats(info)
 	if !found {
 		return result
 	}
 
+	// 从info.Stats里的最后一个ContainerStats，获取最后的cpu和memory的使用情况
 	cpu, memory := cadvisorInfoToCPUandMemoryStats(info)
 	result.CPU = cpu
 	result.Memory = memory
 
 	if rootFs != nil {
 		// The container logs live on the node rootfs device
+		// 返回文件系统状态信息（大小、使用量、inode总数、inode剩余量、inode使用量）
 		result.Logs = buildLogsStats(cstat, rootFs)
 	}
 
 	if imageFs != nil {
 		// The container rootFs lives on the imageFs devices (which may not be the node root fs)
+		// 返回文件系统状态信息（大小、使用量、inode总数、inode剩余量）
 		result.Rootfs = buildRootfsStats(cstat, imageFs)
 	}
 
@@ -155,10 +164,12 @@ func cadvisorInfoToContainerCPUAndMemoryStats(name string, info *cadvisorapiv2.C
 
 // cadvisorInfoToNetworkStats returns the statsapi.NetworkStats converted from
 // the container info from cadvisor.
+// 返回最近的网卡状态
 func cadvisorInfoToNetworkStats(name string, info *cadvisorapiv2.ContainerInfo) *statsapi.NetworkStats {
 	if !info.Spec.HasNetwork {
 		return nil
 	}
+	// 返回info.Stats里的最后一个ContainerStats
 	cstat, found := latestContainerStats(info)
 	if !found {
 		return nil
@@ -244,6 +255,7 @@ func cadvisorInfoToUserDefinedMetrics(info *cadvisorapiv2.ContainerInfo) []stats
 }
 
 // latestContainerStats returns the latest container stats from cadvisor, or nil if none exist
+// 返回info.Stats里的最后一个ContainerStats
 func latestContainerStats(info *cadvisorapiv2.ContainerInfo) (*cadvisorapiv2.ContainerStats, bool) {
 	stats := info.Stats
 	if len(stats) < 1 {
@@ -267,12 +279,14 @@ func isMemoryUnlimited(v uint64) bool {
 
 // getCgroupInfo returns the information of the container with the specified
 // containerName from cadvisor.
+// 等待所有的container的housekeeping（更新监控数据）完成后，从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态）
 func getCgroupInfo(cadvisor cadvisor.Interface, containerName string, updateStats bool) (*cadvisorapiv2.ContainerInfo, error) {
 	var maxAge *time.Duration
 	if updateStats {
 		age := 0 * time.Second
 		maxAge = &age
 	}
+	// 等待所有的container的housekeeping（更新监控数据）完成后，从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态）
 	infoMap, err := cadvisor.ContainerInfoV2(containerName, cadvisorapiv2.RequestOptions{
 		IdType:    cadvisorapiv2.TypeName,
 		Count:     2, // 2 samples are needed to compute "instantaneous" CPU
@@ -303,6 +317,7 @@ func getCgroupStats(cadvisor cadvisor.Interface, containerName string, updateSta
 	return stats, nil
 }
 
+// 返回文件系统状态信息
 func buildLogsStats(cstat *cadvisorapiv2.ContainerStats, rootFs *cadvisorapiv2.FsInfo) *statsapi.FsStats {
 	fsStats := &statsapi.FsStats{
 		Time:           metav1.NewTime(cstat.Timestamp),
@@ -319,6 +334,7 @@ func buildLogsStats(cstat *cadvisorapiv2.ContainerStats, rootFs *cadvisorapiv2.F
 	return fsStats
 }
 
+// 返回文件系统状态信息
 func buildRootfsStats(cstat *cadvisorapiv2.ContainerStats, imageFs *cadvisorapiv2.FsInfo) *statsapi.FsStats {
 	return &statsapi.FsStats{
 		Time:           metav1.NewTime(cstat.Timestamp),

@@ -134,6 +134,8 @@ func (cc *cadvisorClient) ContainerInfo(name string, req *cadvisorapi.ContainerI
 	return cc.GetContainerInfo(name, req)
 }
 
+// 获得容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态）
+// 如果options.Recursive为true,则包含所有子容器的ContainerInfo
 func (cc *cadvisorClient) ContainerInfoV2(name string, options cadvisorapiv2.RequestOptions) (map[string]cadvisorapiv2.ContainerInfo, error) {
 	return cc.GetContainerInfoV2(name, options)
 }
