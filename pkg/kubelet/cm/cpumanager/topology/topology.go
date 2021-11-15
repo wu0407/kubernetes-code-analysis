@@ -45,7 +45,7 @@ type CPUTopology struct {
 	NumCores   int
 	// 插槽数量
 	NumSockets int
-	// cpu的详细信息--cpu逻辑id编号、位于那个socket、cpu核id
+	// 逻辑cpu的详细信息--cpu逻辑id编号、位于那个socket、cpu核id
 	CPUDetails CPUDetails
 }
 
@@ -243,6 +243,7 @@ func Discover(machineInfo *cadvisorapi.MachineInfo, numaNodeInfo NUMANodeInfo) (
 			if coreID, err := getUniqueCoreID(core.Threads); err == nil {
 				for _, cpu := range core.Threads {
 					numaNodeID := 0
+					// 找到线程的numanodeID
 					for id, cset := range numaNodeInfo {
 						if cset.Contains(cpu) {
 							numaNodeID = id

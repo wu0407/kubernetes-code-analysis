@@ -53,6 +53,8 @@ func NewCheckpointState(stateDir, checkpointName, policyName string, initialCont
 		initialContainers: initialContainers,
 	}
 
+	// 如果checkpoint文件存在，则从文件恢复cache.defaultCPUSet和cache.assignments
+	// 如果不存在，则将cache中的状态写入到checkpoint文件
 	if err := stateCheckpoint.restoreState(); err != nil {
 		//lint:ignore ST1005 user-facing error message
 		return nil, fmt.Errorf("could not restore state from checkpoint: %v, please drain this node and delete the CPU manager checkpoint file %q before restarting Kubelet",
@@ -71,6 +73,7 @@ func (sc *stateCheckpoint) migrateV1CheckpointToV2Checkpoint(src *CPUManagerChec
 		dst.DefaultCPUSet = src.DefaultCPUSet
 	}
 	for containerID, cset := range src.Entries {
+		// 根据containerid获得poduid和containername
 		podUID, containerName, err := sc.initialContainers.GetContainerRef(containerID)
 		if err != nil {
 			return fmt.Errorf("containerID '%v' not found in initial containers list", containerID)
@@ -95,10 +98,13 @@ func (sc *stateCheckpoint) restoreState() error {
 	checkpointV1 := newCPUManagerCheckpointV1()
 	checkpointV2 := newCPUManagerCheckpointV2()
 
+	// 先使用checkpointV1解析checkpoint文件，如果解析出错，则使用checkpointV2进行解析。
+	// 如果使用checkpointV2解析，报errors.ErrCheckpointNotFound，意味着checkpoint文件不存在。则将内存中cpu默认状态、cpu分配状态和分配策略写到checkpoint文件
 	if err = sc.checkpointManager.GetCheckpoint(sc.checkpointName, checkpointV1); err != nil {
 		checkpointV1 = &CPUManagerCheckpointV1{} // reset it back to 0
 		if err = sc.checkpointManager.GetCheckpoint(sc.checkpointName, checkpointV2); err != nil {
 			if err == errors.ErrCheckpointNotFound {
+				// checkpoint文件中写入PolicyName、DefaultCPUSet和Entries（stateMemory中获得assignments，所有cpu分配情况--pod中container cpu分配）
 				return sc.storeState()
 			}
 			return err
@@ -113,11 +119,13 @@ func (sc *stateCheckpoint) restoreState() error {
 		return fmt.Errorf("configured policy %q differs from state checkpoint policy %q", sc.policyName, checkpointV2.PolicyName)
 	}
 
+	// 将checkpointV2中的DefaultCPUSet转成cpuset.CPUSet
 	var tmpDefaultCPUSet cpuset.CPUSet
 	if tmpDefaultCPUSet, err = cpuset.Parse(checkpointV2.DefaultCPUSet); err != nil {
 		return fmt.Errorf("could not parse default cpu set %q: %v", checkpointV2.DefaultCPUSet, err)
 	}
 
+	// 将checkpointV2中的Entries（cpu分配信息），转成ContainerCPUAssignments map[string]map[string]cpuset.CPUSet
 	var tmpContainerCPUSet cpuset.CPUSet
 	tmpAssignments := ContainerCPUAssignments{}
 	for pod := range checkpointV2.Entries {
@@ -130,7 +138,9 @@ func (sc *stateCheckpoint) restoreState() error {
 		}
 	}
 
+	// 保存到stateMemory中的defaultCPUSet
 	sc.cache.SetDefaultCPUSet(tmpDefaultCPUSet)
+	// 保存到stateMemory中的assignments
 	sc.cache.SetCPUAssignments(tmpAssignments)
 
 	klog.V(2).Info("[cpumanager] state checkpoint: restored state from checkpoint")
@@ -140,11 +150,14 @@ func (sc *stateCheckpoint) restoreState() error {
 }
 
 // saves state to a checkpoint, caller is responsible for locking
+// checkpoint文件中写入PolicyName、DefaultCPUSet和Entries（stateMemory中获得assignments，所有cpu分配情况--pod中container cpu分配）
 func (sc *stateCheckpoint) storeState() error {
 	checkpoint := NewCPUManagerCheckpoint()
 	checkpoint.PolicyName = sc.policyName
+	// 从stateMemory中获得defaultCPUSet
 	checkpoint.DefaultCPUSet = sc.cache.GetDefaultCPUSet().String()
 
+	// 从stateMemory中获得assignments（所有cpu分配情况--pod中container cpu分配）
 	assignments := sc.cache.GetCPUAssignments()
 	for pod := range assignments {
 		checkpoint.Entries[pod] = make(map[string]string)
@@ -153,6 +166,7 @@ func (sc *stateCheckpoint) storeState() error {
 		}
 	}
 
+	// 生成checkpoint文件，并写入上面的内容
 	err := sc.checkpointManager.CreateCheckpoint(sc.checkpointName, checkpoint)
 	if err != nil {
 		klog.Errorf("[cpumanager] could not save checkpoint: %v", err)

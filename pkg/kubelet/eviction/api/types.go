@@ -91,10 +91,13 @@ type Threshold struct {
 }
 
 // GetThresholdQuantity returns the expected quantity value for a thresholdValue
+// 计算百分比之后的值或原始值（直接返回保留多少资源的值）
 func GetThresholdQuantity(value ThresholdValue, capacity *resource.Quantity) *resource.Quantity {
+	// 如果是确定的值，直接deepcopy返回
 	if value.Quantity != nil {
 		res := value.Quantity.DeepCopy()
 		return &res
 	}
+	// 如果是百分比，则计算最终的值
 	return resource.NewQuantity(int64(float64(capacity.Value())*float64(value.Percentage)), resource.BinarySI)
 }

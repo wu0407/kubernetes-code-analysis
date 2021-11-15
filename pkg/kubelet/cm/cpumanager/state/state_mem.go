@@ -25,7 +25,10 @@ import (
 
 type stateMemory struct {
 	sync.RWMutex
+	//ContainerCPUAssignments是map[string]map[string]cpuset.CPUSet，第一层是[podUID]，第二层是[containerName]
+	// 已经分配的cpu集合
 	assignments   ContainerCPUAssignments
+	// 所有非整数cpu的guaranteed类型pod，共享的cpu集合
 	defaultCPUSet cpuset.CPUSet
 }
 
@@ -55,6 +58,7 @@ func (s *stateMemory) GetDefaultCPUSet() cpuset.CPUSet {
 	return s.defaultCPUSet.Clone()
 }
 
+// 先从assignments中获取容器的分配cpu，没有找到，则返回defaultCPUSet
 func (s *stateMemory) GetCPUSetOrDefault(podUID string, containerName string) cpuset.CPUSet {
 	if res, ok := s.GetCPUSet(podUID, containerName); ok {
 		return res

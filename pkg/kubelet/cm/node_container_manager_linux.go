@@ -224,9 +224,10 @@ func (cm *containerManagerImpl) getNodeAllocatableInternalAbsolute() v1.Resource
 // 保留资源只有memory和ephemeral-storage是三个累加的--hardeviction、kubereserverd、SystemReserved
 // 其他类型保留资源是kubereserverd、SystemReserved相加
 func (cm *containerManagerImpl) GetNodeAllocatableReservation() v1.ResourceList {
-	// 返回hardeviction thresholds里memory和ephemeral-storage
+	// 返回hardeviction thresholds里memory和nodefs（ephemeral-storage）
 	evictionReservation := hardEvictionReservation(cm.HardEvictionThresholds, cm.capacity)
 	result := make(v1.ResourceList)
+	// 遍历cm.capacity里的resource类型，cpu、内存、hugepage
 	for k := range cm.capacity {
 		value := resource.NewQuantity(0, resource.DecimalSI)
 		if cm.NodeConfig.SystemReserved != nil {

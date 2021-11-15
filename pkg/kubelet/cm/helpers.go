@@ -34,6 +34,7 @@ func hardEvictionReservation(thresholds []evictionapi.Threshold, capacity v1.Res
 		switch threshold.Signal {
 		case evictionapi.SignalMemoryAvailable:
 			memoryCapacity := capacity[v1.ResourceMemory]
+			// 计算百分比之后的值或原始值（直接返回保留多少资源的值）
 			value := evictionapi.GetThresholdQuantity(threshold.Value, &memoryCapacity)
 			ret[v1.ResourceMemory] = *value
 		case evictionapi.SignalNodeFsAvailable:

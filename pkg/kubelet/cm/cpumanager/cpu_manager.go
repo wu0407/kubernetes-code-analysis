@@ -104,6 +104,8 @@ type manager struct {
 
 	// containerMap provides a mapping from (pod, container) -> containerID
 	// for all containers a pod
+	// runtime里的所有容器，容器id与对应的pod uid和container name
+	// 并且在初始化之后，会同步activepods返回的pod
 	containerMap containermap.ContainerMap
 
 	topology *topology.CPUTopology
@@ -137,6 +139,7 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 
 	case PolicyStatic:
 		var err error
+		// 获取cpu拓扑--多少线程数、物理cpu、插槽数、各个线程cpu信息
 		topo, err = topology.Discover(machineInfo, numaNodeInfo)
 		if err != nil {
 			return nil, err
@@ -158,6 +161,7 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 
 		// Take the ceiling of the reservation, since fractional CPUs cannot be
 		// exclusively allocated.
+		// 保留的cpu向上取整
 		reservedCPUsFloat := float64(reservedCPUs.MilliValue()) / 1000
 		numReservedCPUs := int(math.Ceil(reservedCPUsFloat))
 		policy, err = NewStaticPolicy(topo, numReservedCPUs, specificCPUs, affinity)
@@ -180,15 +184,26 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 	return manager, nil
 }
 
+// 进行容器的垃圾回收，不存在的容器分配的cpu回收，containerMap列表清理（让容器的cpu分配状态里容器与activePods一致）
+// 创建checkpoint和stateMemory来保存当前的分配策略、分配状态
+// static policy会校验当前分配状态是否合法
+// 创建一个goroutine周期性（默认10s）周期同步m.state中容器的cpuset到容器的cgroup设置，会同步activepods返回的pod的容器集合，清理不存在的容器的cpu分配
 func (m *manager) Start(activePods ActivePodsFunc, sourcesReady config.SourcesReady, podStatusProvider status.PodStatusProvider, containerRuntime runtimeService, initialContainers containermap.ContainerMap) error {
 	klog.Infof("[cpumanager] starting with %s policy", m.policy.Name())
 	klog.Infof("[cpumanager] reconciling every %v", m.reconcilePeriod)
+	// 通常是kl.sourcesReady
 	m.sourcesReady = sourcesReady
+	// 通常是kl.GetActivePods
 	m.activePods = activePods
+	// 通常是kl.statusManager
 	m.podStatusProvider = podStatusProvider
+	// kl.runtimeService
 	m.containerRuntime = containerRuntime
+	// 所有runtime里的container，返回ContainerMap（容器id与对应的容器name和pod的uid）
 	m.containerMap = initialContainers
 
+	// m.stateFileDirectory是kubelet root dir
+	// 创建一个checkpoints和stateMemory（保存cpu分配策略、容器分配的cpu、默认的cpuset），checkpoints存在，则读取恢复状态，否则写入现在的状态
 	stateImpl, err := state.NewCheckpointState(m.stateFileDirectory, cpuManagerStateFileName, m.policy.Name(), m.containerMap)
 	if err != nil {
 		klog.Errorf("[cpumanager] could not initialize checkpoint manager: %v, please drain node and remove policy state file", err)
@@ -196,6 +211,11 @@ func (m *manager) Start(activePods ActivePodsFunc, sourcesReady config.SourcesRe
 	}
 	m.state = stateImpl
 
+	// static policy
+	// 校验stateMemory中的总的cpu数量与物理cpu是否一致
+	// 校验stateMemory中获得assignments（已经分配的cpu）与stateMemory中的DefaultCPUset（共享的cpu集合）是否有重叠
+	// 校验保留的cpu是否在stateMemory中的DefaultCPUset（共享的cpu集合）里
+	// 校验已经有cpu分配了，则stateMemory中的DefaultCPUset不能为空。stateMemory中的DefaultCPUset和stateMemory中的assignments都为空，则设置stateMemory中的DefaultCPUset为所有cpu
 	err = m.policy.Start(m.state)
 	if err != nil {
 		klog.Errorf("[cpumanager] policy start error: %v", err)
@@ -207,6 +227,8 @@ func (m *manager) Start(activePods ActivePodsFunc, sourcesReady config.SourcesRe
 	}
 	// Periodically call m.reconcileState() to continue to keep the CPU sets of
 	// all pods in sync with and guaranteed CPUs handed out among them.
+	// reconcilePeriod默认为10s
+	// 启动goroutine，周期同步m.state中容器的cpuset到容器的cgroup设置（调用cri更新容器的cpuset cgroup），移除不存在的container，让container列表（m.state.assignments和m.containerMap）与m.activePods()一致
 	go wait.Until(func() { m.reconcileState() }, m.reconcilePeriod, wait.NeverStop)
 	return nil
 }
@@ -228,18 +250,23 @@ func (m *manager) Allocate(p *v1.Pod, c *v1.Container) error {
 	return nil
 }
 
+// 调用cri更新容器的cpuset cgroup，如果发生错误则移除分配的container（从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合），m.containerMap中移除这个container）
 func (m *manager) AddContainer(p *v1.Pod, c *v1.Container, containerID string) error {
 	m.Lock()
 	// Get the CPUs assigned to the container during Allocate()
 	// (or fall back to the default CPUSet if none were assigned).
+	// 获得container的cpuset（先从assignments中获取容器的分配cpu，没有找到，则返回defaultCPUSet--共享cpu集合）
 	cpus := m.state.GetCPUSetOrDefault(string(p.UID), c.Name)
 	m.Unlock()
 
 	if !cpus.IsEmpty() {
+		// 调用cri更新容器的cpuset cgroup
 		err := m.updateContainerCPUSet(containerID, cpus)
 		if err != nil {
 			klog.Errorf("[cpumanager] AddContainer error: error updating CPUSet for container (pod: %s, container: %s, container id: %s, err: %v)", p.Name, c.Name, containerID, err)
 			m.Lock()
+			// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+			// m.containerMap中移除这个container
 			err := m.policyRemoveContainerByRef(string(p.UID), c.Name)
 			if err != nil {
 				klog.Errorf("[cpumanager] AddContainer rollback state error: %v", err)
@@ -253,10 +280,14 @@ func (m *manager) AddContainer(p *v1.Pod, c *v1.Container, containerID string) e
 	return nil
 }
 
+// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+// m.containerMap中移除这个container
 func (m *manager) RemoveContainer(containerID string) error {
 	m.Lock()
 	defer m.Unlock()
 
+	// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+	// m.containerMap中移除这个container
 	err := m.policyRemoveContainerByID(containerID)
 	if err != nil {
 		klog.Errorf("[cpumanager] RemoveContainer error: %v", err)
@@ -266,12 +297,16 @@ func (m *manager) RemoveContainer(containerID string) error {
 	return nil
 }
 
+// 从s.assignments移除container所占有的cpu，并在stateMemory中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+// containerMap中移除这个container
 func (m *manager) policyRemoveContainerByID(containerID string) error {
+	// 从containerMap中获得这个容器的podUID、containerName
 	podUID, containerName, err := m.containerMap.GetContainerRef(containerID)
 	if err != nil {
 		return nil
 	}
 
+	// 从s.assignments移除container所占有的cpu，并在stateMemory中defaultCPUSet添加这个cpu集合（共享的cpu集合） 
 	err = m.policy.RemoveContainer(m.state, podUID, containerName)
 	if err == nil {
 		m.containerMap.RemoveByContainerID(containerID)
@@ -280,9 +315,14 @@ func (m *manager) policyRemoveContainerByID(containerID string) error {
 	return err
 }
 
+// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+// m.containerMap中移除这个container
 func (m *manager) policyRemoveContainerByRef(podUID string, containerName string) error {
+	// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
 	err := m.policy.RemoveContainer(m.state, podUID, containerName)
 	if err == nil {
+		// 根据podUID和containerName从ContainerMap取得container id
+		// ContainerMap中移除这个container id
 		m.containerMap.RemoveByContainerRef(podUID, containerName)
 	}
 
@@ -306,10 +346,15 @@ type reconciledContainer struct {
 	containerID   string
 }
 
+// 从m.state.assignments(已分配cpu的集合)中找到container，这个container不在activePods（pod manager中维护pod列表）中（container的pod不存在或pod下面没有这个container）
+// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+// 在m.containerMap（运行时中获得）中移除这个container
 func (m *manager) removeStaleState() {
 	// Only once all sources are ready do we attempt to remove any stale state.
 	// This ensures that the call to `m.activePods()` below will succeed with
 	// the actual active pods list.
+	// m.sourcesReady.seenSources源已经注册且都提供了至少一个pod
+	// m.sourcesReady.seenSources在kl.syncloop中会添加
 	if !m.sourcesReady.AllReady() {
 		return
 	}
@@ -335,11 +380,14 @@ func (m *manager) removeStaleState() {
 
 	// Loop through the CPUManager state. Remove any state for containers not
 	// in the `activeContainers` list built above.
+	// 移除不在activeContainers
 	assignments := m.state.GetCPUAssignments()
 	for podUID := range assignments {
 		for containerName := range assignments[podUID] {
 			if _, ok := activeContainers[podUID][containerName]; !ok {
 				klog.Errorf("[cpumanager] removeStaleState: removing (pod %s, container: %s)", podUID, containerName)
+				// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+				// m.containerMap中移除这个container
 				err := m.policyRemoveContainerByRef(podUID, containerName)
 				if err != nil {
 					klog.Errorf("[cpumanager] removeStaleState: failed to remove (pod %s, container %s), error: %v)", podUID, containerName, err)
@@ -349,11 +397,16 @@ func (m *manager) removeStaleState() {
 	}
 }
 
+// 
 func (m *manager) reconcileState() (success []reconciledContainer, failure []reconciledContainer) {
 	success = []reconciledContainer{}
 	failure = []reconciledContainer{}
 
+	// 移除不存在的container，让container列表与m.activePods()一致
+	// m.state.assignments移除container所分配的cpu，并把这个cpu添加到共享cpu集合（m.state（stateMemory）中defaultCPUSet）
+	// m.containerMap中移除这个container
 	m.removeStaleState()
+	// 调用cri更新所有容器的cpuset，container在m.state.assignments中cpuset就是分配的cpu，否则就是m.state.defaultCPUSet(共享cpu)
 	for _, pod := range m.activePods() {
 		pstatus, ok := m.podStatusProvider.GetPodStatus(pod.UID)
 		if !ok {
@@ -365,6 +418,7 @@ func (m *manager) reconcileState() (success []reconciledContainer, failure []rec
 		allContainers := pod.Spec.InitContainers
 		allContainers = append(allContainers, pod.Spec.Containers...)
 		for _, container := range allContainers {
+			// 从pod status中找不到container name的容器id，则跳过这个container
 			containerID, err := findContainerIDByName(&pstatus, container.Name)
 			if err != nil {
 				klog.Warningf("[cpumanager] reconcileState: skipping container; ID not found in pod status (pod: %s, container: %s, error: %v)", pod.Name, container.Name, err)
@@ -372,6 +426,7 @@ func (m *manager) reconcileState() (success []reconciledContainer, failure []rec
 				continue
 			}
 
+			// 从pod status中找不到container name的container status，则跳过这个container
 			cstatus, err := findContainerStatusByName(&pstatus, container.Name)
 			if err != nil {
 				klog.Warningf("[cpumanager] reconcileState: skipping container; container status not found in pod status (pod: %s, container: %s, error: %v)", pod.Name, container.Name, err)
@@ -379,6 +434,7 @@ func (m *manager) reconcileState() (success []reconciledContainer, failure []rec
 				continue
 			}
 
+			// 容器状态为waiting或没有状态，则跳过这个container
 			if cstatus.State.Waiting != nil ||
 				(cstatus.State.Waiting == nil && cstatus.State.Running == nil && cstatus.State.Terminated == nil) {
 				klog.Warningf("[cpumanager] reconcileState: skipping container; container still in the waiting state (pod: %s, container: %s, error: %v)", pod.Name, container.Name, err)
@@ -386,12 +442,14 @@ func (m *manager) reconcileState() (success []reconciledContainer, failure []rec
 				continue
 			}
 
+			// 容器状态为Terminated，则跳过这个container
 			if cstatus.State.Terminated != nil {
 				// The container is terminated but we can't call m.RemoveContainer()
 				// here because it could remove the allocated cpuset for the container
 				// which may be in the process of being restarted.  That would result
 				// in the container losing any exclusively-allocated CPUs that it
 				// was allocated.
+				// containerMap中是否存在这个容器
 				_, _, err := m.containerMap.GetContainerRef(containerID)
 				if err == nil {
 					klog.Warningf("[cpumanager] reconcileState: ignoring terminated container (pod: %s, container id: %s)", pod.Name, containerID)
@@ -402,8 +460,10 @@ func (m *manager) reconcileState() (success []reconciledContainer, failure []rec
 			// Once we make it here we know we have a running container.
 			// Idempotently add it to the containerMap incase it is missing.
 			// This can happen after a kubelet restart, for example.
+			// 强制重新添加container到containerMap，为了防止机器重启了，runtime里没有这个容器
 			m.containerMap.Add(string(pod.UID), container.Name, containerID)
 
+			// 获得container的cpuset（先从assignments中获取容器的分配cpu，没有找到，则返回defaultCPUSet--共享cpu集合）
 			cset := m.state.GetCPUSetOrDefault(string(pod.UID), container.Name)
 			if cset.IsEmpty() {
 				// NOTE: This should not happen outside of tests.
@@ -413,6 +473,7 @@ func (m *manager) reconcileState() (success []reconciledContainer, failure []rec
 			}
 
 			klog.V(4).Infof("[cpumanager] reconcileState: updating container (pod: %s, container: %s, container id: %s, cpuset: \"%v\")", pod.Name, container.Name, containerID, cset)
+			// 同步m.state中容器的cpuset到容器的cgroup设置（调用cri更新容器的cpuset cgroup）
 			err = m.updateContainerCPUSet(containerID, cset)
 			if err != nil {
 				klog.Errorf("[cpumanager] reconcileState: failed to update container (pod: %s, container: %s, container id: %s, cpuset: \"%v\", error: %v)", pod.Name, container.Name, containerID, cset, err)
@@ -425,12 +486,14 @@ func (m *manager) reconcileState() (success []reconciledContainer, failure []rec
 	return success, failure
 }
 
+// 从pod status中找到container name的容器id
 func findContainerIDByName(status *v1.PodStatus, name string) (string, error) {
 	allStatuses := status.InitContainerStatuses
 	allStatuses = append(allStatuses, status.ContainerStatuses...)
 	for _, container := range allStatuses {
 		if container.Name == name && container.ContainerID != "" {
 			cid := &kubecontainer.ContainerID{}
+			// 根据container.ContainerID分析runtime Type和containerid，比如docker://123ef5433，则runtime Type为docker，id为123ef5433
 			err := cid.ParseString(container.ContainerID)
 			if err != nil {
 				return "", err
@@ -441,6 +504,7 @@ func findContainerIDByName(status *v1.PodStatus, name string) (string, error) {
 	return "", fmt.Errorf("unable to find ID for container with name %v in pod status (it may not be running)", name)
 }
 
+// 从pod status中找到container name的container status
 func findContainerStatusByName(status *v1.PodStatus, name string) (*v1.ContainerStatus, error) {
 	for _, status := range append(status.InitContainerStatuses, status.ContainerStatuses...) {
 		if status.Name == name {
@@ -450,6 +514,7 @@ func findContainerStatusByName(status *v1.PodStatus, name string) (*v1.Container
 	return nil, fmt.Errorf("unable to find status for container with name %v in pod status (it may not be running)", name)
 }
 
+// 调用cri更新容器的cpuset cgroup
 func (m *manager) updateContainerCPUSet(containerID string, cpus cpuset.CPUSet) error {
 	// TODO: Consider adding a `ResourceConfigForContainer` helper in
 	// helpers_linux.go similar to what exists for pods.

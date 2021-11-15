@@ -161,6 +161,10 @@ func (a *cpuAccumulator) isFailed() bool {
 	return a.numCPUsNeeded > a.details.CPUs().Size()
 }
 
+// 优先id从小到大
+// 优先同一socket
+// 优先同一物理核心
+// 剩下cpu 亲和已分配的socket和物理核心
 func takeByTopology(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, numCPUs int) (cpuset.CPUSet, error) {
 	acc := newCPUAccumulator(topo, availableCPUs, numCPUs)
 	if acc.isSatisfied() {

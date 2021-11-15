@@ -242,6 +242,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	for k, v := range capacity {
 		internalCapacity[k] = v
 	}
+	// 读取/proc/sys/kernel/pid_max获得系统最大的运行的pid数量和调用syscall.Sysinfo获得当前运行的进程数
 	pidlimits, err := pidlimit.Stats()
 	if err == nil && pidlimits != nil && pidlimits.MaxPID != nil {
 		internalCapacity[pidlimit.PIDs] = *resource.NewQuantity(
@@ -254,6 +255,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	cgroupRoot := ParseCgroupfsToCgroupName(nodeConfig.CgroupRoot)
 	cgroupManager := NewCgroupManager(subsystems, nodeConfig.CgroupDriver)
 	// Check if Cgroup-root actually exists on the node
+	// 默认为true
 	if nodeConfig.CgroupsPerQOS {
 		// this does default to / when enabled, but this tests against regressions.
 		if nodeConfig.CgroupRoot == "" {
@@ -299,6 +301,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.TopologyManager) {
 		cm.topologyManager, err = topologymanager.NewManager(
 			numaNodeInfo,
+			// 默认为none
 			nodeConfig.ExperimentalTopologyManagerPolicy,
 		)
 
@@ -312,6 +315,7 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	}
 
 	klog.Infof("Creating device plugin manager: %t", devicePluginEnabled)
+	// 默认为true
 	if devicePluginEnabled {
 		cm.deviceManager, err = devicemanager.NewManagerImpl(numaNodeInfo, cm.topologyManager)
 		cm.topologyManager.AddHintProvider(cm.deviceManager)
@@ -325,11 +329,15 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 	// Initialize CPU manager
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUManager) {
 		cm.cpuManager, err = cpumanager.NewManager(
+			// 可以设置为none或static
 			nodeConfig.ExperimentalCPUManagerPolicy,
+			// 默认为10s
 			nodeConfig.ExperimentalCPUManagerReconcilePeriod,
 			machineInfo,
 			numaNodeInfo,
+			// 默认为空
 			nodeConfig.NodeAllocatableConfig.ReservedSystemCPUs,
+			// 各类型资源（cpu、内存、hugepage）需要保留大小
 			cm.GetNodeAllocatableReservation(),
 			nodeConfig.KubeletRootDir,
 			cm.topologyManager,
@@ -599,10 +607,15 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 
 	// Initialize CPU manager
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUManager) {
+		// 获得所有runtime里的container，返回ContainerMap（容器id与对应的容器name和pod的uid）
 		containerMap, err := buildContainerMapFromRuntime(runtimeService)
 		if err != nil {
 			return fmt.Errorf("failed to build map of initial containers from runtime: %v", err)
 		}
+		// 进行容器的垃圾回收，不存在的容器分配的cpu回收，containerMap列表清理（让容器的cpu分配状态里容器与activePods一致）
+		// 创建checkpoint和stateMemory来保存当前的分配策略、分配状态
+		// static policy会校验当前分配状态是否合法
+		// 创建一个goroutine周期性（默认10s）周期同步m.state中容器的cpuset到容器的cgroup设置，会同步activepods返回的pod的容器集合，清理不存在的容器的cpu分配 
 		err = cm.cpuManager.Start(cpumanager.ActivePodsFunc(activePods), sourcesReady, podStatusProvider, runtimeService, containerMap)
 		if err != nil {
 			return fmt.Errorf("start cpu manager error: %v", err)
@@ -760,6 +773,7 @@ func (cm *containerManagerImpl) SystemCgroupsLimit() v1.ResourceList {
 	}
 }
 
+// 获得所有runtime里的container，返回ContainerMap（容器id与对应的容器name和pod的uid）
 func buildContainerMapFromRuntime(runtimeService internalapi.RuntimeService) (containermap.ContainerMap, error) {
 	podSandboxMap := make(map[string]string)
 	podSandboxList, _ := runtimeService.ListPodSandbox(nil)

@@ -62,6 +62,7 @@ type manager struct {
 	//Indexed by PodUID to ContainerName
 	podTopologyHints map[string]map[string]TopologyHint
 	//Mapping of PodUID to ContainerID for Adding/Removing Pods from PodTopologyHints mapping
+	// container id 对应的pod uid
 	podMap map[string]string
 	//Topology Manager Policy
 	policy Policy
@@ -201,6 +202,7 @@ func (m *manager) calculateAffinity(pod *v1.Pod, container *v1.Container) (Topol
 }
 
 func (m *manager) AddHintProvider(h HintProvider) {
+	// 目前hintprovider有cm.deviceManager、cm.cpuManager
 	m.hintProviders = append(m.hintProviders, h)
 }
 

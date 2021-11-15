@@ -136,6 +136,7 @@ func (s CPUSet) IsSubsetOf(s2 CPUSet) bool {
 // Union returns a new CPU set that contains all of the elements from this
 // set and all of the elements from the supplied set, without mutating
 // either source set.
+// 并集
 func (s CPUSet) Union(s2 CPUSet) CPUSet {
 	b := NewBuilder()
 	for cpu := range s.elems {
@@ -150,6 +151,7 @@ func (s CPUSet) Union(s2 CPUSet) CPUSet {
 // UnionAll returns a new CPU set that contains all of the elements from this
 // set and all of the elements from the supplied sets, without mutating
 // either source set.
+// 并集
 func (s CPUSet) UnionAll(s2 []CPUSet) CPUSet {
 	b := NewBuilder()
 	for cpu := range s.elems {

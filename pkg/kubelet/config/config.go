@@ -65,6 +65,7 @@ type PodConfig struct {
 
 	// contains the list of all configured sources
 	sourcesLock       sync.Mutex
+	// kubelet配置文件或命令行的podconfig源集合，调用Channel就会添加一个source到这里
 	sources           sets.String
 	checkpointManager checkpointmanager.CheckpointManager
 }
@@ -98,11 +99,14 @@ func (c *PodConfig) Channel(source string) chan<- interface{} {
 
 // SeenAllSources returns true if seenSources contains all sources in the
 // config, and also this config has received a SET message from each source.
+// seenSources源已经注册且都提供了至少一个pod
 func (c *PodConfig) SeenAllSources(seenSources sets.String) bool {
 	if c.pods == nil {
 		return false
 	}
 	klog.V(5).Infof("Looking for %v, have seen %v", c.sources.List(), seenSources)
+	// 提供的source集合（seenSources）与kubelet配置的pod获取源（c.sources）一致
+	// 且c.pods（保存各个源的pod集合）（每个源都发送至少一个SET消息）包含了kubelet配置的pod获取源
 	return seenSources.HasAll(c.sources.List()...) && c.pods.seenSources(c.sources.List()...)
 }
 

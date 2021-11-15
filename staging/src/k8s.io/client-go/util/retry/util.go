@@ -59,6 +59,7 @@ func OnError(backoff wait.Backoff, retriable func(error) bool, fn func() error) 
 			return false, err
 		}
 	})
+	// 如果是ExponentialBackoff超时，则返回原始的内部错误，这里做了hack
 	if err == wait.ErrWaitTimeout {
 		err = lastErr
 	}

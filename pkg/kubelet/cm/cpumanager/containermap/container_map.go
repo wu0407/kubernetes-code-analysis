@@ -46,8 +46,10 @@ func (cm ContainerMap) RemoveByContainerID(containerID string) {
 
 // RemoveByContainerRef removes a mapping of (containerID)->(podUID, containerName) from the ContainerMap
 func (cm ContainerMap) RemoveByContainerRef(podUID, containerName string) {
+	// 根据podUID和containerName从ContainerMap取得container id
 	containerID, err := cm.GetContainerID(podUID, containerName)
 	if err == nil {
+		// ContainerMap中移除这个containerID
 		cm.RemoveByContainerID(containerID)
 	}
 }
