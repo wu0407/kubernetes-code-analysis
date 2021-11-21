@@ -190,6 +190,7 @@ func (m *ManagerImpl) genericDeviceUpdateCallback(resourceName string, devices [
 	}
 }
 
+// 移除dir目录下非checkpoint文件（不包括目录）
 func (m *ManagerImpl) removeContents(dir string) error {
 	d, err := os.Open(dir)
 	if err != nil {
@@ -232,6 +233,9 @@ func (m *ManagerImpl) checkpointFile() string {
 // Start starts the Device Plugin Manager and start initialization of
 // podDevices and allocatedDevices information from checkpointed state and
 // starts device plugin registration service.
+// 读取/var/lib/kubelet/device-plugins/kubelet_internal_checkpoint文件，恢复状态
+// 移除/var/lib/kubelet/device-plugins/文件夹下非"kubelet_internal_checkpoint"文件
+// 启动grpc服务，监听socket为/var/lib/kubelet/device-plugins/kubelet.socket
 func (m *ManagerImpl) Start(activePods ActivePodsFunc, sourcesReady config.SourcesReady) error {
 	klog.V(2).Infof("Starting Device Plugin manager")
 
@@ -239,6 +243,7 @@ func (m *ManagerImpl) Start(activePods ActivePodsFunc, sourcesReady config.Sourc
 	m.sourcesReady = sourcesReady
 
 	// Loads in allocatedDevices information from disk.
+	// 从checkpoint读取数据，设置m.podDevices、m.allocatedDevices、m.healthyDevices、m.unhealthyDevices、m.endpoints
 	err := m.readCheckpoint()
 	if err != nil {
 		klog.Warningf("Continue after failing to read checkpoint file. Device allocation info may NOT be up-to-date. Err: %v", err)
@@ -256,6 +261,7 @@ func (m *ManagerImpl) Start(activePods ActivePodsFunc, sourcesReady config.Sourc
 
 	// Removes all stale sockets in m.socketdir. Device plugins can monitor
 	// this and use it as a signal to re-register with the new Kubelet.
+	// 移除m.socketdir目录下非checkpoint文件
 	if err := m.removeContents(m.socketdir); err != nil {
 		klog.Errorf("Fail to clean up stale contents under %s: %v", m.socketdir, err)
 	}
@@ -587,6 +593,7 @@ func (m *ManagerImpl) writeCheckpoint() error {
 
 // Reads device to container allocation information from disk, and populates
 // m.allocatedDevices accordingly.
+// 从checkpoint读取数据，设置m.podDevices、m.allocatedDevices、m.healthyDevices、m.unhealthyDevices、m.endpoints
 func (m *ManagerImpl) readCheckpoint() error {
 	registeredDevs := make(map[string][]string)
 	devEntries := make([]checkpoint.PodDevicesEntry, 0)
@@ -602,7 +609,9 @@ func (m *ManagerImpl) readCheckpoint() error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	podDevices, registeredDevs := cp.GetData()
+	// checkpoint的podDevices插入到m.podDevices
 	m.podDevices.fromCheckpointData(podDevices)
+	// 返回所有资源和对应的deviceIds
 	m.allocatedDevices = m.podDevices.devices()
 	for resource := range registeredDevs {
 		// During start up, creates empty healthyDevices list so that the resource capacity

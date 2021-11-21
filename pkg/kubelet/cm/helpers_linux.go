@@ -94,7 +94,9 @@ func MilliCPUToShares(milliCPU int64) uint64 {
 func HugePageLimits(resourceList v1.ResourceList) map[int64]int64 {
 	hugePageLimits := map[int64]int64{}
 	for k, v := range resourceList {
+		// 判断是否有"hugepages-"前缀
 		if v1helper.IsHugePageResourceName(k) {
+			// 获得hugepage的页大小
 			pageSize, _ := v1helper.HugePageSizeFromResourceName(k)
 			if value, exists := hugePageLimits[pageSize.Value()]; exists {
 				hugePageLimits[pageSize.Value()] = value + v.Value()

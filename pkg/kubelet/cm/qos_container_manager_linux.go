@@ -78,6 +78,8 @@ func (m *qosContainerManagerImpl) GetQOSContainersInfo() QOSContainersInfo {
 	return m.qosContainersInfo
 }
 
+// 1. 确保Burstable和BestEffort的cgroup目录存在，Burstable目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/burstable，BestEffort目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/besteffort
+// 2. 启动一个gorutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性
 func (m *qosContainerManagerImpl) Start(getNodeAllocatable func() v1.ResourceList, activePods ActivePodsFunc) error {
 	cm := m.cgroupManager
 	rootContainer := m.cgroupRoot
@@ -108,18 +110,18 @@ func (m *qosContainerManagerImpl) Start(getNodeAllocatable func() v1.ResourceLis
 		}
 
 		// for each enumerated huge page size, the qos tiers are unbounded
-		// 所有hugepage设置容量为int64最大值
+		// 所有hugepage设置（containerConfig.ResourceParameters.HugePageLimit）容量为int64最大值
 		m.setHugePagesUnbounded(containerConfig)
 
 		// check if it exists
-		// ["kubepods", "Burstable"]和["kubepods", "BestEffort"]
+		// containerName为["kubepods", "Burstable"]和["kubepods", "BestEffort"]
 		if !cm.Exists(containerName) {
 			if err := cm.Create(containerConfig); err != nil {
 				return fmt.Errorf("failed to create top level %v QOS cgroup : %v", qosClass, err)
 			}
 		} else {
 			// to ensure we actually have the right state, we update the config on startup
-			// 只更新cpushare和hugepage相关
+			// 只更新cpu cgroup里的cpushare和hugelb group里hugepage相关的值
 			if err := cm.Update(containerConfig); err != nil {
 				return fmt.Errorf("failed to update top level %v QOS cgroup : %v", qosClass, err)
 			}
@@ -129,9 +131,9 @@ func (m *qosContainerManagerImpl) Start(getNodeAllocatable func() v1.ResourceLis
 	m.qosContainersInfo = QOSContainersInfo{
 		// ["kubepods"]
 		Guaranteed: rootContainer,
-		// ["kubepods", "Burstable"]
+		// ["kubepods", "burstable"]
 		Burstable:  qosClasses[v1.PodQOSBurstable],
-		// ["kubepods", "BestEffort"]
+		// ["kubepods", "bestEffort"]
 		BestEffort: qosClasses[v1.PodQOSBestEffort],
 	}
 	m.getNodeAllocatable = getNodeAllocatable
@@ -140,7 +142,7 @@ func (m *qosContainerManagerImpl) Start(getNodeAllocatable func() v1.ResourceLis
 	// update qos cgroup tiers on startup and in periodic intervals
 	// to ensure desired state is in sync with actual state.
 	go wait.Until(func() {
-		// 设置besteffort和BestEffort的cgroup目录的cgroup资源属性
+		// 设置Burstable和BestEffort的cgroup目录的cgroup资源属性
 		err := m.UpdateCgroups()
 		if err != nil {
 			klog.Warningf("[ContainerManager] Failed to reserve QoS requests: %v", err)
@@ -255,11 +257,13 @@ func (m *qosContainerManagerImpl) setMemoryReserve(configs map[v1.PodQOSClass]*C
 // retrySetMemoryReserve checks for any QoS cgroups over the limit
 // that was attempted to be set in the first Update() and adjusts
 // their memory limit to the usage to prevent further growth.
+// 当PodQOSClass的memory cgroup的当前使用值（memory.usage_in_bytes）大于PodQOSClass的memory cgroup的限制值，调整memory的cgroup限制值为当前使用值
 func (m *qosContainerManagerImpl) retrySetMemoryReserve(configs map[v1.PodQOSClass]*CgroupConfig, percentReserve int64) {
 	// Unreclaimable memory usage may already exceeded the desired limit
 	// Attempt to set the limit near the current usage to put pressure
 	// on the cgroup and prevent further growth.
 	for qos, config := range configs {
+		// 返回memory cgroup里的memory.usage_in_bytes的内容
 		stats, err := m.cgroupManager.GetResourceStats(config.Name)
 		if err != nil {
 			klog.V(2).Infof("[Container Manager] %v", err)
@@ -280,6 +284,10 @@ func (m *qosContainerManagerImpl) retrySetMemoryReserve(configs map[v1.PodQOSCla
 	}
 }
 
+// 设置Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup属性值
+// cpu group设置cpu share值
+// hugepage设置 hugepage.limit_in_bytes为int64最大值
+// memory设置memory.limit_in_bytes
 func (m *qosContainerManagerImpl) UpdateCgroups() error {
 	m.Lock()
 	defer m.Unlock()
@@ -322,6 +330,7 @@ func (m *qosContainerManagerImpl) UpdateCgroups() error {
 
 		updateSuccess := true
 		for _, config := range qosConfigs {
+			// 更新这些（cpu、memory、hugepage）的属性值
 			err := m.cgroupManager.Update(config)
 			if err != nil {
 				updateSuccess = false
@@ -335,14 +344,18 @@ func (m *qosContainerManagerImpl) UpdateCgroups() error {
 		// If the resource can adjust the ResourceConfig to increase likelihood of
 		// success, call the adjustment function here.  Otherwise, the Update() will
 		// be called again with the same values.
+		// 更新（cpu、memory、hugepage）cgroup的属性值失败，更新memory cgroup限制值
+		// 当PodQOSClass的memory cgroup的当前使用值（memory.usage_in_bytes）大于PodQOSClass的memory cgroup的限制值，调整memory的cgroup限制值为当前使用值
 		for resource, percentReserve := range m.qosReserved {
 			switch resource {
 			case v1.ResourceMemory:
+				// 当PodQOSClass的memory cgroup的当前使用值（memory.usage_in_bytes）大于PodQOSClass的memory cgroup的限制值，调整memory的cgroup限制值为当前使用值
 				m.retrySetMemoryReserve(qosConfigs, percentReserve)
 			}
 		}
 	}
 
+	// 再次更新cpu、memory、hugepage）cgroup属性值
 	for _, config := range qosConfigs {
 		err := m.cgroupManager.Update(config)
 		if err != nil {

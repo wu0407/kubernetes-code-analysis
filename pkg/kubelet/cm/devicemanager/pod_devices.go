@@ -111,6 +111,7 @@ func (pdev podDevices) removeContainerAllocatedResources(podUID, contName string
 }
 
 // Returns all of devices allocated to the pods being tracked, keyed by resourceName.
+// 返回所有资源和对应的deviceIds
 func (pdev podDevices) devices() map[string]sets.String {
 	ret := make(map[string]sets.String)
 	for _, containerDevices := range pdev {
@@ -172,6 +173,7 @@ func (pdev podDevices) fromCheckpointData(data []checkpoint.PodDevicesEntry) {
 			klog.Errorf("Can't unmarshal allocResp for %v %v %v: %v", entry.PodUID, entry.ContainerName, entry.ResourceName, err)
 			continue
 		}
+		// 插入pdev中
 		pdev.insert(entry.PodUID, entry.ContainerName, entry.ResourceName, devIDs, allocResp)
 	}
 }

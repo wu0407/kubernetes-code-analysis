@@ -169,7 +169,9 @@ func (cc *cadvisorClient) ImagesFsInfo() (cadvisorapiv2.FsInfo, error) {
 	return cc.getFsInfo(label)
 }
 
+// 返回kubelet root目录所在挂载设备的最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表、inode使用情况）
 func (cc *cadvisorClient) RootFsInfo() (cadvisorapiv2.FsInfo, error) {
+	// 返回目录所在挂载设备的最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表、inode使用情况）
 	return cc.GetDirFsInfo(cc.rootPath)
 }
 

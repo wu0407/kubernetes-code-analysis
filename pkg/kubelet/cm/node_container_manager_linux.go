@@ -66,6 +66,10 @@ func (cm *containerManagerImpl) createNodeAllocatableCgroups() error {
 }
 
 // enforceNodeAllocatableCgroups enforce Node Allocatable Cgroup settings.
+// 应用--enforce-node-allocatable的配置，设置各个（cpu、memeory、pid、hugepage）cgroup的限制值
+// 为pods，则设置在/sys/fs/cgroup/{cgroup sub system}/kubepods.slice，限制值为各个类型capacity减去SystemReserved和KubeReserved
+// 为system-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename system-reserved-cgroup}，限制值为各个类型system-reserved值
+// 为kube-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename kube-reserved-cgroup}，限制值为各个类型kube-reserved
 func (cm *containerManagerImpl) enforceNodeAllocatableCgroups() error {
 	nc := cm.NodeConfig.NodeAllocatableConfig
 
@@ -73,15 +77,20 @@ func (cm *containerManagerImpl) enforceNodeAllocatableCgroups() error {
 	// default cpu shares on cgroups are low and can cause cpu starvation.
 	nodeAllocatable := cm.internalCapacity
 	// Use Node Allocatable limits instead of capacity if the user requested enforcing node allocatable.
+	// 默认cm.CgroupsPerQOS为true，EnforceNodeAllocatable为["pods"]
 	if cm.CgroupsPerQOS && nc.EnforceNodeAllocatable.Has(kubetypes.NodeAllocatableEnforcementKey) {
-		// 根据cm.internalCapacity列表，各个资源类型的值减去SystemReserved和KubeReserved
+		// 根据cm.internalCapacity列表，各个资源（cpu、memeory、pid、hugepage）类型的值减去SystemReserved和KubeReserved
 		nodeAllocatable = cm.getNodeAllocatableInternalAbsolute()
 	}
 
 	klog.V(4).Infof("Attempting to enforce Node Allocatable with config: %+v", nc)
 
 	cgroupConfig := &CgroupConfig{
+		// cm.cgroupRoot默认为["kubepods"]
 		Name:               cm.cgroupRoot,
+		// 转换ResourceList里的cpu、memory、pid、hugepage的值为CgroupManager可以设置的
+		// cpu（milli-cores）转换成cpu_share值，一个cpu等于1024 cpu_share，最小的cpu_share为2
+		// memory转为字节，pid为数量、hugepage的key和value都转成字节
 		ResourceParameters: getCgroupConfig(nodeAllocatable),
 	}
 
@@ -99,9 +108,12 @@ func (cm *containerManagerImpl) enforceNodeAllocatableCgroups() error {
 	// Until evictions happen retry cgroup updates.
 	// Update limits on non root cgroup-root to be safe since the default limits for CPU can be too low.
 	// Check if cgroupRoot is set to a non-empty value (empty would be the root container)
+	// cm.cgroupRoot默认为["kubepods"]
 	if len(cm.cgroupRoot) > 0 {
+		// 启动一个goroutine，更新各个（cpu、memory、pid、hugepage）cgroup属性值，更新成功就退出。更新不成功，则等待1分钟，进行重试，直到成功
 		go func() {
 			for {
+				// 更新各个（cpu、memory、pid、hugepage）cgroup属性值
 				err := cm.cgroupManager.Update(cgroupConfig)
 				if err == nil {
 					cm.recorder.Event(nodeRef, v1.EventTypeNormal, events.SuccessfulNodeAllocatableEnforcement, "Updated Node Allocatable limit across pods")
@@ -114,11 +126,13 @@ func (cm *containerManagerImpl) enforceNodeAllocatableCgroups() error {
 		}()
 	}
 	// Now apply kube reserved and system reserved limits if required.
+	// nc.EnforceNodeAllocatable默认为["pods"]
 	if nc.EnforceNodeAllocatable.Has(kubetypes.SystemReservedEnforcementKey) {
 		klog.V(2).Infof("Enforcing System reserved on cgroup %q with limits: %+v", nc.SystemReservedCgroupName, nc.SystemReserved)
 		// 在cgroupdriver是systemd情况下，无论SystemReservedCgroupName配置/a/b/system.slice还是/system.slice，enforceExistingCgroup只使用最后一个路径--即SystemReservedCgroupName的basename
 		// 也就是说无所谓命令行参数  --system-reserved-cgroup设置正确与否，只要最后一个的文件路径配对了即可
 		// 由于CgroupName(nc.SystemReservedCgroupName) 只取路径的basename
+		// 更新各个（cpu、memory、pid、hugepage）cgroup目录的属性值
 		if err := enforceExistingCgroup(cm.cgroupManager, cm.cgroupManager.CgroupName(nc.SystemReservedCgroupName), nc.SystemReserved); err != nil {
 			message := fmt.Sprintf("Failed to enforce System Reserved Cgroup Limits on %q: %v", nc.SystemReservedCgroupName, err)
 			cm.recorder.Event(nodeRef, v1.EventTypeWarning, events.FailedNodeAllocatableEnforcement, message)
@@ -126,11 +140,13 @@ func (cm *containerManagerImpl) enforceNodeAllocatableCgroups() error {
 		}
 		cm.recorder.Eventf(nodeRef, v1.EventTypeNormal, events.SuccessfulNodeAllocatableEnforcement, "Updated limits on system reserved cgroup %v", nc.SystemReservedCgroupName)
 	}
+	// nc.EnforceNodeAllocatable默认为["pods"]
 	if nc.EnforceNodeAllocatable.Has(kubetypes.KubeReservedEnforcementKey) {
 		klog.V(2).Infof("Enforcing kube reserved on cgroup %q with limits: %+v", nc.KubeReservedCgroupName, nc.KubeReserved)
 		// 在cgroupdriver是systemd情况下，无论KubeReservedCgroupName配置/a/b/system.slice还是/system.slice，enforceExistingCgroup只使用最后一个路径--即KubeReservedCgroupName的basename
-		// 也就是说无所谓命令行参数  --system-reserved-cgroup设置正确与否，只要最后一个的文件路径配对了即可
-		// 由于CgroupName(nc.SystemReservedCgroupName) 只取路径的basename
+		// 也就是说无所谓命令行参数  --kube-reserved-cgroup设置正确与否，只要最后一个的文件路径配对了即可
+		// 由于CgroupName(nc.KubeReservedCgroupName) 只取路径的basename
+		// 更新各个（cpu、memory、pid、hugepage）cgroup目录的属性值
 		if err := enforceExistingCgroup(cm.cgroupManager, cm.cgroupManager.CgroupName(nc.KubeReservedCgroupName), nc.KubeReserved); err != nil {
 			message := fmt.Sprintf("Failed to enforce Kube Reserved Cgroup Limits on %q: %v", nc.KubeReservedCgroupName, err)
 			cm.recorder.Event(nodeRef, v1.EventTypeWarning, events.FailedNodeAllocatableEnforcement, message)
@@ -142,6 +158,7 @@ func (cm *containerManagerImpl) enforceNodeAllocatableCgroups() error {
 }
 
 // enforceExistingCgroup updates the limits `rl` on existing cgroup `cName` using `cgroupManager` interface.
+// 更新各个（cpu、memory、pid、hugepage）cgroup目录的属性值
 func enforceExistingCgroup(cgroupManager CgroupManager, cName CgroupName, rl v1.ResourceList) error {
 	cgroupConfig := &CgroupConfig{
 		Name:               cName,
@@ -154,6 +171,7 @@ func enforceExistingCgroup(cgroupManager CgroupManager, cName CgroupName, rl v1.
 	if !cgroupManager.Exists(cgroupConfig.Name) {
 		return fmt.Errorf("%q cgroup does not exist", cgroupConfig.Name)
 	}
+	// 更新各个（cpu、memory、pid、hugepage）cgroup属性值
 	if err := cgroupManager.Update(cgroupConfig); err != nil {
 		return err
 	}
@@ -161,6 +179,9 @@ func enforceExistingCgroup(cgroupManager CgroupManager, cName CgroupName, rl v1.
 }
 
 // getCgroupConfig returns a ResourceConfig object that can be used to create or update cgroups via CgroupManager interface.
+// 转换ResourceList里的cpu、memory、pid、hugepage的值为CgroupManager可以设置的
+// cpu（milli-cores）转换成cpu_share值，一个cpu等于1024 cpu_share，最小的cpu_share为2
+// memory转为字节，pid为数量、hugepage的key和value都转成字节
 func getCgroupConfig(rl v1.ResourceList) *ResourceConfig {
 	// TODO(vishh): Set CPU Quota if necessary.
 	if rl == nil {
@@ -174,6 +195,7 @@ func getCgroupConfig(rl v1.ResourceList) *ResourceConfig {
 	}
 	if q, exists := rl[v1.ResourceCPU]; exists {
 		// CPU is defined in milli-cores.
+		// 一个cpu等于1024 cpu_share，最小的cpu_share为2
 		val := MilliCPUToShares(q.MilliValue())
 		rc.CpuShares = &val
 	}
@@ -181,6 +203,7 @@ func getCgroupConfig(rl v1.ResourceList) *ResourceConfig {
 		val := q.Value()
 		rc.PidsLimit = &val
 	}
+	// 由原来的"hugepage-{page size}"，转成key为page size转成字节，value转为字节。比如hugepage-2M，转成2097152
 	rc.HugePageLimit = HugePageLimits(rl)
 
 	return &rc
@@ -227,7 +250,7 @@ func (cm *containerManagerImpl) GetNodeAllocatableReservation() v1.ResourceList 
 	// 返回hardeviction thresholds里memory和nodefs（ephemeral-storage）
 	evictionReservation := hardEvictionReservation(cm.HardEvictionThresholds, cm.capacity)
 	result := make(v1.ResourceList)
-	// 遍历cm.capacity里的resource类型，cpu、内存、hugepage
+	// 遍历cm.capacity里的resource类型，cpu、内存、hugepage、ephemeral-storage（在cm.start里添加到cm.capacity）
 	for k := range cm.capacity {
 		value := resource.NewQuantity(0, resource.DecimalSI)
 		if cm.NodeConfig.SystemReserved != nil {
@@ -248,8 +271,10 @@ func (cm *containerManagerImpl) GetNodeAllocatableReservation() v1.ResourceList 
 
 // validateNodeAllocatable ensures that the user specified Node Allocatable Configuration doesn't reserve more than the node capacity.
 // Returns error if the configuration is invalid, nil otherwise.
+// 校验（cpu、内存、hugepage、ephemeral-storage）资源的保留值是否大于kubelet自身的能力
 func (cm *containerManagerImpl) validateNodeAllocatable() error {
 	var errors []string
+	// 获得各个资源（cpu、内存、hugepage、ephemeral-storage）的保留值
 	nar := cm.GetNodeAllocatableReservation()
 	for k, v := range nar {
 		value := cm.capacity[k].DeepCopy()

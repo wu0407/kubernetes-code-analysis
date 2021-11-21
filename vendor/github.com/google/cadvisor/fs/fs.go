@@ -78,11 +78,13 @@ type partition struct {
 
 type RealFsInfo struct {
 	// Map from block device path to partition information.
+	// 挂载设备和对应文件系统类型、挂载点、主设备号、次设备号
 	partitions map[string]partition
 	// Map from label to block device path.
 	// Labels are intent-specific tags that are auto-detected.
 	labels map[string]string
 	// Map from mountpoint to mount information.
+	// 挂载点和对应的挂载信息
 	mounts map[string]*mount.Info
 	// devicemapper client
 	dmsetup devicemapper.DmsetupClient
@@ -111,6 +113,8 @@ func NewFsInfo(context Context) (FsInfo, error) {
 		// 从mount信息中过滤掉不支持的文件系统，排除非tmpfs的bind mounts
 		// 如果是tmpfs类型，返回的key值为mount.Mountpoint
 		// 如果是overlay类型，返回key值为fmt.Sprintf("%s_%d-%d", mount.Source, mount.Major, mount.Minor)
+		// 其他文件系统类型，key为设备路径，比如/dev/vda
+		// value值包含文件系统类型、挂载点、主设备号、次设备号
 		partitions:         processMounts(mounts, excluded),
 		labels:             make(map[string]string, 0),
 		// 挂载点和对应的挂载信息
@@ -176,6 +180,8 @@ func getFsUUIDToDeviceNameMap() (map[string]string, error) {
 // 从mount信息中过滤掉不支持的文件系统，排除非tmpfs的bind mounts
 // 如果是tmpfs类型，返回的key值为mount.Mountpoint
 // 如果是overlay类型，返回key值为fmt.Sprintf("%s_%d-%d", mount.Source, mount.Major, mount.Minor)
+// 其他文件系统类型，key为设备路径，比如/dev/vda
+// value值包含文件系统类型、挂载点、主设备号、次设备号
 func processMounts(mounts []*mount.Info, excludedMountpointPrefixes []string) map[string]partition {
 	partitions := make(map[string]partition, 0)
 
@@ -377,6 +383,7 @@ func (self *RealFsInfo) updateContainerImagesPath(label string, mounts []*mount.
 	}
 }
 
+// 获得这个label的挂载源
 func (self *RealFsInfo) GetDeviceForLabel(label string) (string, error) {
 	dev, ok := self.labels[label]
 	if !ok {
@@ -385,6 +392,7 @@ func (self *RealFsInfo) GetDeviceForLabel(label string) (string, error) {
 	return dev, nil
 }
 
+// 获得这个设备的label列表
 func (self *RealFsInfo) GetLabelsForDevice(device string) ([]string, error) {
 	labels := []string{}
 	for label, dev := range self.labels {
@@ -395,6 +403,7 @@ func (self *RealFsInfo) GetLabelsForDevice(device string) ([]string, error) {
 	return labels, nil
 }
 
+// 返回这个设备的挂载点
 func (self *RealFsInfo) GetMountpointForDevice(dev string) (string, error) {
 	p, ok := self.partitions[dev]
 	if !ok {
@@ -542,6 +551,7 @@ func (self *RealFsInfo) GetDeviceInfoByFsUUID(uuid string) (*DeviceInfo, error) 
 	return &DeviceInfo{deviceName, p.major, p.minor}, nil
 }
 
+// 获得目录在哪个块设备，返回这个块设备的路径、主设备号和次设备号
 func (self *RealFsInfo) GetDirFsDevice(dir string) (*DeviceInfo, error) {
 	buf := new(syscall.Stat_t)
 	err := syscall.Stat(dir, buf)
@@ -551,16 +561,19 @@ func (self *RealFsInfo) GetDirFsDevice(dir string) (*DeviceInfo, error) {
 
 	major := major(buf.Dev)
 	minor := minor(buf.Dev)
+	// 从挂载的设备中，找到主次设备号一样的磁盘设备
 	for device, partition := range self.partitions {
 		if partition.major == major && partition.minor == minor {
 			return &DeviceInfo{device, major, minor}, nil
 		}
 	}
 
+	// 如果挂载设备中没有找到，则从mountinfo挂载信息中查找
 	mount, found := self.mounts[dir]
 	// try the parent dir if not found until we reach the root dir
 	// this is an issue on btrfs systems where the directory is not
 	// the subvolume
+	// 如果没有找到，则尝试使用各层上级目录取查找，直到根目录
 	for !found {
 		pathdir, _ := filepath.Split(dir)
 		// break when we reach root
@@ -574,6 +587,7 @@ func (self *RealFsInfo) GetDirFsDevice(dir string) (*DeviceInfo, error) {
 	}
 
 	if found && mount.Fstype == "btrfs" && mount.Major == 0 && strings.HasPrefix(mount.Source, "/dev/") {
+		// 使用stat btrfs类型的挂载目录获得major、minor
 		major, minor, err := getBtrfsMajorMinorIds(mount)
 		if err != nil {
 			klog.Warningf("%s", err)

@@ -1471,6 +1471,35 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 		klog.Fatalf("Kubelet failed to get node info: %v", err)
 	}
 	// containerManager must start after cAdvisor because it needs filesystem capacity information
+	// 启动cpu manager
+	//   1. 进行容器的垃圾回收，不存在的容器分配的cpu回收（在checkpoint和stateMemory中回收），containerMap列表清理（让容器的cpu分配状态里容器与activePods一致）
+	//   2. 创建checkpoint和stateMemory来保存当前的分配策略、分配状态
+	//   3. 如果cpu manager的policy为static policy会校验当前分配状态是否合法
+	//   3.1 创建一个goroutine周期性（默认10s）周期同步m.state中容器的cpuset到容器的cgroup设置，会同步activepods返回的pod的容器集合，清理不存在的容器的cpu分配
+	// 校验（cpu、内存、hugepage、ephemeral-storage）资源的保留值是否大于kubelet自身的能力
+	// 维护cgroup目录
+	//   1. 检查系统里cgroup是否开启"cpu"、"cpuacct", "cpuset", "memory"子系统，cpu子系统开启cfs
+	//   2. 设置一些关键的sysctl项
+	//   3. 确保各个cgroup子系统挂载目录下kubepods或kubepods.slice文件夹存在
+	//      设置各个cgroup系统（memory、pid、cpu share、hugepage）的属性值--这个值是根据cm.internalCapacity列表，各个资源类型的值减去SystemReserved和KubeReserved
+	//   4.启动qosmanager
+	//        确保Burstable和BestEffort的cgroup目录存在，Burstable目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/burstable，BestEffort目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/besteffort
+	//        启动一个gorutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性
+	//   5. 应用--enforce-node-allocatable的配置，设置各个（cpu、memeory、pid、hugepage）cgroup的限制值
+	//      为pods，则设置在/sys/fs/cgroup/{cgroup sub system}/kubepods.slice，限制值为各个类型capacity减去SystemReserved和KubeReserved
+	//      为system-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename system-reserved-cgroup}，限制值为各个类型system-reserved值
+	//      为kube-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename kube-reserved-cgroup}，限制值为各个类型kube-reserved
+	// 执行周期性任务
+	//   1. 启动一个goroutine，每一分钟执行cm.systemContainers的ensureStateFunc
+	//      当cm.SystemCgroupsName不为空， cm.SystemCgroupsName: newSystemCgroups(cm.SystemCgroupsName), ensureStateFunc: 将非内核pid或非init进程的pid移动到cm.SystemCgroupsNamecgroup中
+	//      当cm.kubeletCgroupsName不为空，cm.kubeletCgroupsName: newSystemCgroups(cm.KubeletCgroupsName), ensureStateFunc: 设置kubelet进程的oom_score_adj为-999,将kubelet进程移动到kubeletCgroupsName的cgroup路径中
+	//   2. 启动一个goroutine，每5分钟执行cm.periodicTasks里的task
+	//     当运行时为docker，设置cm.RuntimeCgroupsName为docker的cgroup路径
+	//     当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
+	// 启动device manager
+	//   1. 读取/var/lib/kubelet/device-plugins/kubelet_internal_checkpoint文件，恢复状态
+	//   2. 移除/var/lib/kubelet/device-plugins/文件夹下非"kubelet_internal_checkpoint"文件
+	//   3. 启动grpc服务，监听socket为/var/lib/kubelet/device-plugins/kubelet.socket
 	if err := kl.containerManager.Start(node, kl.GetActivePods, kl.sourcesReady, kl.statusManager, kl.runtimeService); err != nil {
 		// Fail kubelet and rely on the babysitter to retry starting kubelet.
 		klog.Fatalf("Failed to start ContainerManager %v", err)

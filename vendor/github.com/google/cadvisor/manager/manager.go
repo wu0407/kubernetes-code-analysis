@@ -751,11 +751,14 @@ func (self *manager) getRequestedContainers(containerName string, options v2.Req
 	return containersMap, nil
 }
 
+// 返回目录所在挂载设备的最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表、inode使用情况）
 func (self *manager) GetDirFsInfo(dir string) (v2.FsInfo, error) {
+	// 获得目录在哪个块设备，返回这个块设备的路径、主设备号和次设备号
 	device, err := self.fsInfo.GetDirFsDevice(dir)
 	if err != nil {
 		return v2.FsInfo{}, fmt.Errorf("failed to get device for dir %q: %v", dir, err)
 	}
+	// 返回设备的最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表、inode使用情况）
 	return self.getFsInfoByDeviceName(device.Device)
 }
 
@@ -767,6 +770,7 @@ func (self *manager) GetFsInfoByFsUUID(uuid string) (v2.FsInfo, error) {
 	return self.getFsInfoByDeviceName(device.Device)
 }
 
+// 获得这个label的磁盘设备最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表），磁盘可能有多个
 func (self *manager) GetFsInfo(label string) ([]v2.FsInfo, error) {
 	var empty time.Time
 	// Get latest data from filesystems hanging off root container.
@@ -776,6 +780,7 @@ func (self *manager) GetFsInfo(label string) ([]v2.FsInfo, error) {
 	}
 	dev := ""
 	if len(label) != 0 {
+		// 获得这个label的挂载源
 		dev, err = self.fsInfo.GetDeviceForLabel(label)
 		if err != nil {
 			return nil, err
@@ -784,13 +789,17 @@ func (self *manager) GetFsInfo(label string) ([]v2.FsInfo, error) {
 	fsInfo := []v2.FsInfo{}
 	for i := range stats[0].Filesystem {
 		fs := stats[0].Filesystem[i]
+		// label不为空，则找到这个label的挂载设备，只返回这个设备的状态信息
+		// label为空，则返回所有的挂载设备的状态信息
 		if len(label) != 0 && fs.Device != dev {
 			continue
 		}
+		// 获得这个设备的挂载点
 		mountpoint, err := self.fsInfo.GetMountpointForDevice(fs.Device)
 		if err != nil {
 			return nil, err
 		}
+		// 获得这个设备的label列表
 		labels, err := self.fsInfo.GetLabelsForDevice(fs.Device)
 		if err != nil {
 			return nil, err
@@ -1402,11 +1411,14 @@ func (m *manager) DebugInfo() map[string][]string {
 	return debugInfo
 }
 
+// 返回设备的最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表、inode使用情况）
 func (self *manager) getFsInfoByDeviceName(deviceName string) (v2.FsInfo, error) {
+	// 获得这个设备的挂载点
 	mountPoint, err := self.fsInfo.GetMountpointForDevice(deviceName)
 	if err != nil {
 		return v2.FsInfo{}, fmt.Errorf("failed to get mount point for device %q: %v", deviceName, err)
 	}
+	// 获得所有挂载的磁盘设备最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表、inode使用情况）
 	infos, err := self.GetFsInfo("")
 	if err != nil {
 		return v2.FsInfo{}, err

@@ -70,6 +70,7 @@ func NewCgroupName(base CgroupName, components ...string) CgroupName {
 	return CgroupName(append(baseCopy, components...))
 }
 
+// 替换"-"成"_" 
 func escapeSystemdCgroupName(part string) string {
 	return strings.Replace(part, "-", "_", -1)
 }
@@ -231,7 +232,9 @@ func (m *cgroupManagerImpl) buildCgroupPaths(name CgroupName) map[string]string 
 // and split it appropriately, using essentially the logic below.
 // This was done for cgroupfs in opencontainers/runc#497 but a counterpart
 // for systemd was never introduced.
+// 设置cgroupConfig的Name（转成systemd路径的目录名）和Parent（转成systemd路径的父目录）
 func updateSystemdCgroupInfo(cgroupConfig *libcontainerconfigs.Cgroup, cgroupName CgroupName) {
+	// cgroupName转成systemd cgroup路径，比如["kubepods"]转成/sys/fs/cgroup/{cgroup subsystem}/kubepods.slice
 	dir, base := path.Split(cgroupName.ToSystemd())
 	if dir == "/" {
 		dir = "-.slice"
@@ -348,7 +351,7 @@ func getSupportedSubsystems() map[subsystem]bool {
 // but this is not possible with libcontainers Set() method
 // See https://github.com/opencontainers/runc/issues/932
 func setSupportedSubsystems(cgroupConfig *libcontainerconfigs.Cgroup) error {
-	// cpu、memory、pid为必须的，hugepage非必须
+	// cpu、memory、pid（开启了SupportPodPidsLimit或SupportNodePidsLimit）为必须的，hugepage非必须
 	for sys, required := range getSupportedSubsystems() {
 		if _, ok := cgroupConfig.Paths[sys.Name()]; !ok {
 			if required {
@@ -358,7 +361,7 @@ func setSupportedSubsystems(cgroupConfig *libcontainerconfigs.Cgroup) error {
 			klog.V(6).Infof("Unable to find subsystem mount for optional subsystem: %v", sys.Name())
 			continue
 		}
-		// 设置各个cgroup系统（cpu、memory、pid、hugepage在系统中开启的）的属性
+		// 设置各个cgroup系统（cpu、memory、pid、hugepage（在系统中开启的hugepage类型））的属性
 		if err := sys.Set(cgroupConfig.Paths[sys.Name()], cgroupConfig); err != nil {
 			return fmt.Errorf("failed to set config for supported subsystems : %v", err)
 		}
@@ -366,6 +369,7 @@ func setSupportedSubsystems(cgroupConfig *libcontainerconfigs.Cgroup) error {
 	return nil
 }
 
+// ResourceConfig转换成runc的libcontainer的Resources
 func (m *cgroupManagerImpl) toResources(resourceConfig *ResourceConfig) *libcontainerconfigs.Resources {
 	resources := &libcontainerconfigs.Resources{}
 	if resourceConfig == nil {
@@ -417,6 +421,7 @@ func (m *cgroupManagerImpl) toResources(resourceConfig *ResourceConfig) *libcont
 }
 
 // Update updates the cgroup with the specified Cgroup Configuration
+// 更新各个（cpu、memory、pid、hugepage）cgroup属性值
 func (m *cgroupManagerImpl) Update(cgroupConfig *CgroupConfig) error {
 	start := time.Now()
 	defer func() {
@@ -425,6 +430,7 @@ func (m *cgroupManagerImpl) Update(cgroupConfig *CgroupConfig) error {
 
 	// Extract the cgroup resource parameters
 	resourceConfig := cgroupConfig.ResourceParameters
+	// ResourceConfig转换成runc的libcontainer的Resources
 	resources := m.toResources(resourceConfig)
 
 	//比如cgroupConfig.Name为["kubepods"]，则cgroupPaths为/sys/fs/cgroup/{cgroup subsystem}/kubepods.slice
@@ -437,6 +443,7 @@ func (m *cgroupManagerImpl) Update(cgroupConfig *CgroupConfig) error {
 	// libcontainer consumes a different field and expects a different syntax
 	// depending on the cgroup driver in use, so we need this conditional here.
 	if m.adapter.cgroupManagerType == libcontainerSystemd {
+		// 设置libcontainerCgroupConfig的Name（cgroupConfig.Name转成systemd路径的目录名）和Parent（cgroupConfig.Name转成systemd路径的父目录）
 		updateSystemdCgroupInfo(libcontainerCgroupConfig, cgroupConfig.Name)
 	} else {
 		libcontainerCgroupConfig.Path = cgroupConfig.Name.ToCgroupfs()

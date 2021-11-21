@@ -438,6 +438,25 @@ func setupKernelTunables(option KernelTunableBehavior) error {
 	return utilerrors.NewAggregate(errList)
 }
 
+// 主要做以下事情：
+// 1. 检查系统里cgroup是否开启"cpu"、"cpuacct", "cpuset", "memory"子系统，cpu子系统开启cfs
+// 2. 设置一些关键的sysctl项
+// 3. 确保各个cgroup子系统挂载目录下kubepods或kubepods.slice文件夹存在
+//    设置各个cgroup系统（memory、pid、cpu share、hugepage）的属性值--这个值是根据cm.internalCapacity列表，各个资源类型的值减去SystemReserved和KubeReserved
+//    启动qosmanager
+//      确保Burstable和BestEffort的cgroup目录存在，Burstable目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/burstable，BestEffort目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/besteffort
+//      启动一个gorutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性
+// 4. 应用--enforce-node-allocatable的配置，设置各个（cpu、memeory、pid、hugepage）cgroup的限制值
+//    为pods，则设置在/sys/fs/cgroup/{cgroup sub system}/kubepods.slice，限制值为各个类型capacity减去SystemReserved和KubeReserved
+//    为system-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename system-reserved-cgroup}，限制值为各个类型system-reserved值
+//    为kube-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename kube-reserved-cgroup}，限制值为各个类型kube-reserved
+// 5. 设置cm.periodicTasks和cm.systemContainers
+//   cm.periodicTasks里可能有
+//     当运行时为docker，设置cm.RuntimeCgroupsName为docker的cgroup路径
+//     当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
+//   cm.systemContainers里可能有
+//    当cm.SystemCgroupsName不为空， cm.SystemCgroupsName: newSystemCgroups(cm.SystemCgroupsName), ensureStateFunc: 将非内核pid或非init进程的pid移动到cm.SystemCgroupsNamecgroup中
+//    当cm.kubeletCgroupsName不为空，cm.kubeletCgroupsName: newSystemCgroups(cm.KubeletCgroupsName), ensureStateFunc: 设置kubelet进程的oom_score_adj为-999,将kubelet进程移动到kubeletCgroupsName的cgroup路径中
 func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 	// /proc/mount里cgroup挂载目录下是否有"cpu", "cpuacct", "cpuset", "memory"且cpu的cgroup是否有cpu.cfs_period_us和cpu.cfs_quota_us文件
 	f, err := validateSystemRequirements(cm.mountUtil)
@@ -471,6 +490,8 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 		if err := cm.createNodeAllocatableCgroups(); err != nil {
 			return err
 		}
+		// 1. 确保Burstable和BestEffort的cgroup目录存在，Burstable目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/burstable，BestEffort目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/besteffort
+		// 2. 启动一个gorutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性 
 		err = cm.qosContainerManager.Start(cm.getNodeAllocatableAbsolute, activePods)
 		if err != nil {
 			return fmt.Errorf("failed to initialize top level QOS containers: %v", err)
@@ -478,11 +499,16 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 	}
 
 	// Enforce Node Allocatable (if required)
+	// 应用--enforce-node-allocatable的配置，设置各个（cpu、memeory、pid、hugepage）cgroup的限制值
+	// 为pods，则设置在/sys/fs/cgroup/{cgroup sub system}/kubepods.slice，限制值为各个类型capacity减去SystemReserved和KubeReserved
+	// 为system-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename system-reserved-cgroup}，限制值为各个类型system-reserved值
+	// 为kube-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename kube-reserved-cgroup}，限制值为各个类型kube-reserved
 	if err := cm.enforceNodeAllocatableCgroups(); err != nil {
 		return err
 	}
 
 	systemContainers := []*systemContainer{}
+	// 添加任务（设置cm.RuntimeCgroupsName为docker的cgroup路径）到cm.periodicTasks
 	if cm.ContainerRuntime == "docker" {
 		// With the docker-CRI integration, dockershim manages the cgroups
 		// and oom score for the docker processes.
@@ -490,6 +516,7 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 		// TODO(KEP#866): remove special processing for CRI "docker" enablement
 		cm.periodicTasks = append(cm.periodicTasks, func() {
 			klog.V(4).Infof("[ContainerManager]: Adding periodic tasks for docker CRI integration")
+			// 从进程名或pid文件中查找进程pid，读取/proc/{pid}/cgroup，获得进程的cgroup路径，比如/system.slice/kubelet.service
 			cont, err := getContainerNameForProcess(dockerProcessName, dockerPidFile)
 			if err != nil {
 				klog.Error(err)
@@ -502,18 +529,23 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 		})
 	}
 
-	// 如果配置了--system-cgroups或配置文件systemCgroups，则将非内核pid或非init进程的pid移动到指定的cgroup路径中
+	// 添加cm.SystemCgroupsName的systemContainer到systemContainers
+	// 命令行参数解释
+	// --system-cgroups string   Optional absolute name of cgroups in which to place all non-kernel processes that are not already inside a cgroup under '/'. Empty for no container. Rolling back the flag requires a reboot. 
+	// 如果配置了--system-cgroups或配置文件systemCgroups，则将非内核pid或非init进程的pid移动到指定的cgroup路径中。默认是空
 	if cm.SystemCgroupsName != "" {
 		if cm.SystemCgroupsName == "/" {
 			return fmt.Errorf("system container cannot be root (\"/\")")
 		}
 		cont := newSystemCgroups(cm.SystemCgroupsName)
 		cont.ensureStateFunc = func(manager *fs.Manager) error {
+			// 将非内核pid或非init进程的pid移动到指定的cgroup中
 			return ensureSystemCgroups("/", manager)
 		}
 		systemContainers = append(systemContainers, cont)
 	}
 
+	// 添加cm.KubeletCgroupsName的systemContainer到systemContainers或添加任务（设置cm.KubeletCgroupsName为kubelet进程的cgroup路径和设置kubelet进程的oom_score_adj为-999）到cm.periodicTasks
 	// 设置kubelet进程的oom_score_adj为-999
 	// 如果配置了--kubelet-cgroups或配置文件KubeletCgroups，则将kubelet进程移动到指定的cgroup路径中
 	if cm.KubeletCgroupsName != "" {
@@ -550,11 +582,20 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 		})
 	}
 
+	// cm.periodicTasks里可能有
+	// 当运行时为docker，设置cm.RuntimeCgroupsName为docker的cgroup路径
+	// 当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
+
+	// cm.systemContainers里可能有
+	// cm.SystemCgroupsName: newSystemCgroups(cm.SystemCgroupsName), ensureStateFunc: 将非内核pid或非init进程的pid移动到cm.SystemCgroupsName的cgroup中
+	// cm.kubeletCgroupsName: newSystemCgroups(cm.KubeletCgroupsName), ensureStateFunc: 设置kubelet进程的oom_score_adj为-999,将kubelet进程移动到kubeletCgroupsName的cgroup路径中
 	cm.systemContainers = systemContainers
 	return nil
 }
 
+// 从进程名或pid文件中查找进程pid，读取/proc/{pid}/cgroup，获得进程的cgroup路径，比如/system.slice/kubelet.service
 func getContainerNameForProcess(name, pidFile string) (string, error) {
+	// 获得pid从进程名或pid文件中
 	pids, err := getPidsForProcess(name, pidFile)
 	if err != nil {
 		return "", fmt.Errorf("failed to detect process id for %q - %v", name, err)
@@ -562,6 +603,7 @@ func getContainerNameForProcess(name, pidFile string) (string, error) {
 	if len(pids) == 0 {
 		return "", nil
 	}
+	// 获得进程的cgroup路径，比如/system.slice/kubelet.service
 	cont, err := getContainer(pids[0])
 	if err != nil {
 		return "", err
@@ -599,6 +641,35 @@ func (cm *containerManagerImpl) Status() Status {
 }
 
 // 在pkg\kubelet\kubelet.go里的initializeRuntimeDependentModules会执行Start
+// 启动cpu manager
+//   1. 进行容器的垃圾回收，不存在的容器分配的cpu回收（在checkpoint和stateMemory中回收），containerMap列表清理（让容器的cpu分配状态里容器与activePods一致）
+//   2. 创建checkpoint和stateMemory来保存当前的分配策略、分配状态
+//   3. 如果cpu manager的policy为static policy会校验当前分配状态是否合法
+//   3.1 创建一个goroutine周期性（默认10s）周期同步m.state中容器的cpuset到容器的cgroup设置，会同步activepods返回的pod的容器集合，清理不存在的容器的cpu分配
+// 校验（cpu、内存、hugepage、ephemeral-storage）资源的保留值是否大于kubelet自身的能力
+// 维护cgroup目录
+//   1. 检查系统里cgroup是否开启"cpu"、"cpuacct", "cpuset", "memory"子系统，cpu子系统开启cfs
+//   2. 设置一些关键的sysctl项
+//   3. 确保各个cgroup子系统挂载目录下kubepods或kubepods.slice文件夹存在
+//      设置各个cgroup系统（memory、pid、cpu share、hugepage）的属性值--这个值是根据cm.internalCapacity列表，各个资源类型的值减去SystemReserved和KubeReserved
+//   4.启动qosmanager
+//        确保Burstable和BestEffort的cgroup目录存在，Burstable目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/burstable，BestEffort目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/besteffort
+//        启动一个gorutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性
+//   5. 应用--enforce-node-allocatable的配置，设置各个（cpu、memeory、pid、hugepage）cgroup的限制值
+//      为pods，则设置在/sys/fs/cgroup/{cgroup sub system}/kubepods.slice，限制值为各个类型capacity减去SystemReserved和KubeReserved
+//      为system-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename system-reserved-cgroup}，限制值为各个类型system-reserved值
+//      为kube-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename kube-reserved-cgroup}，限制值为各个类型kube-reserved
+// 执行周期性任务
+//   1. 启动一个goroutine，每一分钟执行cm.systemContainers的ensureStateFunc
+//      当cm.SystemCgroupsName不为空， cm.SystemCgroupsName: newSystemCgroups(cm.SystemCgroupsName), ensureStateFunc: 将非内核pid或非init进程的pid移动到cm.SystemCgroupsNamecgroup中
+//      当cm.kubeletCgroupsName不为空，cm.kubeletCgroupsName: newSystemCgroups(cm.KubeletCgroupsName), ensureStateFunc: 设置kubelet进程的oom_score_adj为-999,将kubelet进程移动到kubeletCgroupsName的cgroup路径中
+//   2. 启动一个goroutine，每5分钟执行cm.periodicTasks里的task
+//     当运行时为docker，设置cm.RuntimeCgroupsName为docker的cgroup路径
+//     当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
+// 启动device manager
+//   1. 读取/var/lib/kubelet/device-plugins/kubelet_internal_checkpoint文件，恢复状态
+//   2. 移除/var/lib/kubelet/device-plugins/文件夹下非"kubelet_internal_checkpoint"文件
+//   3. 启动grpc服务，监听socket为/var/lib/kubelet/device-plugins/kubelet.socket
 func (cm *containerManagerImpl) Start(node *v1.Node,
 	activePods ActivePodsFunc,
 	sourcesReady config.SourcesReady,
@@ -612,10 +683,10 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 		if err != nil {
 			return fmt.Errorf("failed to build map of initial containers from runtime: %v", err)
 		}
-		// 进行容器的垃圾回收，不存在的容器分配的cpu回收，containerMap列表清理（让容器的cpu分配状态里容器与activePods一致）
+		// 进行容器的垃圾回收，不存在的容器分配的cpu回收（在checkpoint和stateMemory中回收），containerMap列表清理（让容器的cpu分配状态里容器与activePods一致）
 		// 创建checkpoint和stateMemory来保存当前的分配策略、分配状态
-		// static policy会校验当前分配状态是否合法
-		// 创建一个goroutine周期性（默认10s）周期同步m.state中容器的cpuset到容器的cgroup设置，会同步activepods返回的pod的容器集合，清理不存在的容器的cpu分配 
+		// 如果cpu manager的policy为static policy会校验当前分配状态是否合法
+		//   创建一个goroutine周期性（默认10s）周期同步m.state中容器的cpuset到容器的cgroup设置，会同步activepods返回的pod的容器集合，清理不存在的容器的cpu分配 
 		err = cm.cpuManager.Start(cpumanager.ActivePodsFunc(activePods), sourcesReady, podStatusProvider, runtimeService, containerMap)
 		if err != nil {
 			return fmt.Errorf("start cpu manager error: %v", err)
@@ -627,21 +698,42 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 	cm.nodeInfo = node
 
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.LocalStorageCapacityIsolation) {
+		// 返回kubelet root目录所在挂载设备的最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表
 		rootfs, err := cm.cadvisorInterface.RootFsInfo()
 		if err != nil {
 			return fmt.Errorf("failed to get rootfs info: %v", err)
 		}
+		// cm.capacity添加"ephemeral-storage"，rname为"ephemeral-storage"，rcap为磁盘大小
 		for rName, rCap := range cadvisor.EphemeralStorageCapacityFromFsInfo(rootfs) {
 			cm.capacity[rName] = rCap
 		}
 	}
 
 	// Ensure that node allocatable configuration is valid.
+	// 校验（cpu、内存、hugepage、ephemeral-storage）资源的保留值是否大于kubelet自身的能力
 	if err := cm.validateNodeAllocatable(); err != nil {
 		return err
 	}
 
 	// Setup the node
+	// 1. 检查系统里cgroup是否开启"cpu"、"cpuacct", "cpuset", "memory"子系统，cpu子系统开启cfs
+	// 2. 设置一些关键的sysctl项
+	// 3. 确保各个cgroup子系统挂载目录下kubepods或kubepods.slice文件夹存在
+	//    设置各个cgroup系统（memory、pid、cpu share、hugepage）的属性值--这个值是根据cm.internalCapacity列表，各个资源类型的值减去SystemReserved和KubeReserved
+	//    启动qosmanager
+	//      确保Burstable和BestEffort的cgroup目录存在，Burstable目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/burstable，BestEffort目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/besteffort
+	//      启动一个gorutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性
+	// 4. 应用--enforce-node-allocatable的配置，设置各个（cpu、memeory、pid、hugepage）cgroup的限制值
+	//    为pods，则设置在/sys/fs/cgroup/{cgroup sub system}/kubepods.slice，限制值为各个类型capacity减去SystemReserved和KubeReserved
+	//    为system-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename system-reserved-cgroup}，限制值为各个类型system-reserved值
+	//    为kube-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename kube-reserved-cgroup}，限制值为各个类型kube-reserved
+	// 5. 设置cm.periodicTasks和cm.systemContainers
+	//   cm.periodicTasks里可能有
+	//     当运行时为docker，设置cm.RuntimeCgroupsName为docker的cgroup路径
+	//     当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
+	//   cm.systemContainers里可能有
+	//    当cm.SystemCgroupsName不为空， cm.SystemCgroupsName: newSystemCgroups(cm.SystemCgroupsName), ensureStateFunc: 将非内核pid或非init进程的pid移动到cm.SystemCgroupsNamecgroup中
+	//    当cm.kubeletCgroupsName不为空，cm.kubeletCgroupsName: newSystemCgroups(cm.KubeletCgroupsName), ensureStateFunc: 设置kubelet进程的oom_score_adj为-999,将kubelet进程移动到kubeletCgroupsName的cgroup路径中
 	if err := cm.setupNode(activePods); err != nil {
 		return err
 	}
@@ -656,6 +748,10 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 	}
 	if hasEnsureStateFuncs {
 		// Run ensure state functions every minute.
+		// 启动一个goroutine，每一分钟执行cm.systemContainers的ensureStateFunc
+		// 即会执行上面的cm.setupNode里添加到cm.systemContainers的systemContainer
+		//    当cm.SystemCgroupsName不为空， cm.SystemCgroupsName: newSystemCgroups(cm.SystemCgroupsName), ensureStateFunc: 将非内核pid或非init进程的pid移动到cm.SystemCgroupsNamecgroup中
+		//    当cm.kubeletCgroupsName不为空，cm.kubeletCgroupsName: newSystemCgroups(cm.KubeletCgroupsName), ensureStateFunc: 设置kubelet进程的oom_score_adj为-999,将kubelet进程移动到kubeletCgroupsName的cgroup路径中
 		go wait.Until(func() {
 			for _, cont := range cm.systemContainers {
 				if cont.ensureStateFunc != nil {
@@ -668,6 +764,10 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 
 	}
 
+	// 启动一个goroutine，每5分钟执行cm.periodicTasks里的task
+	// 即执行上面的cm.setupNode里设置cm.periodicTasks
+	// 当运行时为docker，设置cm.RuntimeCgroupsName为docker的cgroup路径
+	//     当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
 	if len(cm.periodicTasks) > 0 {
 		go wait.Until(func() {
 			for _, task := range cm.periodicTasks {
@@ -679,6 +779,9 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 	}
 
 	// Starts device manager.
+	// 读取/var/lib/kubelet/device-plugins/kubelet_internal_checkpoint文件，恢复状态
+	// 移除/var/lib/kubelet/device-plugins/文件夹下非"kubelet_internal_checkpoint"文件
+	// 启动grpc服务，监听socket为/var/lib/kubelet/device-plugins/kubelet.socket
 	if err := cm.deviceManager.Start(devicemanager.ActivePodsFunc(activePods), sourcesReady); err != nil {
 		return err
 	}
@@ -830,6 +933,7 @@ func getPidFromPidFile(pidFile string) (int, error) {
 
 func getPidsForProcess(name, pidFile string) ([]int, error) {
 	if len(pidFile) == 0 {
+		// 通过命令来查找pid
 		return procfs.PidOf(name)
 	}
 
