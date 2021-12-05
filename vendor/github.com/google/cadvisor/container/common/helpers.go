@@ -297,6 +297,7 @@ func ListContainers(name string, cgroupPaths map[string]string, listType contain
 
 // AssignDeviceNamesToDiskStats assigns the Device field on the provided DiskIoStats by looking up
 // the device major and minor identifiers in the provided device namer.
+// 设置stats.IoMerged、stats.IoQueued、stats.IoServiceBytes、stats.IoServiceTime、stats.IoServiced、stats.IoTime、stats.IoWaitTimestats、stats.Sectors的Device字段（设备名称）
 func AssignDeviceNamesToDiskStats(namer DeviceNamer, stats *info.DiskIoStats) {
 	assignDeviceNamesToPerDiskStats(
 		namer,
@@ -313,6 +314,7 @@ func AssignDeviceNamesToDiskStats(namer DeviceNamer, stats *info.DiskIoStats) {
 
 // assignDeviceNamesToPerDiskStats looks up device names for the provided stats, caching names
 // if necessary.
+// 从MachineInfo中查找设备的名称，并设置到diskStats[*].Device中
 func assignDeviceNamesToPerDiskStats(namer DeviceNamer, diskStats ...[]info.PerDiskStats) {
 	devices := make(deviceIdentifierMap)
 	for _, stats := range diskStats {
@@ -331,6 +333,8 @@ type DeviceNamer interface {
 
 type MachineInfoNamer info.MachineInfo
 
+// 从machineinfo中DiskMap（块设备大小、设备号、io调度算法）查找major, minor对应的块设备名称，如果找到则返回"/dev/{设备名}"
+// 上面没有找到，则从machineinfo中的Filesystems（所有挂载源设备的磁盘信息）查找major, minor对应的块设备名称
 func (n *MachineInfoNamer) DeviceName(major, minor uint64) (string, bool) {
 	for _, info := range n.DiskMap {
 		if info.Major == major && info.Minor == minor {
@@ -353,12 +357,16 @@ type deviceIdentifier struct {
 type deviceIdentifierMap map[deviceIdentifier]string
 
 // Find locates the device name by device identifier out of from, caching the result as necessary.
+// 先从自身（cache）查找，没有找到则从MachineInfo中查找，查到的结果缓存（保存）到自身
 func (m deviceIdentifierMap) Find(major, minor uint64, namer DeviceNamer) string {
 	d := deviceIdentifier{major, minor}
+	// 从deviceIdentifierMap中查找
 	if s, ok := m[d]; ok {
 		return s
 	}
+	// 从MachineInfo中获取major, minor对应的块设备名称
 	s, _ := namer.DeviceName(major, minor)
+	// 查找到块设备名称，保存到deviceIdentifierMap，方便下次查找
 	m[d] = s
 	return s
 }

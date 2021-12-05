@@ -491,6 +491,8 @@ func (ds *dockerService) PodSandboxStatus(ctx context.Context, req *runtimeapi.P
 }
 
 // ListPodSandbox returns a list of Sandbox.
+// 从docker api中根据过滤选项（如果有的话）过滤出Label["io.kubernetes.docker.type"]="podsandbox"的容器
+// 同时从/var/lib/dockershim/sandbox/{container id}下获得容器的name和namespace
 func (ds *dockerService) ListPodSandbox(_ context.Context, r *runtimeapi.ListPodSandboxRequest) (*runtimeapi.ListPodSandboxResponse, error) {
 	filter := r.GetFilter()
 

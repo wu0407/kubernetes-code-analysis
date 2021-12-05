@@ -598,6 +598,7 @@ func (self *RealFsInfo) GetDirFsDevice(dir string) (*DeviceInfo, error) {
 	return nil, fmt.Errorf("could not find device with major: %d, minor: %d in cached partitions map", major, minor)
 }
 
+// 遍历目录下所有子目录，读取每个文件和文件夹的stat信息获得磁盘空间和inode使用，统计总的磁盘空间和inode使用（类型du命令的算法）
 func GetDirUsage(dir string) (UsageInfo, error) {
 	var usage UsageInfo
 
@@ -620,6 +621,7 @@ func GetDirUsage(dir string) (UsageInfo, error) {
 	// dedupedInode stores inodes that could be duplicates (nlink > 1)
 	dedupedInodes := make(map[uint64]struct{})
 
+	// 类似执行du命令来获取目录的使用量，inode和空间使用量
 	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if os.IsNotExist(err) {
 			// expected if files appear/vanish
@@ -639,10 +641,12 @@ func GetDirUsage(dir string) (UsageInfo, error) {
 			return fmt.Errorf("unsupported fileinfo; could not convert to stat_t")
 		}
 
+		// 链接到其他设备上，直接忽略
 		if s.Dev != rootDevId {
 			// don't descend into directories on other devices
 			return filepath.SkipDir
 		}
+		// 链接数大于1，说明有软链或硬链
 		if s.Nlink > 1 {
 			if _, ok := dedupedInodes[s.Ino]; !ok {
 				// Dedupe things that could be hardlinks
@@ -661,9 +665,13 @@ func GetDirUsage(dir string) (UsageInfo, error) {
 	return usage, nil
 }
 
+// 成功获得令牌后，执行遍历目录下所有子目录，统计总的磁盘空间和inode使用（类型du命令的算法）
 func (self *RealFsInfo) GetDirUsage(dir string) (UsageInfo, error) {
+	// 从pool chan（令牌桶）中获取一个token，最大并发20
 	claimToken()
+	// 将token换回pool chan（令牌桶）
 	defer releaseToken()
+	// 遍历目录下所有子目录，读取每个文件和文件夹的stat信息获得磁盘空间和inode使用，统计总的磁盘空间和inode使用（类型du命令的算法）
 	return GetDirUsage(dir)
 }
 

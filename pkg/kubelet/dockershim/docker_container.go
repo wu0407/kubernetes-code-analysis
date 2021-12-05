@@ -34,6 +34,8 @@ import (
 )
 
 // ListContainers lists all containers matching the filter.
+// 从docker api中获取提供的过滤条件（如果有的话）和过滤条件Label["io.kubernetes.docker.type"]=="container"的container
+// 并从label为"io.kubernetes.sandbox.id"的值，获得sandbox id，容器名中解析出pod中container name名字（不是运行时容器名字）和attempt
 func (ds *dockerService) ListContainers(_ context.Context, r *runtimeapi.ListContainersRequest) (*runtimeapi.ListContainersResponse, error) {
 	filter := r.GetFilter()
 	opts := dockertypes.ContainerListOptions{All: true}
@@ -71,6 +73,9 @@ func (ds *dockerService) ListContainers(_ context.Context, r *runtimeapi.ListCon
 	for i := range containers {
 		c := containers[i]
 
+		// 转成runtimeapi格式，包含id、sandboxid、metadata（pod中container name名字和容器重启次数）、image、state、CreatedAt、Labels、Annotations
+		// 根据label为"io.kubernetes.sandbox.id"的值，获得sandbox id
+		// 从容器名中解析出pod中container name名字（不是运行时容器名字）和attempt
 		converted, err := toRuntimeAPIContainer(&c)
 		if err != nil {
 			klog.V(4).Infof("Unable to convert docker to runtime API container: %v", err)

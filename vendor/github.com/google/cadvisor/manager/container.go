@@ -548,11 +548,12 @@ func (c *containerData) housekeepingTick(timer <-chan time.Time, longHousekeepin
 	case <-timer:
 	}
 	start := c.clock.Now()
+	// 如果c.handler为rawContainerHandler或dockerContainerHandler
 	// 获取container的cpu、memory、hugetlb、pids、blkio、网卡发送接收、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制、文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）状态
 	// 添加container状态数据到InMemoryCache中
 	// 更新cpu load数据
 	// 更新聚合数据summaryReader，生成分钟、小时、天的聚合数据
-	// 更新自定义metric
+	// 更新自定义metric 
 	err := c.updateStats()
 	if err != nil {
 		if c.allowErrorLogging() {
@@ -612,12 +613,16 @@ func (c *containerData) updateLoad(newLoad uint64) {
 	}
 }
 
+// 如果是rawContainerHandler或dockerContainerHandler
 // 获取container的cpu、memory、hugetlb、pids、blkio、网卡发送接收、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制、文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）状态
 // 添加container状态数据到InMemoryCache中
 // 更新cpu load数据
 // 更新聚合数据summaryReader，生成分钟、小时、天的聚合数据
 // 更新自定义metric
 func (c *containerData) updateStats() error {
+	// rawContainerHandler和dockerContainerHandler的self.libcontainerHandler.GetStats一样
+	// rawContainerHandler的self.getFsStats是通过statfs系统调用获取
+	// dockerContainerHandler的self.getFsStats是通过遍历所有目录下的文件，执行stat系统调用获取的，类似du命令来获取文件夹的使用情况
 	// 获取container的cpu、memory、hugetlb、pids、blkio、网卡发送接收、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制、文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）
 	stats, statsErr := c.handler.GetStats()
 	if statsErr != nil {

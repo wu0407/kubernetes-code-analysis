@@ -97,7 +97,9 @@ const (
 type dockerFactory struct {
 	machineInfoFactory info.MachineInfoFactory
 
+	// docker 存储driver，比如overlay2
 	storageDriver storageDriver
+	// docker存储路径， 比如/var/lib/docker
 	storageDir    string
 
 	client *docker.Client
@@ -132,6 +134,7 @@ func (self *dockerFactory) NewContainerHandler(name string, inHostNamespace bool
 
 	metadataEnvs := strings.Split(*dockerEnvWhitelist, ",")
 
+	
 	handler, err = newDockerContainerHandler(
 		client,
 		name,
@@ -175,15 +178,18 @@ func isContainerName(name string) bool {
 // Docker handles all containers under /docker
 func (self *dockerFactory) CanHandleAndAccept(name string) (bool, bool, error) {
 	// if the container is not associated with docker, we can't handle it or accept it.
+	// 比如"/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod67f16d2d_cd05_40d9_835a_697757c84fb5.slice/docker-b1cba17e39430e188c5df7e489afd2e660f56b9a398f1506e86e95f60c5d817d.scope" 就会匹配到
 	if !isContainerName(name) {
 		return false, false, nil
 	}
 
 	// Check if the container is known to docker and it is active.
+	// 从路径中获取container id
 	id := ContainerNameToDockerId(name)
 
 	// We assume that if Inspect fails then the container is not known to docker.
 	ctnr, err := self.client.ContainerInspect(context.Background(), id)
+	// 查询docker api报错（比如container 不存在--"Error: No such container"）或container不在运行状态，返回can handle为false，accept为true，
 	if err != nil || !ctnr.State.Running {
 		return false, true, fmt.Errorf("error inspecting container: %v", err)
 	}

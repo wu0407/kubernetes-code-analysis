@@ -144,6 +144,7 @@ func toRuntimeAPISandboxState(state string) runtimeapi.PodSandboxState {
 }
 
 func containerToRuntimeAPISandbox(c *dockertypes.Container) (*runtimeapi.PodSandbox, error) {
+	// c.Status转为runtimeapi的状态
 	state := toRuntimeAPISandboxState(c.Status)
 	if len(c.Names) == 0 {
 		return nil, fmt.Errorf("unexpected empty sandbox name: %+v", c)
@@ -153,7 +154,7 @@ func containerToRuntimeAPISandbox(c *dockertypes.Container) (*runtimeapi.PodSand
 	if err != nil {
 		return nil, err
 	}
-	// 从容器的Labels中解析出cri的labels和annotations，过滤掉内置的Labels
+	// 从容器的Labels中解析出cri的labels和annotations，过滤掉内置的Labels（过滤掉有label为"io.kubernetes.container.name"且"io.kubernetes.docker.type"为"podsandbox"）
 	labels, annotations := extractLabels(c.Labels)
 	// The timestamp in dockertypes.Container is in seconds.
 	createdAt := c.Created * int64(time.Second)

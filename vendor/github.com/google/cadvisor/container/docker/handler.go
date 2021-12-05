@@ -99,6 +99,8 @@ type dockerContainerHandler struct {
 
 var _ container.ContainerHandler = &dockerContainerHandler{}
 
+// 读取/var/lib/docker/image/overlay2/layerdb/mounts/{container id}/mount-id获得读写层目录的id
+// 容器的文件系统挂载的基本目录为/data/kubernetes/docker/overlay2/{RwLayerID}，这个目录下面有"diff"、"merged"、"work"文件夹
 func getRwLayerID(containerID, storageDir string, sd storageDriver, dockerVersion []int) (string, error) {
 	const (
 		// Docker version >=1.10.0 have a randomized ID for the root fs of a container.
@@ -109,6 +111,7 @@ func getRwLayerID(containerID, storageDir string, sd storageDriver, dockerVersio
 		return containerID, nil
 	}
 
+	// 读取/var/lib/docker/image/overlay2/layerdb/mounts/{container id}/mount-id
 	bytes, err := ioutil.ReadFile(path.Join(storageDir, "image", string(sd), "layerdb", "mounts", containerID, rwLayerIDFile))
 	if err != nil {
 		return "", fmt.Errorf("failed to identify the read-write layer ID for container %q. - %v", containerID, err)
@@ -134,6 +137,9 @@ func newDockerContainerHandler(
 	zfsWatcher *zfs.ZfsWatcher,
 ) (container.ContainerHandler, error) {
 	// Create the cgroup paths.
+	// 所有mountPoints的路径后面都添加name
+	// 比如 name是kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod67f16d2d_cd05_40d9_835a_697757c84fb5.slice/docker-b1cba17e39430e188c5df7e489afd2e660f56b9a398f1506e86e95f60c5d817d.scope
+	// 那么输出路径是/sys/fs/cgroup/cpu/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod67f16d2d_cd05_40d9_835a_697757c84fb5.slice/docker-b1cba17e39430e188c5df7e489afd2e660f56b9a398f1506e86e95f60c5d817d.scope
 	cgroupPaths := common.MakeCgroupPaths(cgroupSubsystems.MountPoints, name)
 
 	// Generate the equivalent cgroup manager for this container.
@@ -150,12 +156,16 @@ func newDockerContainerHandler(
 		storageDir = path.Join(rootFs, storageDir)
 	}
 
+	// 从路径中获取container id
 	id := ContainerNameToDockerId(name)
 
 	// Add the Containers dir where the log files are stored.
 	// FIXME: Give `otherStorageDir` a more descriptive name.
+	// 比如/var/lib/docker/containers
 	otherStorageDir := path.Join(storageDir, pathToContainersDir, id)
 
+	// 读取/var/lib/docker/image/overlay2/layerdb/mounts/{container id}/mount-id获得读写层目录的id
+	// 容器的文件系统挂载的基本目录为/data/kubernetes/docker/overlay2/{RwLayerID}，这个目录下面有"diff"、"merged"、"work"文件夹
 	rwLayerID, err := getRwLayerID(id, storageDir, storageDriver, dockerVersion)
 	if err != nil {
 		return nil, err
@@ -174,6 +184,7 @@ func newDockerContainerHandler(
 	case overlayStorageDriver:
 		rootfsStorageDir = path.Join(storageDir, string(storageDriver), rwLayerID, overlayRWLayer)
 	case overlay2StorageDriver:
+		// /var/lib/docker/overlay2/{rwLayerID}/diff
 		rootfsStorageDir = path.Join(storageDir, string(storageDriver), rwLayerID, overlay2RWLayer)
 	case zfsStorageDriver:
 		status, err := Status()
@@ -215,7 +226,9 @@ func newDockerContainerHandler(
 	handler.reference = info.ContainerReference{
 		Id:        id,
 		Name:      name,
+		// 容器名去除前面的"/"
 		Aliases:   []string{strings.TrimPrefix(ctnr.Name, "/"), id},
+		// DockerNamespace为常量"docker"
 		Namespace: DockerNamespace,
 	}
 	handler.image = ctnr.Config.Image
@@ -230,8 +243,10 @@ func newDockerContainerHandler(
 	// This happens in cases such as kubernetes where the containers doesn't have an IP address itself and we need to use the pod's address
 	ipAddress := ctnr.NetworkSettings.IPAddress
 	networkMode := string(ctnr.HostConfig.NetworkMode)
+	// 网络模式是挂载到其他容器网络，则ipAddress为挂载容器的ip
 	if ipAddress == "" && strings.HasPrefix(networkMode, "container:") {
 		containerId := strings.TrimPrefix(networkMode, "container:")
+		// 获取挂载容器的信息
 		c, err := client.ContainerInspect(context.Background(), containerId)
 		if err != nil {
 			return nil, fmt.Errorf("failed to inspect container %q: %v", id, err)
@@ -246,6 +261,7 @@ func newDockerContainerHandler(
 			fsHandler:       common.NewFsHandler(common.DefaultPeriod, rootfsStorageDir, otherStorageDir, fsInfo),
 			thinPoolWatcher: thinPoolWatcher,
 			zfsWatcher:      zfsWatcher,
+			// GraphDriver为"overlay2"", deviceID这里为空
 			deviceID:        ctnr.GraphDriver.Data["DeviceId"],
 			zfsFilesystem:   zfsFilesystem,
 		}
@@ -284,6 +300,8 @@ type dockerFsHandler struct {
 
 var _ common.FsHandler = &dockerFsHandler{}
 
+// 启动goroutine，周期性的更新h.fsHandler.usage
+// 以dockerContainerHandler为例，其中h.fsHandler.usage.InodeUsage为docker存储的目录的inode数量，h.fsHandler.usage.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量。h.fsHandler.usage.BaseUsageBytes为docker存储的目录使用量
 func (h *dockerFsHandler) Start() {
 	h.fsHandler.Start()
 }
@@ -325,6 +343,8 @@ func (h *dockerFsHandler) Usage() common.FsUsage {
 	return usage
 }
 
+// 启动goroutine，周期性的更新h.fsHandler.usage
+// 以dockerContainerHandler为例，其中self.fsHandler.fsHandler.usage.InodeUsage为docker存储的目录的inode数量，self.fsHandler.fsHandler.usage.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量。self.fsHandler.fsHandler.usage.BaseUsageBytes为docker存储的目录使用量
 func (self *dockerContainerHandler) Start() {
 	if self.fsHandler != nil {
 		self.fsHandler.Start()
@@ -341,8 +361,10 @@ func (self *dockerContainerHandler) ContainerReference() (info.ContainerReferenc
 	return self.reference, nil
 }
 
+// 容器attach其他网络则为false，否则为true
 func (self *dockerContainerHandler) needNet() bool {
 	if self.includedMetrics.Has(container.NetworkUsageMetrics) {
+		// 这个容器的网络不是attach其他容器网络，则needNet为true
 		return !self.networkMode.IsContainer()
 	}
 	return false
@@ -360,16 +382,22 @@ func (self *dockerContainerHandler) GetSpec() (info.ContainerSpec, error) {
 	return spec, err
 }
 
+// 设置stats.Filesystem，stats.Filesystem.BaseUsage为docker存储的目录使用量，stats.Filesystem.Usage为docker存储的目录和容器的读写层的存储使用量
+// stats.Filesystem.Inodes为docker存储的目录的inode数量
 func (self *dockerContainerHandler) getFsStats(stats *info.ContainerStats) error {
 	mi, err := self.machineInfoFactory.GetMachineInfo()
 	if err != nil {
 		return err
 	}
 
+	// kubelet有diskIO（DiskIOMetrics）这个监控指标
 	if self.includedMetrics.Has(container.DiskIOMetrics) {
+		// 补全stats.DiskIo里磁盘io读写状态项的设备名
+		// 根据主设备和次设备号从MachineInfo中查找设备名，设置stats.DiskIo.IoMerged、stats.DiskIo.IoQueued、stats.DiskIo.IoServiceBytes、stats.DiskIo.IoServiceTime、stats.DiskIo.IoServiced、stats.DiskIo.IoTime、stats.DiskIo.IoWaitTime、stats.DiskIo.Sectors的Device字段（设备名称）
 		common.AssignDeviceNamesToDiskStats((*common.MachineInfoNamer)(mi), &stats.DiskIo)
 	}
 
+	// kubelet有disk（DiskUsageMetrics）这个监控指标
 	if !self.includedMetrics.Has(container.DiskUsageMetrics) {
 		return nil
 	}
@@ -380,6 +408,7 @@ func (self *dockerContainerHandler) getFsStats(stats *info.ContainerStats) error
 		// set in the machine info filesystems.
 		device = self.poolName
 	case aufsStorageDriver, overlayStorageDriver, overlay2StorageDriver:
+		// 获得docker的存储目录所在块设备，返回这个块设备的路径、主设备号和次设备号
 		deviceInfo, err := self.fsInfo.GetDirFsDevice(self.rootfsStorageDir)
 		if err != nil {
 			return fmt.Errorf("unable to determine device info for dir: %v: %v", self.rootfsStorageDir, err)
@@ -397,6 +426,8 @@ func (self *dockerContainerHandler) getFsStats(stats *info.ContainerStats) error
 	)
 
 	// Docker does not impose any filesystem limits for containers. So use capacity as limit.
+	// docker容器的info.FsStats（Filesystem文件系统状态）的Limit为docker存储目录的所在的块设备大小，Type（文件系统类型）为docker存储目录的所在的块设备文件系统类型
+	// Device为docker存储目录的所在的块设备的设备名
 	for _, fs := range mi.Filesystems {
 		if fs.Device == device {
 			limit = fs.Capacity
@@ -406,9 +437,13 @@ func (self *dockerContainerHandler) getFsStats(stats *info.ContainerStats) error
 	}
 
 	fsStat := info.FsStats{Device: device, Type: fsType, Limit: limit}
+	// 返回容器的文件系统使用量
 	usage := self.fsHandler.Usage()
+	// usage.BaseUsageBytes为docker存储的目录使用量
 	fsStat.BaseUsage = usage.BaseUsageBytes
+	// usage.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量
 	fsStat.Usage = usage.TotalUsageBytes
+	// usage.InodeUsage为docker存储的目录的inode数量
 	fsStat.Inodes = usage.InodeUsage
 
 	stats.Filesystem = append(stats.Filesystem, fsStat)
@@ -418,6 +453,8 @@ func (self *dockerContainerHandler) getFsStats(stats *info.ContainerStats) error
 
 // TODO(vmarmol): Get from libcontainer API instead of cgroup manager when we don't have to support older Dockers.
 func (self *dockerContainerHandler) GetStats() (*info.ContainerStats, error) {
+	// 获取cgoup下的cpu、内存、网卡、磁盘io的使用状态
+	// 获取cpu、memory、hugetlb、pids、blkio、网卡发送接收、所有进程的数量、所有进程总的FD数量、FD中的总socket数量、Threads数量、Threads限制
 	stats, err := self.libcontainerHandler.GetStats()
 	if err != nil {
 		return stats, err
@@ -431,6 +468,10 @@ func (self *dockerContainerHandler) GetStats() (*info.ContainerStats, error) {
 	}
 
 	// Get filesystem stats.
+	// 文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）和补全stats.DiskIo里磁盘io读写状态项的设备名
+	// 通过遍历所有目录下的文件，执行stat系统调用获取的，类似du命令来获取文件夹的使用情况
+	// 设置stats.Filesystem，stats.Filesystem.BaseUsage为docker存储的目录使用量，stats.Filesystem.Usage为docker存储的目录和容器的读写层的存储使用量
+	// stats.Filesystem.Inodes为docker存储的目录的inode数量
 	err = self.getFsStats(stats)
 	if err != nil {
 		return stats, err

@@ -82,6 +82,7 @@ func makeLabels(labels, annotations map[string]string) map[string]string {
 
 // extractLabels converts raw docker labels to the CRI labels and annotations.
 // It also filters out internal labels used by this shim.
+// 过滤掉有label为"io.kubernetes.container.name"且"io.kubernetes.docker.type"为"podsandbox"
 func extractLabels(input map[string]string) (map[string]string, map[string]string) {
 	labels := make(map[string]string)
 	annotations := make(map[string]string)

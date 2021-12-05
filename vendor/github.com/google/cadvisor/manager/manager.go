@@ -973,7 +973,7 @@ func (m *manager) createContainerLocked(containerName string, watchSource watche
 	// 默认logCadvisorUsage为false
 	logUsage := *logCadvisorUsage && containerName == m.cadvisorContainer
 	// m.maxHousekeepingInterval为15s，m.allowDynamicHousekeeping为true
-	// containerData包含container的信息（cgroup信息）和获取container信息的一些配置（如何获取这些信息）
+	// containerData包含container的信息（cgroup信息）和获取container信息的一些配置（如何获取这些信息方法）
 	cont, err := newContainerData(containerName, m.memoryCache, handler, logUsage, collectorManager, m.maxHousekeepingInterval, m.allowDynamicHousekeeping, clock.RealClock{})
 	if err != nil {
 		return err
@@ -992,6 +992,7 @@ func (m *manager) createContainerLocked(containerName string, watchSource watche
 
 	// Add collectors
 	// 如果是rawContainerHandler，则labels为空，collectorConfigs也为空
+	// 如果是dockerContainerHandler，labels为docker的Labels，collectorConfigs为空，因为k8s的pod的container的Lables的key不会有"io.cadvisor.metric."前缀
 	labels := handler.GetContainerLabels()
 	collectorConfigs := collector.GetCollectorConfigs(labels)
 	// 调用cont.collectorManager.RegisterCollector(newCollector)，注册collectorConfigs中定义的collector

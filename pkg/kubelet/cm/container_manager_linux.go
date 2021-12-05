@@ -767,7 +767,7 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 	// 启动一个goroutine，每5分钟执行cm.periodicTasks里的task
 	// 即执行上面的cm.setupNode里设置cm.periodicTasks
 	// 当运行时为docker，设置cm.RuntimeCgroupsName为docker的cgroup路径
-	//     当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
+	// 当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
 	if len(cm.periodicTasks) > 0 {
 		go wait.Until(func() {
 			for _, task := range cm.periodicTasks {
@@ -879,12 +879,14 @@ func (cm *containerManagerImpl) SystemCgroupsLimit() v1.ResourceList {
 // 获得所有runtime里的container，返回ContainerMap（容器id与对应的容器name和pod的uid）
 func buildContainerMapFromRuntime(runtimeService internalapi.RuntimeService) (containermap.ContainerMap, error) {
 	podSandboxMap := make(map[string]string)
+	// 如果runtime是dockershim，过滤出Label["io.kubernetes.docker.type"]="podsandbox"的container，并从/var/lib/dockershim/sandbox获取这个容器的所属的pod namespace和pod name
 	podSandboxList, _ := runtimeService.ListPodSandbox(nil)
 	for _, p := range podSandboxList {
 		podSandboxMap[p.Id] = p.Metadata.Uid
 	}
 
 	containerMap := containermap.NewContainerMap()
+	// 如果runtime是dockershim，过滤出Label["io.kubernetes.docker.type"]=="container"的container
 	containerList, _ := runtimeService.ListContainers(nil)
 	for _, c := range containerList {
 		if _, exists := podSandboxMap[c.PodSandboxId]; !exists {
