@@ -100,8 +100,11 @@ func (d *dockerService) GetContainerLogs(_ context.Context, pod *v1.Pod, contain
 // GetContainerLogTail attempts to read up to MaxContainerTerminationMessageLogLength
 // from the end of the log when docker is configured with a log driver other than json-log.
 // It reads up to MaxContainerTerminationMessageLogLines lines.
+// 输出容器的最后80行且最大为2048字节日志
 func (d *dockerService) GetContainerLogTail(uid kubetypes.UID, name, namespace string, containerId kubecontainer.ContainerID) (string, error) {
+	// 最大80行
 	value := int64(kubecontainer.MaxContainerTerminationMessageLogLines)
+	// 最大2048字节，环形buffer
 	buf, _ := circbuf.NewBuffer(kubecontainer.MaxContainerTerminationMessageLogLength)
 	// Although this is not a full spec pod, dockerLegacyService.GetContainerLogs() currently completely ignores its pod param
 	pod := &v1.Pod{

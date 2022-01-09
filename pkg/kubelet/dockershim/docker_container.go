@@ -318,6 +318,7 @@ func (ds *dockerService) RemoveContainer(_ context.Context, r *runtimeapi.Remove
 	return &runtimeapi.RemoveContainerResponse{}, nil
 }
 
+// 返回创建时间和启动时间和完成时间
 func getContainerTimestamps(r *dockertypes.ContainerJSON) (time.Time, time.Time, time.Time, error) {
 	var createdAt, startedAt, finishedAt time.Time
 	var err error
@@ -338,6 +339,7 @@ func getContainerTimestamps(r *dockertypes.ContainerJSON) (time.Time, time.Time,
 }
 
 // ContainerStatus inspects the docker container and returns the status.
+// 返回container的状态（id、运行状态、创建时间、启动时间、完成时间、挂载、退出码、退出Reason、Message、Labels、annotations、log路径）
 func (ds *dockerService) ContainerStatus(_ context.Context, req *runtimeapi.ContainerStatusRequest) (*runtimeapi.ContainerStatusResponse, error) {
 	containerID := req.ContainerId
 	r, err := ds.client.InspectContainer(containerID)
@@ -346,6 +348,7 @@ func (ds *dockerService) ContainerStatus(_ context.Context, req *runtimeapi.Cont
 	}
 
 	// Parse the timestamps.
+	// 返回创建时间和启动时间和完成时间
 	createdAt, startedAt, finishedAt, err := getContainerTimestamps(r)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse timestamp for container %q: %v", containerID, err)
@@ -359,6 +362,8 @@ func (ds *dockerService) ContainerStatus(_ context.Context, req *runtimeapi.Cont
 		}
 		klog.Warningf("ignore error image %q not found while inspecting docker container %q: %v", r.Image, containerID, err)
 	}
+	// 如果image有RepoDigests，则返回"docker-pullable://"+ image的第一个digest
+	// 否则返回 "docker://"+镜像id
 	imageID := toPullableImageID(r.Image, ir)
 
 	// Convert the mounts.
@@ -415,6 +420,7 @@ func (ds *dockerService) ContainerStatus(_ context.Context, req *runtimeapi.Cont
 	ct, st, ft := createdAt.UnixNano(), startedAt.UnixNano(), finishedAt.UnixNano()
 	exitCode := int32(r.State.ExitCode)
 
+	// 从docker的容器名中，解析出container在pod中的名字和重启次数
 	metadata, err := parseContainerName(r.Name)
 	if err != nil {
 		return nil, err

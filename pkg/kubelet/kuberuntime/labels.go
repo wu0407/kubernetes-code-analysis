@@ -174,6 +174,7 @@ func getPodSandboxInfoFromAnnotations(annotations map[string]string) *annotatedP
 }
 
 // getContainerInfoFromLabels gets labeledContainerInfo from labels.
+// 获取pod name、pod namespace、podUID、pod里面的container name
 func getContainerInfoFromLabels(labels map[string]string) *labeledContainerInfo {
 	return &labeledContainerInfo{
 		PodName:       getStringValueFromLabel(labels, types.KubernetesPodNameLabel),
@@ -184,6 +185,7 @@ func getContainerInfoFromLabels(labels map[string]string) *labeledContainerInfo 
 }
 
 // getContainerInfoFromAnnotations gets annotatedContainerInfo from annotations.
+// 获取TerminationMessagePolicy、TerminationMessagePath、hash、RestartCount、PodDeletionGracePeriod、PodTerminationGracePeriod、preStopHandler、containerPorts
 func getContainerInfoFromAnnotations(annotations map[string]string) *annotatedContainerInfo {
 	var err error
 	containerInfo := &annotatedContainerInfo{

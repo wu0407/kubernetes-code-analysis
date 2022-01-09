@@ -57,6 +57,7 @@ func (args *Args) AsEnv() []string {
 	env := os.Environ()
 	pluginArgsStr := args.PluginArgsStr
 	if pluginArgsStr == "" {
+		// 转成"key=value;key=value"
 		pluginArgsStr = stringify(args.PluginArgs)
 	}
 

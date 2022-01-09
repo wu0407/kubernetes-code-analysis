@@ -63,6 +63,8 @@ type closeable interface {
 	Close() error
 }
 
+// 只进行bind()端口，不进行listen()。这个是为了避免其他进程监听这个端口成功，但是没有流量，由于iptables会劫持流量，而应用程序无感知。
+// 如果有其他进程监听这个端口，它会监听失败。
 func openLocalPort(hp *hostport) (closeable, error) {
 	// For ports on node IPs, open the actual port and hold it, even though we
 	// use iptables to redirect traffic.

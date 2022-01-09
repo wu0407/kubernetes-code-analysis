@@ -191,11 +191,13 @@ func (hm *hostportManager) Add(id string, podPortMapping *PodPortMapping, natInt
 	return nil
 }
 
+// 清理相应的portmap对应的iptables规则和chain，关闭bind()端口
 func (hm *hostportManager) Remove(id string, podPortMapping *PodPortMapping) (err error) {
 	if podPortMapping == nil || podPortMapping.HostNetwork {
 		return nil
 	}
 
+	// 过滤出HostPort大于0的PortMapping
 	hostportMappings := gatherHostportMappings(podPortMapping)
 	if len(hostportMappings) <= 0 {
 		return nil
@@ -207,6 +209,7 @@ func (hm *hostportManager) Remove(id string, podPortMapping *PodPortMapping) (er
 
 	var existingChains map[utiliptables.Chain]string
 	var existingRules []string
+	// 返回有关hostport相关的iptables chains和rule规则（包含"KUBE-HP-"前缀的chain和"KUBE-HOSTPORTS"的chains，包含"-A KUBE-HP-"前缀的chain和"-A KUBE-HOSTPORTS"的规则）
 	existingChains, existingRules, err = getExistingHostportIPTablesRules(hm.iptables)
 	if err != nil {
 		return err
@@ -215,13 +218,16 @@ func (hm *hostportManager) Remove(id string, podPortMapping *PodPortMapping) (er
 	// Gather target hostport chains for removal
 	chainsToRemove := []utiliptables.Chain{}
 	for _, pm := range hostportMappings {
+		// 根据id和PortMapping，计算出chain名字（先计算id+pm.HostPort+pm.Protocol字符串的sha256的值，然后对这个值进行base32编码，然后取前16位做为"KUBE-HP-"后缀）
 		chainsToRemove = append(chainsToRemove, getHostportChain(id, pm))
 	}
 
 	// remove rules that consists of target chains
+	// 过滤出实际要保留的rule
 	remainingRules := filterRules(existingRules, chainsToRemove)
 
 	// gather target hostport chains that exists in iptables-save result
+	// 要移除的chain chainsToRemove是否在实际的chain列表existingChains中。如果存在，则加入到existingChainsToRemove
 	existingChainsToRemove := []utiliptables.Chain{}
 	for _, chain := range chainsToRemove {
 		if _, ok := existingChains[chain]; ok {
@@ -243,11 +249,13 @@ func (hm *hostportManager) Remove(id string, podPortMapping *PodPortMapping) (er
 	}
 	writeLine(natRules, "COMMIT")
 
+	// 执行iptables-restore
 	if err = hm.syncIPTables(append(natChains.Bytes(), natRules.Bytes()...)); err != nil {
 		return err
 	}
 
 	// clean up opened pod host ports
+	// 关闭只进行bind()调用的端口
 	return hm.closeHostports(hostportMappings)
 }
 
@@ -321,6 +329,7 @@ func (hm *hostportManager) closeHostports(hostportMappings []*PortMapping) error
 // they are the harder they are to read.
 // WARNING: Please do not change this function. Otherwise, HostportManager may not be able to
 // identify existing iptables chains.
+// 根据id和PortMapping，计算出chain名字（先计算id+pm.HostPort+pm.Protocol字符串的sha256的值，然后对这个值进行base32编码，然后取前16位做为"KUBE-HP-"后缀）
 func getHostportChain(id string, pm *PortMapping) utiliptables.Chain {
 	hash := sha256.Sum256([]byte(id + strconv.Itoa(int(pm.HostPort)) + string(pm.Protocol)))
 	encoded := base32.StdEncoding.EncodeToString(hash[:])
@@ -328,6 +337,7 @@ func getHostportChain(id string, pm *PortMapping) utiliptables.Chain {
 }
 
 // gatherHostportMappings returns all the PortMappings which has hostport for a pod
+// 过滤出HostPort大于0的PortMapping
 func gatherHostportMappings(podPortMapping *PodPortMapping) []*PortMapping {
 	mappings := []*PortMapping{}
 	for _, pm := range podPortMapping.PortMappings {
@@ -341,6 +351,7 @@ func gatherHostportMappings(podPortMapping *PodPortMapping) []*PortMapping {
 
 // getExistingHostportIPTablesRules retrieves raw data from iptables-save, parse it,
 // return all the hostport related chains and rules
+// 返回有关hostport相关的iptables chains和rule规则（包含"KUBE-HP-"前缀的chain和"KUBE-HOSTPORTS"的chains，包含"-A KUBE-HP-"前缀的chain和"-A KUBE-HOSTPORTS"的规则）
 func getExistingHostportIPTablesRules(iptables utiliptables.Interface) (map[utiliptables.Chain]string, []string, error) {
 	iptablesData := bytes.NewBuffer(nil)
 	err := iptables.SaveInto(utiliptables.TableNAT, iptablesData)
@@ -369,6 +380,7 @@ func getExistingHostportIPTablesRules(iptables utiliptables.Interface) (map[util
 
 // filterRules filters input rules with input chains. Rules that did not involve any filter chain will be returned.
 // The order of the input rules is important and is preserved.
+// 返回rules中去除filters之后剩下的集合
 func filterRules(rules []string, filters []utiliptables.Chain) []string {
 	filtered := []string{}
 	for _, rule := range rules {

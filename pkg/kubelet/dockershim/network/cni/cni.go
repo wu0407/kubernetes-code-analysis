@@ -202,7 +202,7 @@ func getDefaultCNINetwork(confDir string, binDirs []string) (*cniNetwork, error)
 
 		// Before using this CNI config, we have to validate it to make sure that
 		// all plugins of this config exist on disk
-		// 插件plugin二进制文件是否存在，版本是否支持配置文件里指定的cniversion版本，返回plugin插件里的所有的Capabiliti
+		// 插件plugin二进制文件是否存在，版本是否支持配置文件里指定的cniversion版本，返回plugin插件里的所有的Capability
 		caps, err := cniConfig.ValidateNetworkList(context.TODO(), confList)
 		if err != nil {
 			klog.Warningf("Error validating CNI config list %s: %v", string(confList.Bytes[:maxStringLengthInLog(len(confList.Bytes))]), err)
@@ -230,8 +230,15 @@ func (plugin *cniNetworkPlugin) Init(host network.Host, hairpinMode kubeletconfi
 		return err
 	}
 
+	// 这个host是
+	// netHost := &dockerNetworkHost{
+	// 	&namespaceGetter{ds},
+	// 	&portMappingGetter{ds},
+	// }
+	// 在pkg\kubelet\dockershim\docker_service.go中的NewDockerService传参
 	plugin.host = host
 
+	// 获得下第一个（按照名字排序）符合后缀的文件cni配置。并设置为plugin.defaultNetwork
 	plugin.syncNetworkConfig()
 
 	// start a goroutine to sync network config from confDir periodically to detect network config updates in every 5 seconds
@@ -263,6 +270,7 @@ func (plugin *cniNetworkPlugin) setDefaultNetwork(n *cniNetwork) {
 	plugin.defaultNetwork = n
 }
 
+// 检查cni插件是否初始化（是否执行了plugin.Init）和如果Capabilities包含"ipRanges"则插件的podCidr必须设置（kl.updatePodCIDR最终会调用执行plugin.Event来设置podCidr）
 func (plugin *cniNetworkPlugin) checkInitialized() error {
 	if plugin.getDefaultNetwork() == nil {
 		return fmt.Errorf("cni config uninitialized")
@@ -277,6 +285,8 @@ func (plugin *cniNetworkPlugin) checkInitialized() error {
 
 // Event handles any change events. The only event ever sent is the PodCIDR change.
 // No network plugins support changing an already-set PodCIDR
+// 在pkg\kubelet\kubelet.go中kl.fastStatusUpdateOnce和kl.tryUpdateNodeStatus会执行kl.updatePodCIDR(podCIDRs)
+// 最终在dockershim中调用ds.network.Event(network.NET_PLUGIN_EVENT_POD_CIDR_CHANGE, event)
 func (plugin *cniNetworkPlugin) Event(name string, details map[string]interface{}) {
 	if name != network.NET_PLUGIN_EVENT_POD_CIDR_CHANGE {
 		return
@@ -309,6 +319,7 @@ func (plugin *cniNetworkPlugin) Status() error {
 }
 
 func (plugin *cniNetworkPlugin) SetUpPod(namespace string, name string, id kubecontainer.ContainerID, annotations, options map[string]string) error {
+	// 检查cni插件是否初始化（是否执行了plugin.Init）和如果Capabilities包含"ipRanges"则插件的podCidr必须设置（kl.updatePodCIDR最终会调用执行plugin.Event来设置podCidr）
 	if err := plugin.checkInitialized(); err != nil {
 		return err
 	}
@@ -332,12 +343,16 @@ func (plugin *cniNetworkPlugin) SetUpPod(namespace string, name string, id kubec
 	return err
 }
 
+// 1. 执行loopback插件，执行"DEL"操作来释放（实际是lo网卡）网卡（这里plugin.buildCNIRuntimeConf会固定设置rt.IfName为eth0）和删除相关cni插件执行result缓存文件（这里会删除eth0的缓存文件）
+// 2. 遍历执行plugin.defaultNetwork.NetworkConfig.Plugins插件，执行"DEL"操作来释放eth0网卡（可能还有其他网卡，看cni的具体实现）
 func (plugin *cniNetworkPlugin) TearDownPod(namespace string, name string, id kubecontainer.ContainerID) error {
+	// 检查cni插件是否初始化（是否执行了plugin.Init）和如果Capabilities包含"ipRanges"则插件的podCidr必须设置（kl.updatePodCIDR最终会调用执行plugin.Event来设置podCidr）
 	if err := plugin.checkInitialized(); err != nil {
 		return err
 	}
 
 	// Lack of namespace should not be fatal on teardown
+	// 返回/proc/{container pid}/ns/net
 	netnsPath, err := plugin.host.GetNetNS(id.ID)
 	if err != nil {
 		klog.Warningf("CNI failed to retrieve network namespace path: %v", err)
@@ -349,11 +364,16 @@ func (plugin *cniNetworkPlugin) TearDownPod(namespace string, name string, id ku
 	// Windows doesn't have loNetwork. It comes only with Linux
 	if plugin.loNetwork != nil {
 		// Loopback network deletion failure should not be fatal on teardown
+		// 执行loopback插件，执行"DEL"操作来释放（实际是lo网卡）网卡（这里plugin.buildCNIRuntimeConf会固定设置rt.IfName为eth0）和删除相关cni插件执行result缓存文件（这里会删除eth0的缓存文件）
+		// 如果cni插件（plugin.defaultNetwork）的配置cni version大于等于"0.4.0"，大于等于0.4.0会读取eth0的cache result文件做为cni配置中的prevResult字段作为cni插件标准输入，
+		// 在执行eth0网卡卸载时候（plugin.deleteFromNetwork(cniTimeoutCtx, plugin.getDefaultNetwork(), name, namespace, id, netnsPath, nil)）不会有问题
+		// 因为如果cache result文件不存在的时候会忽略
 		if err := plugin.deleteFromNetwork(cniTimeoutCtx, plugin.loNetwork, name, namespace, id, netnsPath, nil); err != nil {
 			klog.Warningf("CNI failed to delete loopback network: %v", err)
 		}
 	}
 
+	// 遍历执行plugin.defaultNetwork.NetworkConfig.Plugins插件，执行"DEL"操作来释放eth0网卡（可能还有其他网卡，看cni的具体实现）
 	return plugin.deleteFromNetwork(cniTimeoutCtx, plugin.getDefaultNetwork(), name, namespace, id, netnsPath, nil)
 }
 
@@ -380,16 +400,20 @@ func (plugin *cniNetworkPlugin) addToNetwork(ctx context.Context, network *cniNe
 	return res, nil
 }
 
+// 遍历所有netConf.Plugins插件，执行"DEL"操作来释放rt.IfName网卡（这里plugin.buildCNIRuntimeConf会固定设置为eth0）和删除相关cni插件执行result缓存文件
 func (plugin *cniNetworkPlugin) deleteFromNetwork(ctx context.Context, network *cniNetwork, podName string, podNamespace string, podSandboxID kubecontainer.ContainerID, podNetnsPath string, annotations map[string]string) error {
+	// 设置libcni.RuntimeConf，其中linux操作系统会设置CapabilityArgs为portMappings、bandwidth、ipRanges，windows操作系统为portMappings、bandwidth、ipRanges、dns
 	rt, err := plugin.buildCNIRuntimeConf(podName, podNamespace, podSandboxID, podNetnsPath, annotations, nil)
 	if err != nil {
 		klog.Errorf("Error deleting network when building cni runtime conf: %v", err)
 		return err
 	}
 
+	// 输出格式{namespace}_{name}_{container id}
 	pdesc := podDesc(podNamespace, podName, podSandboxID)
 	netConf, cniNet := network.NetworkConfig, network.CNIConfig
 	klog.V(4).Infof("Deleting %s from network %s/%s netns %q", pdesc, netConf.Plugins[0].Network.Type, netConf.Name, podNetnsPath)
+	// 遍历所有netConf.Plugins插件，执行"DEL"操作来释放rt.IfName网卡和删除相关cni插件执行result缓存文件
 	err = cniNet.DelNetworkList(ctx, netConf, rt)
 	// The pod may not get deleted successfully at the first time.
 	// Ignore "no such file or directory" error in case the network has already been deleted in previous attempts.

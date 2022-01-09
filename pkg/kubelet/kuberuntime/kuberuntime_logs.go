@@ -28,9 +28,11 @@ import (
 // ReadLogs read the container log and redirect into stdout and stderr.
 // Note that containerID is only needed when following the log, or else
 // just pass in empty string "".
+// 读取容器日志文件，发送到stdout或stderr
 func (m *kubeGenericRuntimeManager) ReadLogs(ctx context.Context, path, containerID string, apiOpts *v1.PodLogOptions, stdout, stderr io.Writer) error {
 	// Convert v1.PodLogOptions into internal log options.
 	opts := logs.NewLogOptions(apiOpts, time.Now())
 
+	// 读取容器的日志文件，获取容器日志。当opts.follow为true时候，会从runtime获取container状态，判断container是否运行。
 	return logs.ReadLogs(ctx, path, containerID, opts, m.runtimeService, stdout, stderr)
 }

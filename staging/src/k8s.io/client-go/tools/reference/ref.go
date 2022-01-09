@@ -39,6 +39,7 @@ func GetReference(scheme *runtime.Scheme, obj runtime.Object) (*v1.ObjectReferen
 	if obj == nil {
 		return nil, ErrNilObject
 	}
+	// obj是v1.ObjectReference直接返回
 	if ref, ok := obj.(*v1.ObjectReference); ok {
 		// Don't make a reference to a reference.
 		return ref, nil
@@ -48,6 +49,8 @@ func GetReference(scheme *runtime.Scheme, obj runtime.Object) (*v1.ObjectReferen
 	var listMeta metav1.Common
 	objectMeta, err := meta.Accessor(obj)
 	if err != nil {
+		// meta.CommonAccessor是meta.Accessor和meta.ListAccessor的合集
+		// 所以这里判断是否是listMeta，其实可以使用meta.ListAccessor
 		listMeta, err = meta.CommonAccessor(obj)
 		if err != nil {
 			return nil, err
@@ -99,7 +102,9 @@ func GetReference(scheme *runtime.Scheme, obj runtime.Object) (*v1.ObjectReferen
 }
 
 // GetPartialReference is exactly like GetReference, but allows you to set the FieldPath.
+// 获取v1.ObjectReference 并添加FieldPath字段
 func GetPartialReference(scheme *runtime.Scheme, obj runtime.Object, fieldPath string) (*v1.ObjectReference, error) {
+	// 获取对象的v1.ObjectReference
 	ref, err := GetReference(scheme, obj)
 	if err != nil {
 		return nil, err

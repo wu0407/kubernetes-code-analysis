@@ -70,6 +70,7 @@ var (
 // is prone to causing a lot of distinct events that do not count well.
 // it replaces any reference to a containerID with the containerName which is stable, and is what users know.
 func (m *kubeGenericRuntimeManager) recordContainerEvent(pod *v1.Pod, container *v1.Container, containerID, eventType, reason, message string, args ...interface{}) {
+	// 获取v1.ObjectReference 并添加FieldPath字段
 	ref, err := kubecontainer.GenerateContainerRef(pod, container)
 	if err != nil {
 		klog.Errorf("Can't make a ref to pod %q, container %v: %v", format.Pod(pod), container.Name, err)
@@ -412,11 +413,13 @@ func getTerminationMessage(status *runtimeapi.ContainerStatus, terminationMessag
 	}
 	// Volume Mounts fail on Windows if it is not of the form C:/
 	terminationMessagePath = volumeutil.MakeAbsolutePath(goruntime.GOOS, terminationMessagePath)
+	// 找到容器里terminationMessagePath的挂载路径
 	for _, mount := range status.Mounts {
 		if mount.ContainerPath != terminationMessagePath {
 			continue
 		}
 		path := mount.HostPath
+		// 最大读取4096字节，从文件尾部开始计算（相对于结尾的长度）
 		data, _, err := tail.ReadAtMost(path, kubecontainer.MaxContainerTerminationMessageLength)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -431,9 +434,13 @@ func getTerminationMessage(status *runtimeapi.ContainerStatus, terminationMessag
 
 // readLastStringFromContainerLogs attempts to read up to the max log length from the end of the CRI log represented
 // by path. It reads up to max log lines.
+// 从path中读取日志的最后80行且输出最大2048字节
 func (m *kubeGenericRuntimeManager) readLastStringFromContainerLogs(path string) string {
+	// 最大80行
 	value := int64(kubecontainer.MaxContainerTerminationMessageLogLines)
+	// 最多2048字节环形buffer
 	buf, _ := circbuf.NewBuffer(kubecontainer.MaxContainerTerminationMessageLogLength)
+	// 读取容器日志文件的最后80行，发送到buf中
 	if err := m.ReadLogs(context.Background(), path, "", &v1.PodLogOptions{TailLines: &value}, buf, buf); err != nil {
 		return fmt.Sprintf("Error on reading termination message from logs: %v", err)
 	}
@@ -441,8 +448,11 @@ func (m *kubeGenericRuntimeManager) readLastStringFromContainerLogs(path string)
 }
 
 // getPodContainerStatuses gets all containers' statuses for the pod.
+// 获取pod里所有container的状态（id、运行状态、创建时间、启动时间、完成时间、挂载、退出码、退出Reason、Message、Labels、annotations、log路径）
 func (m *kubeGenericRuntimeManager) getPodContainerStatuses(uid kubetypes.UID, name, namespace string) ([]*kubecontainer.ContainerStatus, error) {
 	// Select all containers of the given pod.
+	// runtime是dockershim
+	// 根据过滤条件Label["io.kubernetes.docker.type"]=="container"的container和Label["io.kubernetes.pod.uid"]=={uid}获得所有容器
 	containers, err := m.runtimeService.ListContainers(&runtimeapi.ContainerFilter{
 		LabelSelector: map[string]string{types.KubernetesPodUIDLabel: string(uid)},
 	})
@@ -454,6 +464,7 @@ func (m *kubeGenericRuntimeManager) getPodContainerStatuses(uid kubetypes.UID, n
 	statuses := make([]*kubecontainer.ContainerStatus, len(containers))
 	// TODO: optimization: set maximum number of containers per container name to examine.
 	for i, c := range containers {
+		// 如果runtime为dockershim，返回container的状态（id、运行状态、创建时间、启动时间、完成时间、挂载、退出码、退出Reason、Message、Labels、annotations、log路径）
 		status, err := m.runtimeService.ContainerStatus(c.Id)
 		if err != nil {
 			// Merely log this here; GetPodStatus will actually report the error out.
@@ -463,23 +474,31 @@ func (m *kubeGenericRuntimeManager) getPodContainerStatuses(uid kubetypes.UID, n
 		cStatus := toKubeContainerStatus(status, m.runtimeName)
 		if status.State == runtimeapi.ContainerState_CONTAINER_EXITED {
 			// Populate the termination message if needed.
+			// 获取TerminationMessagePolicy、TerminationMessagePath、hash、RestartCount、PodDeletionGracePeriod、PodTerminationGracePeriod、preStopHandler、containerPorts
 			annotatedInfo := getContainerInfoFromAnnotations(status.Annotations)
 			// If a container cannot even be started, it certainly does not have logs, so no need to fallbackToLogs.
 			fallbackToLogs := annotatedInfo.TerminationMessagePolicy == v1.TerminationMessageFallbackToLogsOnError &&
 				cStatus.ExitCode != 0 && cStatus.Reason != "ContainerCannotRun"
+			// 从TerminationMessagePath文件中读取内容，最大读取4096字节，从文件尾部开始计算（相对于结尾的长度）
 			tMessage, checkLogs := getTerminationMessage(status, annotatedInfo.TerminationMessagePath, fallbackToLogs)
+			// TerminationMessagePath文件中没有内容且fallbackToLogs为true，则需要读取容器日志
 			if checkLogs {
 				// if dockerLegacyService is populated, we're supposed to use it to fetch logs
+				// 只有runtime是dockershim，当docker日志格式不是"json-file"，则m.legacyLogProvider为dockershim.DockerService
+				// m.legacyLogProvider不为nil，则使用dockershim（docker logs）获取容器日志
 				if m.legacyLogProvider != nil {
+					// 输出容器的最后80行且最大为2048字节日志
 					tMessage, err = m.legacyLogProvider.GetContainerLogTail(uid, name, namespace, kubecontainer.ContainerID{Type: m.runtimeName, ID: c.Id})
 					if err != nil {
 						tMessage = fmt.Sprintf("Error reading termination message from logs: %v", err)
 					}
 				} else {
+					// 否则读取容器日志文件的最后80行且输出最大2048字节
 					tMessage = m.readLastStringFromContainerLogs(status.GetLogPath())
 				}
 			}
 			// Enrich the termination message written by the application is not empty
+			// termination日志不为空，则添加到containerstatus里message中
 			if len(tMessage) != 0 {
 				if len(cStatus.Message) != 0 {
 					cStatus.Message += ": "
@@ -490,10 +509,12 @@ func (m *kubeGenericRuntimeManager) getPodContainerStatuses(uid kubetypes.UID, n
 		statuses[i] = cStatus
 	}
 
+	// 根据container创建时间，从早到晚进行排序
 	sort.Sort(containerStatusByCreated(statuses))
 	return statuses, nil
 }
 
+// runtimeapi格式的ContainerStatus转成kubecontainer格式的ContainerStatus
 func toKubeContainerStatus(status *runtimeapi.ContainerStatus, runtimeName string) *kubecontainer.ContainerStatus {
 	annotatedInfo := getContainerInfoFromAnnotations(status.Annotations)
 	labeledInfo := getContainerInfoFromLabels(status.Labels)
@@ -526,6 +547,7 @@ func toKubeContainerStatus(status *runtimeapi.ContainerStatus, runtimeName strin
 }
 
 // executePreStopHook runs the pre-stop lifecycle hooks if applicable and returns the duration it takes.
+// 启动一个gorutine执行lifecycle prestop，在gracePeriod周期内等待prestop执行完成
 func (m *kubeGenericRuntimeManager) executePreStopHook(pod *v1.Pod, containerID kubecontainer.ContainerID, containerSpec *v1.Container, gracePeriod int64) int64 {
 	klog.V(3).Infof("Running preStop hook for container %q", containerID.String())
 
@@ -534,6 +556,9 @@ func (m *kubeGenericRuntimeManager) executePreStopHook(pod *v1.Pod, containerID 
 	go func() {
 		defer close(done)
 		defer utilruntime.HandleCrash()
+
+		// 如果是执行命令，则在容器中exec（同步调用），没有超时时间
+		// 或者执行http请求，默认使用http.Client{}，也是没有超时时间
 		if msg, err := m.runner.Run(containerID, pod, containerSpec, containerSpec.Lifecycle.PreStop); err != nil {
 			klog.Errorf("preStop hook for container %q failed: %v", containerSpec.Name, err)
 			m.recordContainerEvent(pod, containerSpec, containerID.ID, v1.EventTypeWarning, events.FailedPreStopHook, msg)
@@ -558,15 +583,19 @@ func (m *kubeGenericRuntimeManager) executePreStopHook(pod *v1.Pod, containerID 
 // TODO(random-liu): Add a node e2e test to test this behaviour.
 // TODO(random-liu): Change the lifecycle handler to just accept information needed, so that we can
 // just pass the needed function not create the fake object.
+// 从容器信息里的labels，提取出有关pod字段和pod里的container字段
 func (m *kubeGenericRuntimeManager) restoreSpecsFromContainerLabels(containerID kubecontainer.ContainerID) (*v1.Pod, *v1.Container, error) {
 	var pod *v1.Pod
 	var container *v1.Container
+	// 获取这个container的所有信息，如果runtime是dockershim话，执行的是dockerClient.InspectContainer
 	s, err := m.runtimeService.ContainerStatus(containerID.ID)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// 获取pod name、pod namespace、podUID、pod里面的container name
 	l := getContainerInfoFromLabels(s.Labels)
+	// 获取TerminationMessagePolicy、TerminationMessagePath、hash、RestartCount、PodDeletionGracePeriod、PodTerminationGracePeriod、preStopHandler、containerPorts
 	a := getContainerInfoFromAnnotations(s.Annotations)
 	// Notice that the followings are not full spec. The container killing code should not use
 	// un-restored fields.
@@ -597,15 +626,22 @@ func (m *kubeGenericRuntimeManager) restoreSpecsFromContainerLabels(containerID 
 // killContainer kills a container through the following steps:
 // * Run the pre-stop lifecycle hooks (if applicable).
 // * Stop the container.
+// 从kl.Podkiller()调用这个，则gracePeriodOverride为nil
+// 停止container
+// 1. 执行prestophook
+// 2. 调用runtime停止container
+// 3. 删除掉m.containerRefManager里containerIDToRef里有关这个container id的记录
 func (m *kubeGenericRuntimeManager) killContainer(pod *v1.Pod, containerID kubecontainer.ContainerID, containerName string, message string, gracePeriodOverride *int64) error {
 	var containerSpec *v1.Container
 	if pod != nil {
+		// 从pod的spec中获取container信息
 		if containerSpec = kubecontainer.GetContainerSpec(pod, containerName); containerSpec == nil {
 			return fmt.Errorf("failed to get containerSpec %q(id=%q) in pod %q when killing container for reason %q",
 				containerName, containerID.String(), format.Pod(pod), message)
 		}
 	} else {
 		// Restore necessary information if one of the specs is nil.
+		// 当pod被删除了，但是kubelet重启了，pod的container还在，则从容器信息里的labels，提取出有关pod字段和pod里的container字段
 		restoredPod, restoredContainer, err := m.restoreSpecsFromContainerLabels(containerID)
 		if err != nil {
 			return err
@@ -614,6 +650,7 @@ func (m *kubeGenericRuntimeManager) killContainer(pod *v1.Pod, containerID kubec
 	}
 
 	// From this point, pod and container must be non-nil.
+	// 默认为2s，pod有DeletionGracePeriodSeconds则使用这个值，否则使用pod.Spec.TerminationGracePeriodSeconds
 	gracePeriod := int64(minimumGracePeriodInSeconds)
 	switch {
 	case pod.DeletionGracePeriodSeconds != nil:
@@ -628,18 +665,22 @@ func (m *kubeGenericRuntimeManager) killContainer(pod *v1.Pod, containerID kubec
 	m.recordContainerEvent(pod, containerSpec, containerID.ID, v1.EventTypeNormal, events.KillingContainer, message)
 
 	// Run internal pre-stop lifecycle hook
+	// 默认不做任何事情
 	if err := m.internalLifecycle.PreStopContainer(containerID.ID); err != nil {
 		return err
 	}
 
 	// Run the pre-stop lifecycle hooks if applicable and if there is enough time to run it
 	if containerSpec.Lifecycle != nil && containerSpec.Lifecycle.PreStop != nil && gracePeriod > 0 {
+		// 启动一个goroutine执行lifecycle prestop，在gracePeriod周期内等待prestop执行完成
 		gracePeriod = gracePeriod - m.executePreStopHook(pod, containerID, containerSpec, gracePeriod)
 	}
 	// always give containers a minimal shutdown window to avoid unnecessary SIGKILLs
+	// 剩下的gracePeriod时间小于2s，则gracePeriod设为2s，避免不必要的SIGKILL
 	if gracePeriod < minimumGracePeriodInSeconds {
 		gracePeriod = minimumGracePeriodInSeconds
 	}
+	// 从kl.Podkiller()调用这个，则gracePeriodOverride为nil
 	if gracePeriodOverride != nil {
 		gracePeriod = *gracePeriodOverride
 		klog.V(3).Infof("Killing container %q, but using %d second grace period override", containerID, gracePeriod)
@@ -647,6 +688,7 @@ func (m *kubeGenericRuntimeManager) killContainer(pod *v1.Pod, containerID kubec
 
 	klog.V(2).Infof("Killing container %q with %d second grace period", containerID.String(), gracePeriod)
 
+	// gracePeriod为调用超时时间（在runtimeService里，默认为2分钟+gracePeriod），如果runtime为dockershim，这个gracePeriod超时时间会传给docker作为docker stop的graceful时间
 	err := m.runtimeService.StopContainer(containerID.ID, gracePeriod)
 	if err != nil {
 		klog.Errorf("Container %q termination failed with gracePeriod %d: %v", containerID.String(), gracePeriod, err)
@@ -654,12 +696,15 @@ func (m *kubeGenericRuntimeManager) killContainer(pod *v1.Pod, containerID kubec
 		klog.V(3).Infof("Container %q exited normally", containerID.String())
 	}
 
+	// 删除掉containerRefManager里containerIDToRef（有关这个container id的ObjectReference）
 	m.containerRefManager.ClearRef(containerID)
 
 	return err
 }
 
 // killContainersWithSyncResult kills all pod's containers with sync results.
+// 从kl.Podkiller()调用这个，则gracePeriodOverride为nil
+// 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container），返回所有killContainer结果
 func (m *kubeGenericRuntimeManager) killContainersWithSyncResult(pod *v1.Pod, runningPod kubecontainer.Pod, gracePeriodOverride *int64) (syncResults []*kubecontainer.SyncResult) {
 	containerResults := make(chan *kubecontainer.SyncResult, len(runningPod.Containers))
 	wg := sync.WaitGroup{}
@@ -670,7 +715,12 @@ func (m *kubeGenericRuntimeManager) killContainersWithSyncResult(pod *v1.Pod, ru
 			defer utilruntime.HandleCrash()
 			defer wg.Done()
 
+			// 创建一个"KillContainer"的SyncResult，用于报告killContainer的结果。
 			killContainerResult := kubecontainer.NewSyncResult(kubecontainer.KillContainer, container.Name)
+			// 停止container
+			// 1. 执行prestophook
+			// 2. 调用runtime停止container
+			// 3. 删除掉m.containerRefManager里containerIDToRef里有关这个container id的记录
 			if err := m.killContainer(pod, container.ID, container.Name, "", gracePeriodOverride); err != nil {
 				killContainerResult.Fail(kubecontainer.ErrKillContainer, err.Error())
 			}
@@ -851,6 +901,9 @@ func (m *kubeGenericRuntimeManager) GetAttach(id kubecontainer.ContainerID, stdi
 }
 
 // RunInContainer synchronously executes the command in the container, and returns the output.
+// 调用runtime（同步调用）执行cmd，设置执行的timeout，并将stderr append到stdout（也就是说命令输出没有保证顺序）
+// 当timeout为0时候，执行m.runtimeService.ExecSync没有超时时间。
+// 对于dockershim来说（服务端来说），timeout这个参数会传给dockershim，但是dockershim没有使用。
 func (m *kubeGenericRuntimeManager) RunInContainer(id kubecontainer.ContainerID, cmd []string, timeout time.Duration) ([]byte, error) {
 	stdout, stderr, err := m.runtimeService.ExecSync(id.ID, cmd, timeout)
 	// NOTE(tallclair): This does not correctly interleave stdout & stderr, but should be sufficient

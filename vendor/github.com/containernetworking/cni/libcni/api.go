@@ -99,8 +99,8 @@ func NewCNIConfig(path []string, exec invoke.Exec) *CNIConfig {
 	}
 }
 
-// 让cniVersion和name覆盖orig.CNIVersion和orig.name，preResult为orig.RawPrevResult，orig.Bytes里添加prevResult
-// 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capabiliti的配置（在rt.CapabilityArgs中）到orig.Bytes里
+// 让cniVersion和name覆盖orig.CNIVersion和orig.name，prevResult赋值给orig.RawPrevResult，orig.Bytes里添加prevResult
+// 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capability的配置（在rt.CapabilityArgs中）到orig.Bytes里
 func buildOneConfig(name, cniVersion string, orig *NetworkConfig, prevResult types.Result, rt *RuntimeConf) (*NetworkConfig, error) {
 	var err error
 
@@ -114,7 +114,7 @@ func buildOneConfig(name, cniVersion string, orig *NetworkConfig, prevResult typ
 	}
 
 	// Ensure every config uses the same name and version
-	// inject里的字段覆盖orig里的相应字段
+	// inject里的字段覆盖orig.Bytes里的相应字段
 	orig, err = InjectConf(orig, inject)
 	if err != nil {
 		return nil, err
@@ -135,7 +135,8 @@ func buildOneConfig(name, cniVersion string, orig *NetworkConfig, prevResult typ
 // capabilities include "portMappings", and the CapabilityArgs map includes a
 // "portMappings" key, that key and its value are added to the "runtimeConfig"
 // dictionary to be passed to the plugin's stdin.
-// 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capabiliti的配置（在rt.CapabilityArgs中）到orig.Bytes里
+// 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capability的配置（在rt.CapabilityArgs中）到orig.Bytes里
+// 比如{"runtimeConfig":{"ipRanges":[[{"subnet":"10.248.0.0/25"}]],"portMappings":[]}}
 func injectRuntimeConfig(orig *NetworkConfig, rt *RuntimeConf) (*NetworkConfig, error) {
 	var err error
 
@@ -170,6 +171,7 @@ func (c *CNIConfig) ensureExec() invoke.Exec {
 	return c.exec
 }
 
+// 返回{cacheDir}/results/{netName}/{container id}/{rt.ifName}，比如/var/lib/cni/cache/results/kubenet-loopback-761f2c6dc1503077db58e85e19873758aae73d2fae4b920f9fe24674c1db920a-lo
 func getResultCacheFilePath(netName string, rt *RuntimeConf) string {
 	cacheDir := rt.CacheDir
 	if cacheDir == "" {
@@ -193,12 +195,16 @@ func setCachedResult(result types.Result, netName string, rt *RuntimeConf) error
 	return ioutil.WriteFile(fname, data, 0600)
 }
 
+// 删除{cacheDir}/results/{netName}/{container id}/{ifName}文件，容器相关的cache result结果缓存文件
 func delCachedResult(netName string, rt *RuntimeConf) error {
+	// 返回{cacheDir}/results/{netName}/{container id}/{ifName}，比如/var/lib/cni/cache/results/kubenet-loopback-761f2c6dc1503077db58e85e19873758aae73d2fae4b920f9fe24674c1db920a-lo
 	fname := getResultCacheFilePath(netName, rt)
 	return os.Remove(fname)
 }
 
+// 从cni的缓存目录中获取cniVersion版本的result，如果文件不存在，则忽略这个错误，返回Result为nil，err为nil
 func getCachedResult(netName, cniVersion string, rt *RuntimeConf) (types.Result, error) {
+	// 返回{cacheDir}/results/{netName}/{container id}/{rt.ifName}，比如/var/lib/cni/cache/results/kubenet-loopback-761f2c6dc1503077db58e85e19873758aae73d2fae4b920f9fe24674c1db920a-lo
 	fname := getResultCacheFilePath(netName, rt)
 	data, err := ioutil.ReadFile(fname)
 	if err != nil {
@@ -207,6 +213,7 @@ func getCachedResult(netName, cniVersion string, rt *RuntimeConf) (types.Result,
 	}
 
 	// Read the version of the cached result
+	// 使用json.Unmarshal解析出cniVersion字段的值，如果没有这个字段或为空，则返回"0.1.0"
 	decoder := version.ConfigDecoder{}
 	resultCniVersion, err := decoder.Decode(data)
 	if err != nil {
@@ -214,6 +221,7 @@ func getCachedResult(netName, cniVersion string, rt *RuntimeConf) (types.Result,
 	}
 
 	// Ensure we can understand the result
+	// 根据resultCniVersion使用相应版本NewResult来解析data
 	result, err := version.NewResult(resultCniVersion, data)
 	if err != nil {
 		return nil, err
@@ -223,6 +231,7 @@ func getCachedResult(netName, cniVersion string, rt *RuntimeConf) (types.Result,
 	// in the same version as the config.  The cached result version
 	// should match the config version unless the config was changed
 	// while the container was running.
+	// 转换为需要cniVersion版本的result
 	result, err = result.GetAsVersion(cniVersion)
 	if err != nil && resultCniVersion != cniVersion {
 		return nil, fmt.Errorf("failed to convert cached result version %q to config version %q: %v", resultCniVersion, cniVersion, err)
@@ -253,7 +262,7 @@ func (c *CNIConfig) addNetwork(ctx context.Context, name, cniVersion string, net
 	}
 
 	// 生成新的*NetworkConfig
-	// 让cniVersion和name覆盖net.CNIVersion和net.name，prevResult为net.Bytes里的PrevResult和net.RawPrevResult, 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capabiliti的配置（在rt.CapabilityArgs中）到net.Bytes里
+	// 让cniVersion和name覆盖net.CNIVersion和net.name，prevResult为net.Bytes里的PrevResult和net.RawPrevResult, 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capability的配置（在rt.CapabilityArgs中）到net.Bytes里
 	newConf, err := buildOneConfig(name, cniVersion, net, prevResult, rt)
 	if err != nil {
 		return nil, err
@@ -264,11 +273,11 @@ func (c *CNIConfig) addNetwork(ctx context.Context, name, cniVersion string, net
 	// echo '{"cniVersion": "0.2.0","name": "cni-loopback","type": "loopback"}' |  \
 	// CNI_COMMAND="ADD" \
 	// CNI_CONTAINERID="{container id}" \
-	// CNI_NETNS="/proc/pid/ns/net" \
+	// CNI_NETNS="/proc/{container pid}/ns/net" \
 	// CNI_ARGS="IgnoreUnknown=1;K8S_POD_NAMESPACE={NAMESPACE};K8S_POD_NAME={POD NAME};K8S_POD_INFRA_CONTAINER_ID={container id}" \
-	// CNI_IFNAME="eth0" \
+	// CNI_IFNAME="eth0" \  这个不是"lo"，这个在pkg\kubelet\dockershim\network\cni\cni.go里的buildCNIRuntimeConf写死了
 	// CNI_PATH="/opt/cni/bin" \
-	// /opt/cni/bin/loopback 
+	// /opt/cni/bin/loopback
 	// 返回
 	// {
 	// "cniVersion": "0.2.0",
@@ -276,6 +285,50 @@ func (c *CNIConfig) addNetwork(ctx context.Context, name, cniVersion string, net
 	//     "ip": "127.0.0.1/8"
 	//        },
 	//  "dns": {}
+	// }
+
+	// kubenet-loopback
+	// 执行
+	// echo {"cniVersion": "0.1.0", "name": "kubenet-loopback", "type": "loopback"} | \
+	// CNI_COMMAND="ADD" \
+	// CNI_CONTAINERID="{container id}" \
+	// CNI_NETNS="/proc/{container pid}/ns/net" \
+	// CNI_ARGS="" \
+	// CNI_IFNAME="lo" \
+	// CNI_PATH="/opt/cni/bin" \
+	// /opt/cni/bin/loopback
+	// 返回
+	// {
+	// 	"cniVersion": "0.2.0",
+	// 	"ip4": {
+	// 		"ip": "127.0.0.1/8"
+	// 	},
+	// 	"dns": {}
+	// }
+
+	// kubenet
+	// 执行
+	// echo '{"cniVersion": "0.1.0", "name": "kubenet", "type": "bridge","bridge": "cbr0","mtu": 1500,"addIf": "eth0","isGateway": true,"ipMasq": false,"hairpinMode": true,"ipam": {"type": "host-local","ranges": [[{"subnet": "10.253.0.128/25"}]],"routes": [{"dst": "0.0.0.0/0"}]}}' | \
+	// CNI_COMMAND="ADD" \
+	// CNI_CONTAINERID="{container id}" \
+	// CNI_NETNS="/proc/{container pid}/ns/net" \
+	// CNI_ARGS="" \
+	// CNI_IFNAME="lo" \
+	// CNI_PATH="/opt/cni/bin" \
+	// /usr/local/bin/bridge
+	// 返回
+	// {
+	// 	"cniVersion": "0.2.0",
+	// 	"ip4": {
+	// 		"ip": "10.253.0.220/25",
+	// 		"gateway": "10.253.0.129",
+	// 		"routes": [
+	// 			{
+	// 				"dst": "0.0.0.0/0"
+	// 			}
+	// 		]
+	// 	},
+	// 	"dns": {}
 	// }
 
 	// 执行相应的插件，如果插件返回的cniVersion是支持的版本，则将插件执行输出（json格式）转成types.Result
@@ -347,41 +400,74 @@ func (c *CNIConfig) CheckNetworkList(ctx context.Context, list *NetworkConfigLis
 	return nil
 }
 
+// 标准输入为NetConf网络配置和设置相应环境变量来执行网络插件的"DEL"操作来释放ip
 func (c *CNIConfig) delNetwork(ctx context.Context, name, cniVersion string, net *NetworkConfig, prevResult types.Result, rt *RuntimeConf) error {
 	c.ensureExec()
+	// 返回插件文件名为net.Network.Type的二进制文件位置
 	pluginPath, err := c.exec.FindInPath(net.Network.Type, c.Path)
 	if err != nil {
 		return err
 	}
 
+	// 让cniVersion和name覆盖net.CNIVersion和net.name，prevResult赋值为net.RawPrevResult，net.Bytes里添加prevResult
+	// 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capabiliti的配置（在rt.CapabilityArgs中）到orig.Bytes里
 	newConf, err := buildOneConfig(name, cniVersion, net, prevResult, rt)
 	if err != nil {
 		return err
 	}
 
+	// 比如kubenet-loopback执行
+	// echo {"cniVersion": "0.1.0", "name": "kubenet-loopback", "type": "loopback"} | \
+	// CNI_COMMAND="DEL" \
+	// CNI_CONTAINERID="{container id}" \
+	// CNI_NETNS="/proc/{container pid}/ns/net" \
+	// CNI_ARGS="" \
+	// CNI_IFNAME="lo" \
+	// CNI_PATH="/opt/cni/bin" \
+	// /opt/cni/bin/loopback
+	// 没有任何输出
+
+	// kubenet
+	// 执行
+	// echo '{"cniVersion": "0.1.0", "name": "kubenet", "type": "bridge","bridge": "cbr0","mtu": 1500,"addIf": "eth0","isGateway": true,"ipMasq": false,"hairpinMode": true,"ipam": {"type": "host-local","ranges": [[{"subnet": "10.253.0.128/25"}]],"routes": [{"dst": "0.0.0.0/0"}]}}' | \
+	// CNI_COMMAND="ADD" \
+	// CNI_CONTAINERID="{container id}" \
+	// CNI_NETNS="/proc/{container pid}/ns/net" \
+	// CNI_ARGS="" \
+	// CNI_IFNAME="lo" \
+	// CNI_PATH="/opt/cni/bin" \
+	// /usr/local/bin/bridge
+	// 没有任何输出
+
+	// 执行命令忽略命令执行stderr输出
 	return invoke.ExecPluginWithoutResult(ctx, pluginPath, newConf.Bytes, c.args("DEL", rt), c.exec)
 }
 
 // DelNetworkList executes a sequence of plugins with the DEL command
+// 遍历所有list.Plugins插件，执行"DEL"操作来释放rt.IfName网卡和删除相关cni插件执行result缓存文件
 func (c *CNIConfig) DelNetworkList(ctx context.Context, list *NetworkConfigList, rt *RuntimeConf) error {
 	var cachedResult types.Result
 
 	// Cached result on DEL was added in CNI spec version 0.4.0 and higher
+	// 如果cni版本大于等于0.4.0，则从cni的缓存目录中获取cniVersion版本的result
 	if gtet, err := version.GreaterThanOrEqualTo(list.CNIVersion, "0.4.0"); err != nil {
 		return err
 	} else if gtet {
+		// 从cni的缓存目录中获取cniVersion版本的result，如果文件不存在，则忽略这个错误，cachedResult为nil，err为nil
 		cachedResult, err = getCachedResult(list.Name, list.CNIVersion, rt)
 		if err != nil {
 			return fmt.Errorf("failed to get network %q cached result: %v", list.Name, err)
 		}
 	}
 
+	// 遍历所有插件，标准输入为网络配置和设置相应环境变量来执行网络插件的"DEL"操作来释放网卡
 	for i := len(list.Plugins) - 1; i >= 0; i-- {
 		net := list.Plugins[i]
 		if err := c.delNetwork(ctx, list.Name, list.CNIVersion, net, cachedResult, rt); err != nil {
 			return err
 		}
 	}
+	// 删除{cacheDir}/results/{netName}/{container id}/{ifName}文件，容器相关的cache result结果缓存文件
 	_ = delCachedResult(list.Name, rt)
 
 	return nil
@@ -425,15 +511,19 @@ func (c *CNIConfig) DelNetwork(ctx context.Context, net *NetworkConfig, rt *Runt
 	if gtet, err := version.GreaterThanOrEqualTo(net.Network.CNIVersion, "0.4.0"); err != nil {
 		return err
 	} else if gtet {
+		// 如果cni版本大于等于0.4.0，则从cni的缓存目录中获取cniVersion版本的result
 		cachedResult, err = getCachedResult(net.Network.Name, net.Network.CNIVersion, rt)
 		if err != nil {
 			return fmt.Errorf("failed to get network %q cached result: %v", net.Network.Name, err)
 		}
 	}
 
+	// kubenet插件（kubenet-loopback和kubenet）的cni版本都是0.1.0，所以这里的cachedResult为nil
+	// 标准输入为网络配置和设置相应环境变量来执行网络插件的"DEL"操作来释放ip
 	if err := c.delNetwork(ctx, net.Network.Name, net.Network.CNIVersion, net, cachedResult, rt); err != nil {
 		return err
 	}
+	// 删除{cacheDir}/results/{netName}/{container id}/{ifName}文件，容器相关的cache result结果缓存文件
 	_ = delCachedResult(net.Network.Name, rt)
 	return nil
 }

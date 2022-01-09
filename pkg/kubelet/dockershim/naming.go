@@ -95,6 +95,7 @@ func parseUint32(s string) (uint32, error) {
 }
 
 // TODO: Evaluate whether we should rely on labels completely.
+// 从docker容器名中解析出pod的name、namespace、uid、attempt（重启次数）
 func parseSandboxName(name string) (*runtimeapi.PodSandboxMetadata, error) {
 	// Docker adds a "/" prefix to names. so trim it.
 	name = strings.TrimPrefix(name, "/")
@@ -123,6 +124,7 @@ func parseSandboxName(name string) (*runtimeapi.PodSandboxMetadata, error) {
 }
 
 // TODO: Evaluate whether we should rely on labels completely.
+// 从docker的容器名中，解析出container在pod中的名字和重启次数
 func parseContainerName(name string) (*runtimeapi.ContainerMetadata, error) {
 	// Docker adds a "/" prefix to names. so trim it.
 	name = strings.TrimPrefix(name, "/")

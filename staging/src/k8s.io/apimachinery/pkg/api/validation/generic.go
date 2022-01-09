@@ -68,7 +68,11 @@ var ValidateServiceAccountName = NameIsDNSSubdomain
 
 // maskTrailingDash replaces the final character of a string with a subdomain safe
 // value if is a dash.
+// 如果后缀包含"-"，则替换"-"前面一个字符和"-"为"a"
+// 否则直接输出原字符串
 func maskTrailingDash(name string) string {
+	// 如果后缀包含"-"，则替换"-"前面一个字符和"-"为"a"
+	// 比如"sunday-"，输出为"sundaa"
 	if strings.HasSuffix(name, "-") {
 		return name[:len(name)-2] + "a"
 	}

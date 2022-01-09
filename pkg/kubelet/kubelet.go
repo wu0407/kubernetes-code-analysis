@@ -391,6 +391,7 @@ func PreInitRuntimeService(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		}
 
 		// Create dockerLegacyService when the logging driver is not supported.
+		// docker日志格式为"json-file"，返回true, nil
 		// 非json-file格式的日志创建dockerLegacyService
 		supported, err := ds.IsCRISupportedLogDriver()
 		if err != nil {
@@ -871,6 +872,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		return nil, err
 	}
 	klet.pluginManager = pluginmanager.NewPluginManager(
+		// 默认目录为/var/lib/kubelet/plugins_registry
 		klet.getPluginsRegistrationDir(), /* sockDir */
 		kubeDeps.Recorder,
 	)
@@ -1509,6 +1511,7 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 
 	// container log manager must start after container runtime is up to retrieve information from container runtime
 	// and inform container to reopen log file after log rotation.
+	// runtime是dockershim不做任何事情
 	kl.containerLogManager.Start()
 	// Adding Registration Callback function for CSI Driver
 	kl.pluginManager.AddHandler(pluginwatcherapi.CSIPlugin, plugincache.PluginHandler(csi.PluginHandler))
@@ -1573,6 +1576,10 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 
 	// Start a goroutine responsible for killing pods (that are not properly
 	// handled by pod workers).
+	// 从kl.podKillingCh取出一条pod删除消息，判断是否重复消息。非重复消息，则启动一个goroutine，执行kl.killPod
+	// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container）
+	// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container
+	// 3. 更新Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup目录属性值
 	go wait.Until(kl.podKiller, 1*time.Second, wait.NeverStop)
 
 	// Start component sync loops.
@@ -2303,7 +2310,7 @@ func (kl *Kubelet) LatestLoopEntryTime() time.Time {
 // the runtime dependent modules when the container runtime first comes up,
 // and returns an error if the status check fails.  If the status check is OK,
 // update the container runtime uptime in the kubelet runtimeState.
-//去访问docker获取cni的配置正确和docker是否存活等状态
+// 去访问docker获取cni的配置正确和docker是否存活等状态，启动依赖的模块（cadvisor、containerManager、evictionManager、containerLogManager、pluginManager）
 func (kl *Kubelet) updateRuntimeUp() {
 	kl.updateRuntimeMux.Lock()
 	defer kl.updateRuntimeMux.Unlock()

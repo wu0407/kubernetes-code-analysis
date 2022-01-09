@@ -817,20 +817,33 @@ func containerResourceRuntimeValue(fs *v1.ResourceFieldSelector, pod *v1.Pod, co
 
 // One of the following arguments must be non-nil: runningPod, status.
 // TODO: Modify containerRuntime.KillPod() to accept the right arguments.
+// 从kl.Podkiller()调用这个，则gracePeriodOverride为nil
+// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container）
+// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container
+// 3. 更新Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup目录属性值
 func (kl *Kubelet) killPod(pod *v1.Pod, runningPod *kubecontainer.Pod, status *kubecontainer.PodStatus, gracePeriodOverride *int64) error {
 	var p kubecontainer.Pod
 	if runningPod != nil {
 		p = *runningPod
 	} else if status != nil {
+		// 一般kl.getRuntime().Type()是"docker"
+		// 返回pod正在运行的container和sandbox
 		p = kubecontainer.ConvertPodStatusToRunningPod(kl.getRuntime().Type(), status)
 	} else {
 		return fmt.Errorf("one of the two arguments must be non-nil: runningPod, status")
 	}
 
 	// Call the container runtime KillPod method which stops all running containers of the pod
+	// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container），返回所有killContainer结果
+	// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container，添加执行结果到result
 	if err := kl.containerRuntime.KillPod(pod, p, gracePeriodOverride); err != nil {
 		return err
 	}
+	// 根据所有active pod来统计Burstable和BestEffort的cgroup属性
+	// 更新Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup目录属性值
+	// cpu group设置cpu share值
+	// hugepage设置 hugepage.limit_in_bytes为int64最大值
+	// memory设置memory.limit_in_bytes
 	if err := kl.containerManager.UpdateQOSCgroups(); err != nil {
 		klog.V(2).Infof("Failed to update QoS cgroups while killing pod: %v", err)
 	}
@@ -1108,6 +1121,10 @@ func (kl *Kubelet) HandlePodCleanups() error {
 
 // podKiller launches a goroutine to kill a pod received from the channel if
 // another goroutine isn't already in action.
+// 从kl.podKillingCh取出一条pod删除消息，判断是否重复消息。非重复消息，则启动一个goroutine，执行kl.killPod
+// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container）
+// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container
+// 3. 更新Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup目录属性值
 func (kl *Kubelet) podKiller() {
 	killing := sets.NewString()
 	// guard for the killing set
@@ -1119,13 +1136,19 @@ func (kl *Kubelet) podKiller() {
 		lock.Lock()
 		exists := killing.Has(string(runningPod.ID))
 		if !exists {
+			// 不在killing的set里，添加到killing里。有可能重复pod在kl.podKillingCh
 			killing.Insert(string(runningPod.ID))
 		}
 		lock.Unlock()
+		// 已经在killing里的pod，代表已经执行过killpod，则不做任何东西
 
 		if !exists {
+			// 启动一个goroutine来执行kl.killPod
 			go func(apiPod *v1.Pod, runningPod *kubecontainer.Pod) {
 				klog.V(2).Infof("Killing unwanted pod %q", runningPod.Name)
+				// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container）
+				// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container
+				// 3. 更新Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup目录属性值
 				err := kl.killPod(apiPod, runningPod, nil, nil)
 				if err != nil {
 					klog.Errorf("Failed killing the pod %q: %v", runningPod.Name, err)

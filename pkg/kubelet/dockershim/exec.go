@@ -58,6 +58,8 @@ func (d *dockerExitError) ExitStatus() int {
 // NativeExecHandler executes commands in Docker containers using Docker's exec API.
 type NativeExecHandler struct{}
 
+// 执行exec命令（同步调用），返回后，每2s检测exec是否退出，只等待8s检测exec是否退出。启动一个goroutine，在exec启动之后从resize chan中读取消息，执行ResizeExecTTY
+// timeout参数没有使用，即没有超时时间
 func (*NativeExecHandler) ExecInContainer(client libdocker.Interface, container *dockertypes.ContainerJSON, cmd []string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize, timeout time.Duration) error {
 	done := make(chan struct{})
 	defer close(done)

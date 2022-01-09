@@ -219,6 +219,8 @@ func (dc *DeploymentController) addReplicaSet(obj interface{}) {
 
 	// Otherwise, it's an orphan. Get a list of all matching Deployments and sync
 	// them to see if anyone wants to adopt it.
+	// 没有controllerRef，查找deployment来设置controllerRef
+	// 返回所有deployments，deployment的labelselect能够匹配这个replicaset
 	ds := dc.getDeploymentsForReplicaSet(rs)
 	if len(ds) == 0 {
 		return
@@ -265,15 +267,20 @@ func (dc *DeploymentController) updateReplicaSet(old, cur interface{}) {
 	curControllerRef := metav1.GetControllerOf(curRS)
 	oldControllerRef := metav1.GetControllerOf(oldRS)
 	controllerRefChanged := !reflect.DeepEqual(curControllerRef, oldControllerRef)
+	// ControllerRef发生了变化，且oldControllerRef不为空，则从oldControllerRef获取deployment，并压入队列
+	// 这里判断 ControllerRef发生了变化，是因为如果没有发生变化，后面会重复添加deployment到队列（curControllerRef等于oldControllerRef）
 	if controllerRefChanged && oldControllerRef != nil {
 		// The ControllerRef was changed. Sync the old controller, if any.
+		// 根据controller referenced，返回controller
 		if d := dc.resolveControllerRef(oldRS.Namespace, oldControllerRef); d != nil {
 			dc.enqueueDeployment(d)
 		}
 	}
 
 	// If it has a ControllerRef, that's all that matters.
+	// 现在ControllerRef不为空，则从当前的ControllerRef获取deployment，并从压入队列
 	if curControllerRef != nil {
+		// 根据controller referenced，返回controller
 		d := dc.resolveControllerRef(curRS.Namespace, curControllerRef)
 		if d == nil {
 			return
@@ -285,8 +292,10 @@ func (dc *DeploymentController) updateReplicaSet(old, cur interface{}) {
 
 	// Otherwise, it's an orphan. If anything changed, sync matching controllers
 	// to see if anyone wants to adopt it now.
+	// 现在没有ControllerRef，当label或controllerRef发生变化的时候（父资源只关心这两个变化），查找deployments，deployment的labelselect能够匹配这个replicaset，则把这些deployment压入队列
 	labelChanged := !reflect.DeepEqual(curRS.Labels, oldRS.Labels)
 	if labelChanged || controllerRefChanged {
+		// 返回所有deployments，deployment的labelselect能够匹配这个replicaset
 		ds := dc.getDeploymentsForReplicaSet(curRS)
 		if len(ds) == 0 {
 			return
@@ -437,6 +446,7 @@ func (dc *DeploymentController) getDeploymentForPod(pod *v1.Pod) *apps.Deploymen
 // resolveControllerRef returns the controller referenced by a ControllerRef,
 // or nil if the ControllerRef could not be resolved to a matching controller
 // of the correct Kind.
+// 根据controller referenced，返回controller
 func (dc *DeploymentController) resolveControllerRef(namespace string, controllerRef *metav1.OwnerReference) *apps.Deployment {
 	// We can't look up by UID, so look up by Name and then verify UID.
 	// Don't even try to look up by Name if it's the wrong Kind.
@@ -447,6 +457,7 @@ func (dc *DeploymentController) resolveControllerRef(namespace string, controlle
 	if err != nil {
 		return nil
 	}
+	// 判断controller是否发生变化
 	if d.UID != controllerRef.UID {
 		// The controller we found with this Name is not the same one that the
 		// ControllerRef points to.
@@ -508,6 +519,7 @@ func (dc *DeploymentController) getReplicaSetsForDeployment(d *apps.Deployment) 
 	}
 	// If any adoptions are attempted, we should first recheck for deletion with
 	// an uncached quorum read sometime after listing ReplicaSets (see #42639).
+	// 检测deployment是否一致（删除后又生成，uid不一样）和deployment是否有deletetiontimestamp
 	canAdoptFunc := controller.RecheckDeletionTimestamp(func() (metav1.Object, error) {
 		fresh, err := dc.client.AppsV1().Deployments(d.Namespace).Get(context.TODO(), d.Name, metav1.GetOptions{})
 		if err != nil {

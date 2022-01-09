@@ -82,7 +82,9 @@ func newKubeDockerClient(dockerClient *dockerapi.Client, requestTimeout, imagePu
 
 	k := &kubeDockerClient{
 		client:                    dockerClient,
+		// 默认为2分钟
 		timeout:                   requestTimeout,
+		// 默认为1分钟
 		imagePullProgressDeadline: imagePullProgressDeadline,
 	}
 

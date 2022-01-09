@@ -47,6 +47,7 @@ const (
 )
 
 func (simpleNameGenerator) GenerateName(base string) string {
+	// 如果名字大于63个字符，则base超出部分会被截断
 	if len(base) > maxGeneratedNameLength {
 		base = base[:maxGeneratedNameLength]
 	}

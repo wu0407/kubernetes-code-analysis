@@ -65,6 +65,8 @@ func imageInspectToRuntimeAPIImage(image *dockertypes.ImageInspect) (*runtimeapi
 	return runtimeImage, nil
 }
 
+// 如果image有RepoDigests，则返回"docker-pullable://"+ image的第一个digest
+// 否则返回 "docker://"+镜像id
 func toPullableImageID(id string, image *dockertypes.ImageInspect) string {
 	// Default to the image ID, but if RepoDigests is not empty, use
 	// the first digest instead.

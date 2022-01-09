@@ -22,6 +22,7 @@ import (
 // ConfigDecoder can decode the CNI version available in network config data
 type ConfigDecoder struct{}
 
+// 使用json.Unmarshal解析出cniVersion字段的值，如果没有这个字段或为空，则返回0.1.0
 func (*ConfigDecoder) Decode(jsonBytes []byte) (string, error) {
 	var conf struct {
 		CNIVersion string `json:"cniVersion"`

@@ -55,11 +55,13 @@ func NewHandlerRunner(httpGetter kubetypes.HTTPGetter, commandRunner kubecontain
 	}
 }
 
+// 执行handler的Exec（命令执行）
 func (hr *HandlerRunner) Run(containerID kubecontainer.ContainerID, pod *v1.Pod, container *v1.Container, handler *v1.Handler) (string, error) {
 	switch {
 	case handler.Exec != nil:
 		var msg string
 		// TODO(tallclair): Pass a proper timeout value.
+		// 如果在container里执行相应的命令，没有执行超时时间，而且是同步调用
 		output, err := hr.commandRunner.RunInContainer(containerID, handler.Exec.Command, 0)
 		if err != nil {
 			msg = fmt.Sprintf("Exec lifecycle hook (%v) for Container %q in Pod %q failed - error: %v, message: %q", handler.Exec.Command, container.Name, format.Pod(pod), err, string(output))
@@ -67,6 +69,7 @@ func (hr *HandlerRunner) Run(containerID kubecontainer.ContainerID, pod *v1.Pod,
 		}
 		return msg, err
 	case handler.HTTPGet != nil:
+		// 执行http请求，返回response body（最大为10kb），使用空的http.client{}来请求，没有超时时间
 		msg, err := hr.runHTTPHandler(pod, container, handler)
 		if err != nil {
 			msg = fmt.Sprintf("Http lifecycle hook (%s) for Container %q in Pod %q failed - error: %v, message: %q", handler.HTTPGet.Path, container.Name, format.Pod(pod), err, msg)
@@ -91,11 +94,15 @@ func resolvePort(portReference intstr.IntOrString, container *v1.Container) (int
 	if portReference.Type == intstr.Int {
 		return portReference.IntValue(), nil
 	}
+	// 如果端口号是字符串
 	portName := portReference.StrVal
+	// 尝试对端口名称转成int
 	port, err := strconv.Atoi(portName)
+	// 如果成功则返回端口号
 	if err == nil {
 		return port, nil
 	}
+	// 否则从container中找到相应的端口名称，返回相应的端口号
 	for _, portSpec := range container.Ports {
 		if portSpec.Name == portName {
 			return int(portSpec.ContainerPort), nil
@@ -107,6 +114,8 @@ func resolvePort(portReference intstr.IntOrString, container *v1.Container) (int
 func (hr *HandlerRunner) runHTTPHandler(pod *v1.Pod, container *v1.Container, handler *v1.Handler) (string, error) {
 	host := handler.HTTPGet.Host
 	if len(host) == 0 {
+		// 返回pod的uid、name、namespace、以及所有sanbox状态、ips、所有容器状态
+		// 为了获得pod ip就要获取所有sanbox和容器状态，耗费太大（杀鸡用牛刀），可以进行优化
 		status, err := hr.containerManager.GetPodStatus(pod.UID, pod.Name, pod.Namespace)
 		if err != nil {
 			klog.Errorf("Unable to get pod info, event handlers may be invalid.")
@@ -115,13 +124,18 @@ func (hr *HandlerRunner) runHTTPHandler(pod *v1.Pod, container *v1.Container, ha
 		if len(status.IPs) == 0 {
 			return "", fmt.Errorf("failed to find networking container: %v", status)
 		}
+		// pod的主要ip
 		host = status.IPs[0]
 	}
 	var port int
+	// port type为string且StrVal为空（即设置port为""），则默认为80
 	if handler.HTTPGet.Port.Type == intstr.String && len(handler.HTTPGet.Port.StrVal) == 0 {
 		port = 80
 	} else {
 		var err error
+		// 根据设置解析出端口号
+		// 1. handler.HTTPGet.Port是数字，直接使用其值
+		// 2. handler.HTTPGet.Port是字符串，尝试解析成数字，成功则使用这个值。否则从container的port定义中查找端口号
 		port, err = resolvePort(handler.HTTPGet.Port, container)
 		if err != nil {
 			return "", err
@@ -137,6 +151,7 @@ func getHttpRespBody(resp *http.Response) string {
 		return ""
 	}
 	defer resp.Body.Close()
+	// 最大读取10kb大小
 	bytes, err := utilio.ReadAtMost(resp.Body, maxRespBodyLength)
 	if err == nil || err == utilio.ErrLimitReached {
 		return string(bytes)

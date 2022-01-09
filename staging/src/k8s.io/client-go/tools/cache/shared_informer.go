@@ -424,6 +424,7 @@ func (s *sharedIndexInformer) AddEventHandler(handler ResourceEventHandler) {
 	s.AddEventHandlerWithResyncPeriod(handler, s.defaultEventHandlerResyncPeriod)
 }
 
+// desired和check中有0则返回0，否则返回最大的
 func determineResyncPeriod(desired, check time.Duration) time.Duration {
 	if desired == 0 {
 		return desired
@@ -456,7 +457,17 @@ func (s *sharedIndexInformer) AddEventHandlerWithResyncPeriod(handler ResourceEv
 			resyncPeriod = minimumResyncPeriod
 		}
 
+		// 一句话总结，降低已有的s.resyncCheckPeriod和processor里的listener的"resync periods"，只在informer未启动的时候
+		//
+		// 如果已有的s.resyncCheckPeriod大于新的resyncPeriod：
+		// informer已经启动，则"resync Period"为现在的s.resyncCheckPeriod（不改变已经运行），设置resyncPeriod为s.resyncCheckPeriod（以现在的s.resyncCheckPeriod为主）
+		// informer未启动，则"resync Period"为设置为新的resyncPeriod（未运行可以改变），设置s.resyncCheckPeriod为resyncPeriod（以resyncPeriod为主），调整现有的processor里的listener的"resync periods"为resyncPeriod
+		//
+		// 如果现有的s.resyncCheckPeriod小于等于新的resyncPeriod（将现在的"resync Period"调大或相等），不改变现有的s.resyncCheckPeriod和现有的processor里的listener的"resync periods"
+
+		// 只关心resyncPeriod比s.resyncCheckPeriod小的情况
 		if resyncPeriod < s.resyncCheckPeriod {
+			// informer已经启动，设置resyncPeriod为s.resyncCheckPeriod（以现在的s.resyncCheckPeriod为主）
 			if s.started {
 				klog.Warningf("resyncPeriod %d is smaller than resyncCheckPeriod %d and the informer has already started. Changing it to %d", resyncPeriod, s.resyncCheckPeriod, s.resyncCheckPeriod)
 				resyncPeriod = s.resyncCheckPeriod
@@ -464,12 +475,19 @@ func (s *sharedIndexInformer) AddEventHandlerWithResyncPeriod(handler ResourceEv
 				// if the event handler's resyncPeriod is smaller than the current resyncCheckPeriod, update
 				// resyncCheckPeriod to match resyncPeriod and adjust the resync periods of all the listeners
 				// accordingly
+				// informer未启动，设置s.resyncCheckPeriod为resyncPeriod（以resyncPeriod为主），调整现有的processor里的listener的"resync periods"为resyncPeriod
 				s.resyncCheckPeriod = resyncPeriod
 				s.processor.resyncCheckPeriodChanged(resyncPeriod)
 			}
 		}
 	}
 
+	// newProcessListener（新的listener）的requestedResyncPeriod和resyncPeriod字段的值
+	// 一句话总结，在informer已经启动时，新的listener的requestedResyncPeriod和resyncPeriod字段的值不能设置低于已有的s.resyncCheckPeriod，除非新的resyncPeriod为0
+	//
+	// 在已有的s.resyncCheckPeriod大于新的resyncPeriod的情况下，且在informer启动，则都为现有的s.resyncCheckPeriod
+	// 已有的s.resyncCheckPeriod为0，且新的resyncPeriod大于0，则newProcessListener的requestedResyncPeriod字段的值为新的resyncPeriod， newProcessListener的resyncPeriod字段为0
+	// 其他情况下（包括s.resyncCheckPeriod大于0或新的resyncPeriod为0），newProcessListener的requestedResyncPeriod字段和resyncPeriod字段都为新的resyncPeriod
 	listener := newProcessListener(handler, resyncPeriod, determineResyncPeriod(resyncPeriod, s.resyncCheckPeriod), s.clock.Now(), initialBufferSize)
 
 	if !s.started {
@@ -556,7 +574,9 @@ func (p *sharedProcessor) addListener(listener *processorListener) {
 	defer p.listenersLock.Unlock()
 
 	p.addListenerLocked(listener)
+	// 如果listeners已经启动，需要自己单独启动新的listener
 	if p.listenersStarted {
+		// 启动新加的listener
 		p.wg.Start(listener.run)
 		p.wg.Start(listener.pop)
 	}
@@ -573,10 +593,12 @@ func (p *sharedProcessor) distribute(obj interface{}, sync bool) {
 
 	if sync {
 		for _, listener := range p.syncingListeners {
+			// 阻塞调用
 			listener.add(obj)
 		}
 	} else {
 		for _, listener := range p.listeners {
+			// 阻塞调用
 			listener.add(obj)
 		}
 	}
@@ -586,6 +608,7 @@ func (p *sharedProcessor) run(stopCh <-chan struct{}) {
 	func() {
 		p.listenersLock.RLock()
 		defer p.listenersLock.RUnlock()
+		// 启动现有的listeners，执行eventhandler
 		for _, listener := range p.listeners {
 			p.wg.Start(listener.run)
 			p.wg.Start(listener.pop)
@@ -603,6 +626,7 @@ func (p *sharedProcessor) run(stopCh <-chan struct{}) {
 
 // shouldResync queries every listener to determine if any of them need a resync, based on each
 // listener's resyncPeriod.
+// 有一个listener需要resync，则返回true
 func (p *sharedProcessor) shouldResync() bool {
 	p.listenersLock.Lock()
 	defer p.listenersLock.Unlock()
@@ -628,6 +652,7 @@ func (p *sharedProcessor) resyncCheckPeriodChanged(resyncCheckPeriod time.Durati
 	defer p.listenersLock.RUnlock()
 
 	for _, listener := range p.listeners {
+		// 有0则返回0，否则返回最大的
 		resyncPeriod := determineResyncPeriod(listener.requestedResyncPeriod, resyncCheckPeriod)
 		listener.setResyncPeriod(resyncPeriod)
 	}
@@ -644,6 +669,22 @@ func (p *sharedProcessor) resyncCheckPeriodChanged(resyncCheckPeriod time.Durati
 //
 // processorListener also keeps track of the adjusted requested resync
 // period of the listener.
+// 新的processorListener的resyncPeriod字段值由以下值决定：
+// 1. informer的resyncCheckPeriod
+// 2. AddEventHandlerWithResyncPeriod里resyncPeriod参数
+//
+// 新的processorListener的resyncPeriod值算法为：
+// 1. 有任意一个值为0，则为0
+// 2. 两个数当中取最大的
+//
+// 改变老的由以下值决定：
+// 1. informmer未启动
+// 2. processorListener的requestedResyncPeriod
+// 3. AddEventHandlerWithResyncPeriod里resyncPeriod参数
+//
+// 算法为：
+// 1. 有任意一个值为0，则为0
+// 2. 两个数当中取最大的
 type processorListener struct {
 	nextCh chan interface{}
 	addCh  chan interface{}
@@ -665,6 +706,11 @@ type processorListener struct {
 	// in AddEventHandlerWithResyncPeriod invocations made after the
 	// sharedProcessor starts and (b) only if the informer does
 	// resyncs at all.
+	// requestedResyncPeriod（请求的resyncPeriod，在修改resyncPeriod时候，参考一下，但不一定要满足）
+	// 用在informer未启动时候，执行AddEventHandlerWithResyncPeriod的时候。
+	// AddEventHandlerWithResyncPeriod的第二个参数简称为目标的resync period，目标的resync period小于informer的resync period，即需要降低informer的resyncCheckPeriod和要降低processorListener的resyncPeriod
+	// 要降低processorListener的resyncPeriod会执行resyncCheckPeriodChanged，改变现有的processorListener的resyncPeriod字段值。
+	// 现有的processorListener的resyncPeriod字段值，为目标的resync period和processorListener的requestedResyncPeriod里，有0则返回0，否则返回最大的
 	requestedResyncPeriod time.Duration
 	// resyncPeriod is the threshold that will be used in the logic
 	// for this listener.  This value differs from
@@ -673,6 +719,7 @@ type processorListener struct {
 	// actual time between resyncs depends on when the
 	// sharedProcessor's `shouldResync` function is invoked and when
 	// the sharedIndexInformer processes `Sync` type Delta objects.
+	// processorListener真正使用的resync周期
 	resyncPeriod time.Duration
 	// nextResync is the earliest time the listener should get a full resync
 	nextResync time.Time

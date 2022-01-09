@@ -93,6 +93,7 @@ type kubenetNetworkPlugin struct {
 	host            network.Host
 	netConfig       *libcni.NetworkConfig
 	loConfig        *libcni.NetworkConfig
+	// 用于查找插件和执行插件
 	cniConfig       libcni.CNI
 	bandwidthShaper bandwidth.Shaper
 	mu              sync.Mutex //Mutex for protecting podIPs map, netConfig, and shaper initialization
@@ -145,6 +146,12 @@ func NewPlugin(networkPluginDirs []string, cacheDir string) network.NetworkPlugi
 // 查找nsenter命令路径，并且设置为plugin.nsenterPath
 // 设置出站的snat规则，根据nonMasqueradeCIDR，这里只支持一个cidr
 func (plugin *kubenetNetworkPlugin) Init(host network.Host, hairpinMode kubeletconfig.HairpinMode, nonMasqueradeCIDR string, mtu int) error {
+	// 这个host是
+	// netHost := &dockerNetworkHost{
+	// 	&namespaceGetter{ds},
+	// 	&portMappingGetter{ds},
+	// }
+	// 在pkg\kubelet\dockershim\docker_service.go中的NewDockerService传参
 	plugin.host = host
 	plugin.hairpinMode = hairpinMode
 	plugin.nonMasqueradeCIDR = nonMasqueradeCIDR
@@ -240,6 +247,8 @@ func findMinMTU() (*net.Interface, error) {
 	return &intfs[defIntfIndex], nil
 }
 
+// 在pkg\kubelet\kubelet.go中kl.fastStatusUpdateOnce和kl.tryUpdateNodeStatus会执行kl.updatePodCIDR(podCIDRs)
+// 最终在dockershim中调用ds.network.Event(network.NET_PLUGIN_EVENT_POD_CIDR_CHANGE, event)
 func (plugin *kubenetNetworkPlugin) Event(name string, details map[string]interface{}) {
 	var err error
 	if name != network.NET_PLUGIN_EVENT_POD_CIDR_CHANGE {
@@ -282,6 +291,23 @@ func (plugin *kubenetNetworkPlugin) Event(name string, details map[string]interf
 	//setup hairpinMode
 	setHairpin := plugin.hairpinMode == kubeletconfig.HairpinVeth
 
+	// 生成cni配置，类似
+	// {
+	//   "cniVersion": "0.1.0",
+	//   "name": "kubenet",
+	//   "type": "bridge",
+	//   "bridge": "cbr0",
+	//   "mtu": 1500,
+	//   "addIf": "eth0",
+	//   "isGateway": true,
+	//   "ipMasq": false,
+	//   "hairpinMode": true,
+	//   "ipam": {
+	//     "type": "host-local",
+	//     "ranges": [[{"subnet": "10.252.0.128/25"}]],
+	//     "routes": [{"dst": "0.0.0.0/0"}]
+	//   }
+	// }
 	json := fmt.Sprintf(NET_CONFIG_TEMPLATE, BridgeName, plugin.mtu, network.DefaultInterfaceName, setHairpin, plugin.getRangesConfig(), plugin.getRoutesConfig())
 	klog.V(4).Infof("CNI network config set to %v", json)
 	plugin.netConfig, err = libcni.ConfFromBytes([]byte(json))
@@ -508,10 +534,16 @@ func (plugin *kubenetNetworkPlugin) SetUpPod(namespace string, name string, id k
 
 // Tears down as much of a pod's network as it can even if errors occur.  Returns
 // an aggregate error composed of all errors encountered during the teardown.
+// 1. 调用lo网络插件，执行DEL操作，释放lo网卡
+// 2. 调用bridge网络插件，执行DEL操作，释放eth0网卡和ip
+// 3. 清理pod的hostport对应的iptables规则和chain，关闭bind()调用的hostport端口
+// 4. 清理pod ip相应的tc限速规则
+// 5. 删除plugin.podIPs字段中保存container和ip
 func (plugin *kubenetNetworkPlugin) teardown(namespace string, name string, id kubecontainer.ContainerID) error {
 	errList := []error{}
 
 	// Loopback network deletion failure should not be fatal on teardown
+	// 执行loopback网络插件的"DEL"操作来释放lo网卡的ip，实际loopback网络插件不做任何动作
 	if err := plugin.delContainerFromNetwork(plugin.loConfig, "lo", namespace, name, id); err != nil {
 		klog.Warningf("Failed to delete loopback network: %v", err)
 		errList = append(errList, err)
@@ -519,12 +551,14 @@ func (plugin *kubenetNetworkPlugin) teardown(namespace string, name string, id k
 	}
 
 	// no ip dependent actions
+	// 执行bridge网络插件的"DEL"操作来释放eth0网卡的ip
 	if err := plugin.delContainerFromNetwork(plugin.netConfig, network.DefaultInterfaceName, namespace, name, id); err != nil {
 		klog.Warningf("Failed to delete %q network: %v", network.DefaultInterfaceName, err)
 		errList = append(errList, err)
 	}
 
 	// If there are no IPs registered we can't teardown pod's IP dependencies
+	// 从plugin.podIPs字段中获取container ip
 	iplist, exists := plugin.getCachedPodIPs(id)
 	if !exists || len(iplist) == 0 {
 		klog.V(5).Infof("container %s (%s/%s) does not have recorded. ignoring teardown call", id, name, namespace)
@@ -532,6 +566,7 @@ func (plugin *kubenetNetworkPlugin) teardown(namespace string, name string, id k
 	}
 
 	// get the list of port mappings
+	// 从/var/lib/dockershim/sandbox/{podSandboxID}读出sandbox的portMapping列表（[]*PortMapping），然后转成[]*hostport.PortMapping--在("k8s.io/kubernetes/pkg/kubelet/dockershim/network/hostport")
 	portMappings, err := plugin.host.GetPodPortMappings(id.ID)
 	if err != nil {
 		errList = append(errList, err)
@@ -542,6 +577,7 @@ func (plugin *kubenetNetworkPlugin) teardown(namespace string, name string, id k
 		isV6 := netutils.IsIPv6String(ip)
 		klog.V(5).Infof("Removing pod port mappings from IP %s", ip)
 		if portMappings != nil && len(portMappings) > 0 {
+			// 清理相应的portmap对应的iptables规则和chain，关闭bind()端口
 			if isV6 {
 				if err = plugin.hostportManagerv6.Remove(id.ID, &hostport.PodPortMapping{
 					Namespace:    namespace,
@@ -570,16 +606,24 @@ func (plugin *kubenetNetworkPlugin) teardown(namespace string, name string, id k
 			mask = "128"
 		}
 
+		// 清理pod ip相应的tc限速规则
 		if err := plugin.shaper().Reset(fmt.Sprintf("%s/%s", ip, mask)); err != nil {
 			// Possible bandwidth shaping wasn't enabled for this pod anyways
 			klog.V(4).Infof("Failed to remove pod IP %s from shaper: %v", ip, err)
 		}
 
+		// 删除plugin.podIPs字段中保存container和ip
 		plugin.removePodIP(id, ip)
 	}
 	return utilerrors.NewAggregate(errList)
 }
 
+// 1. 调用lo网络插件，执行DEL操作，释放lo网卡
+// 2. 调用bridge网络插件，执行DEL操作，释放eth0网卡和ip
+// 3. 清理pod的hostport对应的iptables规则和chain，关闭bind()调用的hostport端口
+// 4. 清理pod ip相应的tc限速规则
+// 5. 删除plugin.podIPs字段中保存container和ip
+// 6. 确保snat的iptables规则存在
 func (plugin *kubenetNetworkPlugin) TearDownPod(namespace string, name string, id kubecontainer.ContainerID) error {
 	start := time.Now()
 	defer func() {
@@ -590,11 +634,17 @@ func (plugin *kubenetNetworkPlugin) TearDownPod(namespace string, name string, i
 		return fmt.Errorf("kubenet needs a PodCIDR to tear down pods")
 	}
 
+	// 1. 调用lo网络插件，执行DEL操作，释放lo网卡
+	// 2. 调用bridge网络插件，执行DEL操作，释放eth0网卡和ip
+	// 3. 清理pod的hostport对应的iptables规则和chain，关闭bind()调用的hostport端口
+	// 4. 清理pod ip相应的tc限速规则
+	// 5. 删除plugin.podIPs字段中保存container和ip
 	if err := plugin.teardown(namespace, name, id); err != nil {
 		return err
 	}
 
 	// Need to SNAT outbound traffic from cluster
+	// 确保snat的iptables规则存在
 	if err := plugin.ensureMasqRule(); err != nil {
 		klog.Errorf("Failed to ensure MASQ rule: %v", err)
 	}
@@ -603,14 +653,18 @@ func (plugin *kubenetNetworkPlugin) TearDownPod(namespace string, name string, i
 
 // TODO: Use the addToNetwork function to obtain the IP of the Pod. That will assume idempotent ADD call to the plugin.
 // Also fix the runtime's call to Status function to be done only in the case that the IP is lost, no need to do periodic calls
+// 获取容器的ip地址
 func (plugin *kubenetNetworkPlugin) GetPodNetworkStatus(namespace string, name string, id kubecontainer.ContainerID) (*network.PodNetworkStatus, error) {
 	// try cached version
+	// 从缓存（plugin.podIPs字段）中获取continer ip
 	networkStatus := plugin.getNetworkStatus(id)
 	if networkStatus != nil {
 		return networkStatus, nil
 	}
 
 	// not a cached version, get via network ns
+	// 缓存中没有取到，从网络命名空间中获取
+	// netnsPath为/proc/{container pid}/ns/net
 	netnsPath, err := plugin.host.GetNetNS(id.ID)
 	if err != nil {
 		return nil, fmt.Errorf("kubenet failed to retrieve network namespace path: %v", err)
@@ -618,12 +672,14 @@ func (plugin *kubenetNetworkPlugin) GetPodNetworkStatus(namespace string, name s
 	if netnsPath == "" {
 		return nil, fmt.Errorf("cannot find the network namespace, skipping pod network status for container %q", id)
 	}
+	// 执行nsenter --network {ns path} ip add获取interfaceName网卡的ip地址
 	ips, err := network.GetPodIPs(plugin.execer, plugin.nsenterPath, netnsPath, network.DefaultInterfaceName)
 	if err != nil {
 		return nil, err
 	}
 
 	// cache the ips
+	// 添加ip与关联的container id到缓存中
 	for _, ip := range ips {
 		plugin.addPodIP(id, ip.String())
 	}
@@ -633,8 +689,10 @@ func (plugin *kubenetNetworkPlugin) GetPodNetworkStatus(namespace string, name s
 }
 
 // returns networkstatus
+// 从缓存（plugin.podIPs字段）中获取continer ip
 func (plugin *kubenetNetworkPlugin) getNetworkStatus(id kubecontainer.ContainerID) *network.PodNetworkStatus {
 	// Assuming the ip of pod does not change. Try to retrieve ip from kubenet map first.
+	// 从plugin.podIPs字段中获取continer ip
 	iplist, ok := plugin.getCachedPodIPs(id)
 	if !ok {
 		return nil
@@ -703,7 +761,9 @@ func (plugin *kubenetNetworkPlugin) checkRequiredCNIPluginsInOneDir(dir string) 
 	return true
 }
 
+// 创建RuntimeConfig，用来设置网络插件的环境变量
 func (plugin *kubenetNetworkPlugin) buildCNIRuntimeConf(ifName string, id kubecontainer.ContainerID, needNetNs bool) (*libcni.RuntimeConf, error) {
+	// 返回/proc/{container pid}/ns/net
 	netnsPath, err := plugin.host.GetNetNS(id.ID)
 	if needNetNs && err != nil {
 		klog.Errorf("Kubenet failed to retrieve network namespace path: %v", err)
@@ -718,6 +778,7 @@ func (plugin *kubenetNetworkPlugin) buildCNIRuntimeConf(ifName string, id kubeco
 }
 
 func (plugin *kubenetNetworkPlugin) addContainerToNetwork(config *libcni.NetworkConfig, ifName, namespace, name string, id kubecontainer.ContainerID) (cnitypes.Result, error) {
+	// 创建RuntimeConfig，用来设置网络插件的环境变量
 	rt, err := plugin.buildCNIRuntimeConf(ifName, id, true)
 	if err != nil {
 		return nil, fmt.Errorf("error building CNI config: %v", err)
@@ -735,7 +796,9 @@ func (plugin *kubenetNetworkPlugin) addContainerToNetwork(config *libcni.Network
 	return res, nil
 }
 
+// 执行网络插件的"DEL"操作来释放ifName网卡的ip
 func (plugin *kubenetNetworkPlugin) delContainerFromNetwork(config *libcni.NetworkConfig, ifName, namespace, name string, id kubecontainer.ContainerID) error {
+	// 创建RuntimeConfig，用来设置网络插件的环境变量
 	rt, err := plugin.buildCNIRuntimeConf(ifName, id, false)
 	if err != nil {
 		return fmt.Errorf("error building CNI config: %v", err)
@@ -746,6 +809,7 @@ func (plugin *kubenetNetworkPlugin) delContainerFromNetwork(config *libcni.Netwo
 	// Todo get the timeout from parent ctx
 	cniTimeoutCtx, cancelFunc := context.WithTimeout(context.Background(), network.CNITimeoutSec*time.Second)
 	defer cancelFunc()
+	// 执行网络插件的"DEL"操作来释放ip
 	err = plugin.cniConfig.DelNetwork(cniTimeoutCtx, config, rt)
 	// The pod may not get deleted successfully at the first time.
 	// Ignore "no such file or directory" error in case the network has already been deleted in previous attempts.
@@ -941,6 +1005,7 @@ func (plugin *kubenetNetworkPlugin) removePodIP(id kubecontainer.ContainerID, ip
 
 // returns a copy of pod ips
 // false is returned if id does not exist
+// 从plugin.podIPs字段中获取container ip
 func (plugin *kubenetNetworkPlugin) getCachedPodIPs(id kubecontainer.ContainerID) ([]string, bool) {
 	plugin.mu.Lock()
 	defer plugin.mu.Unlock()

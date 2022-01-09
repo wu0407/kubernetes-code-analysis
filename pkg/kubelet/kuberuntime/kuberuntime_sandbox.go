@@ -205,7 +205,7 @@ func (m *kubeGenericRuntimeManager) getKubeletSandboxes(all bool) ([]*runtimeapi
 		}
 	}
 
-	// 获得所有的sandbox容器（dockershim会从docker api中和checkpoint目录中获取）
+	// 获得所有的sandbox容器（dockershim会从docker api中和当filter为nil还会从checkpoint目录中获取）
 	resp, err := m.runtimeService.ListPodSandbox(filter)
 	if err != nil {
 		klog.Errorf("ListPodSandbox failed: %v", err)
@@ -216,6 +216,7 @@ func (m *kubeGenericRuntimeManager) getKubeletSandboxes(all bool) ([]*runtimeapi
 }
 
 // determinePodSandboxIP determines the IP addresses of the given pod sandbox.
+// 验证并返回podSandbox里的所有ip（primary IP和additional ips）
 func (m *kubeGenericRuntimeManager) determinePodSandboxIPs(podNamespace, podName string, podSandbox *runtimeapi.PodSandboxStatus) []string {
 	podIPs := make([]string, 0)
 	if podSandbox.Network == nil {
@@ -249,6 +250,7 @@ func (m *kubeGenericRuntimeManager) determinePodSandboxIPs(podNamespace, podName
 
 // getPodSandboxID gets the sandbox id by podUID and returns ([]sandboxID, error).
 // Param state could be nil in order to get all sandboxes belonging to same pod.
+// 根据pod的uid和运行状态state，获取所有sandbox容器的id列表
 func (m *kubeGenericRuntimeManager) getSandboxIDByPodUID(podUID kubetypes.UID, state *runtimeapi.PodSandboxState) ([]string, error) {
 	filter := &runtimeapi.PodSandboxFilter{
 		LabelSelector: map[string]string{types.KubernetesPodUIDLabel: string(podUID)},
@@ -258,6 +260,7 @@ func (m *kubeGenericRuntimeManager) getSandboxIDByPodUID(podUID kubetypes.UID, s
 			State: *state,
 		}
 	}
+	// 如果runtime是dockershim，则从docker api获取label为Label["io.kubernetes.docker.type"]="podsandbox"和Label["io.kubernetes.pod.uid"]为podUID的容器
 	sandboxes, err := m.runtimeService.ListPodSandbox(filter)
 	if err != nil {
 		klog.Errorf("ListPodSandbox with pod UID %q failed: %v", podUID, err)

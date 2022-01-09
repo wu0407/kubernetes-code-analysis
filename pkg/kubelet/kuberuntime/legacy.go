@@ -39,6 +39,7 @@ const (
 
 // legacyLogSymlink composes the legacy container log path. It is only used for legacy cluster
 // logging support.
+// 比如路径/var/log/containers/xiaoke-marketing-service-java-dev-standard-2-7899db54d8-mkshh_xiaoke-java-dev_app-3d0411e62e43e0ef970498fb1b6a5a097fd494d904ff839c49ebe1f9d94454a0.log
 func legacyLogSymlink(containerID string, containerName, podName, podNamespace string) string {
 	return logSymlink(legacyContainerLogsDir, kubecontainer.BuildPodFullName(podName, podNamespace),
 		containerName, containerID)

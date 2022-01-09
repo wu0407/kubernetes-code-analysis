@@ -117,6 +117,7 @@ func (r *RemoteRuntimeService) RunPodSandbox(config *runtimeapi.PodSandboxConfig
 
 // StopPodSandbox stops the sandbox. If there are any running containers in the
 // sandbox, they should be forced to termination.
+// 调用超时时间为默认的2分钟，这个超时时间不会传给runtime
 func (r *RemoteRuntimeService) StopPodSandbox(podSandBoxID string) error {
 	ctx, cancel := getContextWithTimeout(r.timeout)
 	defer cancel()
@@ -154,6 +155,7 @@ func (r *RemoteRuntimeService) PodSandboxStatus(podSandBoxID string) (*runtimeap
 	ctx, cancel := getContextWithTimeout(r.timeout)
 	defer cancel()
 
+	// 如果为dockershim，则返回podsandbox的pod的元信息（name、namespace、uid、attempt（重启次数）和容器的信息（id、state运行状态、创建时间、Labels、Annotations、ip、内核命名空间、额外ip）
 	resp, err := r.runtimeClient.PodSandboxStatus(ctx, &runtimeapi.PodSandboxStatusRequest{
 		PodSandboxId: podSandBoxID,
 	})
@@ -162,6 +164,7 @@ func (r *RemoteRuntimeService) PodSandboxStatus(podSandBoxID string) (*runtimeap
 	}
 
 	if resp.Status != nil {
+		// 必须要有Id、Metadata、metadata.Name、metadata.Namespace、metadata.Uid、CreatedAt字段
 		if err := verifySandboxStatus(resp.Status); err != nil {
 			return nil, err
 		}
@@ -230,11 +233,13 @@ func (r *RemoteRuntimeService) StartContainer(containerID string) error {
 func (r *RemoteRuntimeService) StopContainer(containerID string, timeout int64) error {
 	// Use timeout + default timeout (2 minutes) as timeout to leave extra time
 	// for SIGKILL container and request latency.
+	// 超时时间为默认的2分钟加上timeout
 	t := r.timeout + time.Duration(timeout)*time.Second
 	ctx, cancel := getContextWithTimeout(t)
 	defer cancel()
 
 	r.logReduction.ClearID(containerID)
+	// 如果runtime是dockershim，这个超时时间会传给docker
 	_, err := r.runtimeClient.StopContainer(ctx, &runtimeapi.StopContainerRequest{
 		ContainerId: containerID,
 		Timeout:     timeout,
@@ -286,6 +291,7 @@ func (r *RemoteRuntimeService) ContainerStatus(containerID string) (*runtimeapi.
 	ctx, cancel := getContextWithTimeout(r.timeout)
 	defer cancel()
 
+	// 对应dockershim执行的是dockerClient.InspectContainer
 	resp, err := r.runtimeClient.ContainerStatus(ctx, &runtimeapi.ContainerStatusRequest{
 		ContainerId: containerID,
 	})
@@ -299,6 +305,7 @@ func (r *RemoteRuntimeService) ContainerStatus(containerID string) (*runtimeapi.
 	r.logReduction.ClearID(containerID)
 
 	if resp.Status != nil {
+		// 验证所有必须的字段都有非零值，包括（Id，Metadata，Metadata.Name，CreatedAt，Image，Image.Image，ImageRef）
 		if err := verifyContainerStatus(resp.Status); err != nil {
 			klog.Errorf("ContainerStatus of %q failed: %v", containerID, err)
 			return nil, err
@@ -327,6 +334,8 @@ func (r *RemoteRuntimeService) UpdateContainerResources(containerID string, reso
 
 // ExecSync executes a command in the container, and returns the stdout output.
 // If command exits with a non-zero exit code, an error is returned.
+// 当timeout为0时候，执行r.runtimeClient.ExecSync没有超时时间。
+// 当timeout不为0的时候，执行r.runtimeClient.ExecSync超时时间为 默认的2分钟加上timeout
 func (r *RemoteRuntimeService) ExecSync(containerID string, cmd []string, timeout time.Duration) (stdout []byte, stderr []byte, err error) {
 	// Do not set timeout when timeout is 0.
 	var ctx context.Context
@@ -336,6 +345,7 @@ func (r *RemoteRuntimeService) ExecSync(containerID string, cmd []string, timeou
 		// the runtime to do cleanup.
 		ctx, cancel = getContextWithTimeout(r.timeout + timeout)
 	} else {
+		// 没有超时时间
 		ctx, cancel = getContextWithCancel()
 	}
 	defer cancel()

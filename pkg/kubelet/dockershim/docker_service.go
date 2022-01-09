@@ -146,6 +146,7 @@ type portMappingGetter struct {
 	ds *dockerService
 }
 
+// 从/var/lib/dockershim/sandbox/{podSandboxID}读出sandbox的portMapping列表（[]*PortMapping），然后转成[]*hostport.PortMapping--在("k8s.io/kubernetes/pkg/kubelet/dockershim/network/hostport")
 func (p *portMappingGetter) GetPodPortMappings(containerID string) ([]*hostport.PortMapping, error) {
 	return p.ds.GetPodPortMappings(containerID)
 }
@@ -177,8 +178,11 @@ func NewDockerClientFromConfig(config *ClientConfig) libdocker.Interface {
 	if config != nil {
 		// Create docker client.
 		client := libdocker.ConnectToDockerOrDie(
+			// 默认为unix:///var/run/docker.sock
 			config.DockerEndpoint,
+			// 默认为2分钟
 			config.RuntimeRequestTimeout,
+			// 默认为1分钟
 			config.ImagePullProgressDeadline,
 		)
 		return client

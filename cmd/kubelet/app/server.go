@@ -799,6 +799,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 	}
 
 	// 初始化容器运行时--当容器运行时为docker初始化dockershim，当容器运行时为remote时，不执行任何东西
+	// s.RemoteRuntimeEndpoint默认为unix:///var/run/dockershim.sock
 	err = kubelet.PreInitRuntimeService(&s.KubeletConfiguration,
 		kubeDeps, &s.ContainerRuntimeOptions,
 		s.ContainerRuntime,

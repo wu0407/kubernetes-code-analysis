@@ -236,6 +236,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 			pager := pager.New(pager.SimplePageFunc(func(opts metav1.ListOptions) (runtime.Object, error) {
 				return r.listerWatcher.List(opts)
 			}))
+			// 设置pager.PageSize
 			switch {
 			case r.WatchListPageSize != 0:
 				pager.PageSize = r.WatchListPageSize
@@ -256,8 +257,8 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 				// We also don't turn off pagination for ResourceVersion="0", since watch cache
 				// is ignoring Limit in that case anyway, and if watch cache is not enabled
 				// we don't introduce regression.
-				// 如果已经知道ResourceVersion，未设置limit，则关闭分页查询，强制listing from watch cache
-				// 但是ResourceVersion="0"，watch cache忽略limit设置，不会关闭分页查询
+				// 如果已经知道ResourceVersion，则不设置limit（pager.PageSize = 0）来关闭分页查询，强制listing from watch cache
+				// 当ResourceVersion="0"，watch cache忽略limit设置，不会设置pager.PageSize = 0来关闭分页查询
 				pager.PageSize = 0
 			}
 
@@ -270,7 +271,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 				// resource version it is listing at is expired or the cache may not yet be synced to the provided
 				// resource version. So we need to fallback to resourceVersion="" in all to recover and ensure
 				// the reflector makes forward progress.
-				// 设置ResourceVersion为""，重新请求
+				// 设置ResourceVersion为""，不使用watch cache，重新请求
 				list, paginatedResult, err = pager.List(context.Background(), metav1.ListOptions{ResourceVersion: r.relistResourceVersion()})
 			}
 			close(listCh)
@@ -299,6 +300,8 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 		// there is no need to prefer listing from watch cache.
 		// 一般ResourceVersion="0"的Paginated为false
 		// 但是ResourceVersion="0"的Paginated为true说明watch cache被禁用
+		// 这里设置r.paginatedResult = true是为了，（比如因为连接中断）下次执行ListAndWatch时候，不使用watch cache缓存，命中这个（case r.paginatedResult:）判断，不设置pager.PageSize，使用默认的pagesize（默认为500）
+		// 因为再次执行ListAndWatch时候，有可能是options.ResourceVersion != "" && options.ResourceVersion != "0"，这个时候关闭分页才会使用watch cache
 		if options.ResourceVersion == "0" && paginatedResult {
 			r.paginatedResult = true
 		}
@@ -311,6 +314,7 @@ func (r *Reflector) ListAndWatch(stopCh <-chan struct{}) error {
 		}
 		resourceVersion = listMetaInterface.GetResourceVersion()
 		initTrace.Step("Resource version extracted")
+		// 解压obj里面的items，到items类型切片（[]runtime.Object），并返回这个切片
 		items, err := meta.ExtractList(list)
 		if err != nil {
 			return fmt.Errorf("%s: Unable to understand list result %#v (%v)", r.name, list, err)

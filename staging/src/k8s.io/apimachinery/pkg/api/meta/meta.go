@@ -36,6 +36,7 @@ var errNotCommon = fmt.Errorf("object does not implement the common interface fo
 
 // CommonAccessor returns a Common interface for the provided object or an error if the object does
 // not provide List.
+// meta.CommonAccessor是meta.Accessor和meta.ListAccessor的合集
 func CommonAccessor(obj interface{}) (metav1.Common, error) {
 	switch t := obj.(type) {
 	case List:

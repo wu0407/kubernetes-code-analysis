@@ -50,10 +50,12 @@ func (r *streamingRuntime) Exec(containerID string, cmd []string, in io.Reader, 
 
 // Internal version of Exec adds a timeout.
 func (r *streamingRuntime) exec(containerID string, cmd []string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize, timeout time.Duration) error {
+	// 执行InspectContainer，检测容器是否在运行
 	container, err := checkContainerStatus(r.client, containerID)
 	if err != nil {
 		return err
 	}
+	// 执行exec命令，返回后，每2s检测exec是否退出，只等待8s检测exec是否退出。启动一个goroutine，在exec启动之后从resize chan中读取消息，执行ResizeExecTTY
 	return r.execHandler.ExecInContainer(r.client, container, cmd, in, out, errw, tty, resize, timeout)
 }
 
@@ -78,6 +80,8 @@ func (r *streamingRuntime) PortForward(podSandboxID string, port int32, stream i
 func (ds *dockerService) ExecSync(_ context.Context, req *runtimeapi.ExecSyncRequest) (*runtimeapi.ExecSyncResponse, error) {
 	timeout := time.Duration(req.Timeout) * time.Second
 	var stdoutBuffer, stderrBuffer bytes.Buffer
+	// 在没有tty和没有resize tty的情况下，执行exec命令（同步调用），返回后，每2s检测exec是否退出，只等待8s检测exec是否退出。
+	// timeout参数没有使用，即没有超时时间
 	err := ds.streamingRuntime.exec(req.ContainerId, req.Cmd,
 		nil, // in
 		ioutils.WriteCloserWrapper(ioutils.LimitWriter(&stdoutBuffer, maxMsgSize)),
@@ -139,6 +143,7 @@ func (ds *dockerService) PortForward(_ context.Context, req *runtimeapi.PortForw
 	return ds.streamingServer.GetPortForward(req)
 }
 
+// 执行InspectContainer，检测容器是否在运行
 func checkContainerStatus(client libdocker.Interface, containerID string) (*dockertypes.ContainerJSON, error) {
 	container, err := client.InspectContainer(containerID)
 	if err != nil {

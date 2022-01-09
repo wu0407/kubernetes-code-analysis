@@ -491,7 +491,7 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 			return err
 		}
 		// 1. 确保Burstable和BestEffort的cgroup目录存在，Burstable目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/burstable，BestEffort目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/besteffort
-		// 2. 启动一个gorutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性 
+		// 2. 启动一个goroutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性 
 		err = cm.qosContainerManager.Start(cm.getNodeAllocatableAbsolute, activePods)
 		if err != nil {
 			return fmt.Errorf("failed to initialize top level QOS containers: %v", err)
@@ -499,7 +499,7 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 	}
 
 	// Enforce Node Allocatable (if required)
-	// 应用--enforce-node-allocatable的配置，设置各个（cpu、memeory、pid、hugepage）cgroup的限制值
+	// 应用--enforce-node-allocatable的配置，设置各个（cpu、memory、pid、hugepage）cgroup的限制值
 	// 为pods，则设置在/sys/fs/cgroup/{cgroup sub system}/kubepods.slice，限制值为各个类型capacity减去SystemReserved和KubeReserved
 	// 为system-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename system-reserved-cgroup}，限制值为各个类型system-reserved值
 	// 为kube-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename kube-reserved-cgroup}，限制值为各个类型kube-reserved
@@ -630,6 +630,11 @@ func (cm *containerManagerImpl) GetQOSContainersInfo() QOSContainersInfo {
 	return cm.qosContainerManager.GetQOSContainersInfo()
 }
 
+// 根据所有active pod来统计Burstable和BestEffort的cgroup属性
+// 设置Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup属性值
+// cpu group设置cpu share值
+// hugepage设置 hugepage.limit_in_bytes为int64最大值
+// memory设置memory.limit_in_bytes
 func (cm *containerManagerImpl) UpdateQOSCgroups() error {
 	return cm.qosContainerManager.UpdateCgroups()
 }

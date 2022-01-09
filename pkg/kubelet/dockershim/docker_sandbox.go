@@ -212,6 +212,9 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 // TODO: This function blocks sandbox teardown on networking teardown. Is it
 // better to cut our losses assuming an out of band GC routine will cleanup
 // after us?
+// 1. 获取pod namespace、pod name和是否为host网络模式，先尝试从docker inspect信息中获取，如果出错则dockershim的checkpoint中获取
+// 2. 调用网络插件释放容器的网卡
+// 3. 停止sandbox container，10s的优雅关闭时间
 func (ds *dockerService) StopPodSandbox(ctx context.Context, r *runtimeapi.StopPodSandboxRequest) (*runtimeapi.StopPodSandboxResponse, error) {
 	var namespace, name string
 	var hostNetwork bool
@@ -220,29 +223,37 @@ func (ds *dockerService) StopPodSandbox(ctx context.Context, r *runtimeapi.StopP
 	resp := &runtimeapi.StopPodSandboxResponse{}
 
 	// Try to retrieve minimal sandbox information from docker daemon or sandbox checkpoint.
+	// 返回docker inspect结果和pod的元信息（name、namespace、uid、attempt（重启次数）
 	inspectResult, metadata, statusErr := ds.getPodSandboxDetails(podSandboxID)
+	// docker inspect没有出错
 	if statusErr == nil {
 		namespace = metadata.Namespace
 		name = metadata.Name
 		hostNetwork = (networkNamespaceMode(inspectResult) == runtimeapi.NamespaceMode_NODE)
 	} else {
+		// docker inspect出错，则从dockershim的checkpoint（/var/lib/dockershim/sandbox/{sandbox id}）里获取pod的name、namespace、是否hostNetwork
 		checkpoint := NewPodSandboxCheckpoint("", "", &CheckpointData{})
 		checkpointErr := ds.checkpointManager.GetCheckpoint(podSandboxID, checkpoint)
 
 		// Proceed if both sandbox container and checkpoint could not be found. This means that following
 		// actions will only have sandbox ID and not have pod namespace and name information.
 		// Return error if encounter any unexpected error.
+		// 如果docker inspect发生错误且checkpoint获取数据失败，则不能获取pod的name、namespace、是否hostNetwork
+		// 当读取checkpoint发生错误且docker inspect发生非容器不存在的错误，直接返回（虽然容器都不存在了，但是网络cni可能没有被清理，这里没有处理）
 		if checkpointErr != nil {
+			// 找到相应的checkpoint文件，但是发生其他错误（比如内容不对、checksum不对），则删除这个checkpoint文件
 			if checkpointErr != errors.ErrCheckpointNotFound {
 				err := ds.checkpointManager.RemoveCheckpoint(podSandboxID)
 				if err != nil {
 					klog.Errorf("Failed to delete corrupt checkpoint for sandbox %q: %v", podSandboxID, err)
 				}
 			}
+			// 读取checkpoint发生错误且docker inspect返回容器不存在的错误，则继续
 			if libdocker.IsContainerNotFoundError(statusErr) {
 				klog.Warningf("Both sandbox container and checkpoint for id %q could not be found. "+
 					"Proceed without further sandbox information.", podSandboxID)
 			} else {
+				// 读取checkpoint发生错误且docker inspect发生非容器不存在的错误，直接返回
 				return nil, utilerrors.NewAggregate([]error{
 					fmt.Errorf("failed to get checkpoint for sandbox %q: %v", podSandboxID, checkpointErr),
 					fmt.Errorf("failed to get sandbox status: %v", statusErr)})
@@ -261,17 +272,32 @@ func (ds *dockerService) StopPodSandbox(ctx context.Context, r *runtimeapi.StopP
 	// since it is stopped. With empty network namespace, CNI bridge plugin will conduct best
 	// effort clean up and will not return error.
 	errList := []error{}
+	// 从缓存中获取这个sandbox网络是否ready
 	ready, ok := ds.getNetworkReady(podSandboxID)
+	// 不是host网络且网络ready或不存在，则不ready的网络无需清理
 	if !hostNetwork && (ready || !ok) {
 		// Only tear down the pod network if we haven't done so already
 		cID := kubecontainer.BuildContainerID(runtimeName, podSandboxID)
+		// kubenet网络插件
+		// 1. 调用lo网络插件，执行DEL操作，释放lo网卡
+		// 2. 调用bridge网络插件，执行DEL操作，释放eth0网卡和ip
+		// 3. 清理pod的hostport对应的iptables规则和chain，关闭bind()调用的hostport端口
+		// 4. 清理pod ip相应的tc限速规则
+		// 5. 删除plugin.podIPs字段中保存container和ip
+		// 6. 确保snat的iptables规则存在
+
+		// cni网络插件
+		// 1. 执行loopback插件，执行"DEL"操作来释放（实际是lo网卡）网卡（这里plugin.buildCNIRuntimeConf会固定设置rt.IfName为eth0）和删除相关cni插件执行result缓存文件（这里会删除eth0的缓存文件）
+		// 2. 遍历执行plugin.defaultNetwork.NetworkConfig.Plugins插件，执行"DEL"操作来释放eth0网卡（可能还有其他网卡，看cni的具体实现）
 		err := ds.network.TearDownPod(namespace, name, cID)
 		if err == nil {
+			// 停止网络插件成功，设置ds.networkReady为false
 			ds.setNetworkReady(podSandboxID, false)
 		} else {
 			errList = append(errList, err)
 		}
 	}
+	// 停止sandbox container，10s的优雅关闭时间
 	if err := ds.client.StopContainer(podSandboxID, defaultSandboxGracePeriod); err != nil {
 		// Do not return error if the container does not exist
 		if !libdocker.IsContainerNotFoundError(err) {
@@ -279,6 +305,7 @@ func (ds *dockerService) StopPodSandbox(ctx context.Context, r *runtimeapi.StopP
 			errList = append(errList, err)
 		} else {
 			// remove the checkpoint for any sandbox that is not found in the runtime
+			// 如果sandbox容器不存在，则移除podSandboxID dockershim的checkpoint文件
 			ds.checkpointManager.RemoveCheckpoint(podSandboxID)
 		}
 	}
@@ -336,13 +363,18 @@ func (ds *dockerService) RemovePodSandbox(ctx context.Context, r *runtimeapi.Rem
 }
 
 // getIPsFromPlugin interrogates the network plugin for sandbox IPs.
+// 从网络插件中获取sanbox容器的ip
 func (ds *dockerService) getIPsFromPlugin(sandbox *dockertypes.ContainerJSON) ([]string, error) {
+	// 从docker容器名中解析出pod的name、namespace、uid、attempt（重启次数）
 	metadata, err := parseSandboxName(sandbox.Name)
 	if err != nil {
 		return nil, err
 	}
 	msg := fmt.Sprintf("Couldn't find network status for %s/%s through plugin", metadata.Namespace, metadata.Name)
 	cID := kubecontainer.BuildContainerID(runtimeName, sandbox.ID)
+	// 从网络插件中获取ip地址
+	// 如果是kubenet网络插件，从缓存中获取容器的ip，没有的话执行nsenter --network {ns path} ip add获取interfaceName网卡的ip地址
+	// 如果是cni网络插件，执行nsenter --network {ns path} ip add获取interfaceName网卡的ip地址
 	networkStatus, err := ds.network.GetPodNetworkStatus(metadata.Namespace, metadata.Name, cID)
 	if err != nil {
 		return nil, err
@@ -369,6 +401,7 @@ func (ds *dockerService) getIPs(podSandboxID string, sandbox *dockertypes.Contai
 	if sandbox.NetworkSettings == nil {
 		return nil
 	}
+	// 判断是容器是否为host网络
 	if networkNamespaceMode(sandbox) == runtimeapi.NamespaceMode_NODE {
 		// For sandboxes using host network, the shim is not responsible for
 		// reporting the IP.
@@ -376,11 +409,13 @@ func (ds *dockerService) getIPs(podSandboxID string, sandbox *dockertypes.Contai
 	}
 
 	// Don't bother getting IP if the pod is known and networking isn't ready
+	// dockershim在内存中维护sandbox的网络状态中查找podSandboxID网络是否ready和存在
 	ready, ok := ds.getNetworkReady(podSandboxID)
 	if ok && !ready {
 		return nil
 	}
 
+	// sandbox网络ready，从网络插件中获取sanbox容器的ip，并返回
 	ips, err := ds.getIPsFromPlugin(sandbox)
 	if err == nil {
 		return ips
@@ -392,6 +427,7 @@ func (ds *dockerService) getIPs(podSandboxID string, sandbox *dockertypes.Contai
 	// conclude that the plugin must have failed setup, or forgotten its ip.
 	// This is not a sensible assumption for plugins across the board, but if
 	// a plugin doesn't want this behavior, it can throw an error.
+	// 通过网络插件获取容器ip失败，则从sandbox (docker insepct reponse)网络属性获取ip
 	if sandbox.NetworkSettings.IPAddress != "" {
 		ips = append(ips, sandbox.NetworkSettings.IPAddress)
 	}
@@ -407,12 +443,14 @@ func (ds *dockerService) getIPs(podSandboxID string, sandbox *dockertypes.Contai
 }
 
 // Returns the inspect container response, the sandbox metadata, and network namespace mode
+// 返回docker inspect结果和pod的元信息（name、namespace、uid、attempt（重启次数）
 func (ds *dockerService) getPodSandboxDetails(podSandboxID string) (*dockertypes.ContainerJSON, *runtimeapi.PodSandboxMetadata, error) {
 	resp, err := ds.client.InspectContainer(podSandboxID)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// 从docker容器名中解析出pod的name、namespace、uid、attempt（重启次数）
 	metadata, err := parseSandboxName(resp.Name)
 	if err != nil {
 		return nil, nil, err
@@ -422,15 +460,18 @@ func (ds *dockerService) getPodSandboxDetails(podSandboxID string) (*dockertypes
 }
 
 // PodSandboxStatus returns the status of the PodSandbox.
+// 返回podsandbox的pod的元信息（name、namespace、uid、attempt（重启次数）和容器的信息（id、state运行状态、创建时间、Labels、Annotations、ip、内核命名空间、额外ip）
 func (ds *dockerService) PodSandboxStatus(ctx context.Context, req *runtimeapi.PodSandboxStatusRequest) (*runtimeapi.PodSandboxStatusResponse, error) {
 	podSandboxID := req.PodSandboxId
 
+	// 返回docker inspect结果和pod的元信息（name、namespace、uid、attempt（重启次数）
 	r, metadata, err := ds.getPodSandboxDetails(podSandboxID)
 	if err != nil {
 		return nil, err
 	}
 
 	// Parse the timestamps.
+	// 返回创建时间和启动时间和完成时间
 	createdAt, _, _, err := getContainerTimestamps(r)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse timestamp for container %q: %v", podSandboxID, err)
@@ -446,7 +487,9 @@ func (ds *dockerService) PodSandboxStatus(ctx context.Context, req *runtimeapi.P
 	var ips []string
 	// TODO: Remove this when sandbox is available on windows
 	// This is a workaround for windows, where sandbox is not in use, and pod IP is determined through containers belonging to the Pod.
+	// linux系统里determinePodIPBySandboxID返回为空，则从执行getIPs获取容器ip
 	if ips = ds.determinePodIPBySandboxID(podSandboxID); len(ips) == 0 {
+		// 先从网络插件中获取容器的ip，如果失败，则从(docker insepct reponse)的网络属性获取ip
 		ips = ds.getIPs(podSandboxID, r)
 	}
 
@@ -472,8 +515,11 @@ func (ds *dockerService) PodSandboxStatus(ctx context.Context, req *runtimeapi.P
 		Linux: &runtimeapi.LinuxPodSandboxStatus{
 			Namespaces: &runtimeapi.Namespace{
 				Options: &runtimeapi.NamespaceOption{
+					// 判断是容器是host网络（返回为2，runtimeapi.NamespaceMode_NODE）或pod网络（返回0，runtimeapi.NamespaceMode_POD）
 					Network: networkNamespaceMode(r),
+					// 判断容器的pid是host模式（返回2，runtimeapi.NamespaceMode_NODE），或container模式（返回1，runtimeapi.NamespaceMode_CONTAINER）
 					Pid:     pidNamespaceMode(r),
+					// 判断容器的ipc是host模式（返回2，runtimeapi.NamespaceMode_NODE），或pod模式（返回0，runtimeapi.NamespaceMode_POD）
 					Ipc:     ipcNamespaceMode(r),
 				},
 			},
@@ -492,14 +538,17 @@ func (ds *dockerService) PodSandboxStatus(ctx context.Context, req *runtimeapi.P
 
 // ListPodSandbox returns a list of Sandbox.
 // 从docker api中根据过滤选项（如果有的话）过滤出Label["io.kubernetes.docker.type"]="podsandbox"的容器
-// 同时从/var/lib/dockershim/sandbox/{container id}下获得容器的name和namespace
+// 当filter为nil时候，还包含/var/lib/dockershim/sandbox/{container id}下（不在docker api返回列表中的容器）
+// /var/lib/dockershim/sandbox/{container id}下（不在docker api返回列表中的容器），从/var/lib/dockershim/sandbox/{container id}下获得容器的name和namespace
 func (ds *dockerService) ListPodSandbox(_ context.Context, r *runtimeapi.ListPodSandboxRequest) (*runtimeapi.ListPodSandboxResponse, error) {
+	// request中filter，后面会将request中filter转成docker filter
 	filter := r.GetFilter()
 
 	// By default, list all containers whether they are running or not.
 	opts := dockertypes.ContainerListOptions{All: true}
 	filterOutReadySandboxes := false
 
+	// docker的filter
 	opts.Filters = dockerfilters.NewArgs()
 	f := newDockerFilter(&opts.Filters)
 	// Add filter to select only sandbox containers.
@@ -573,17 +622,19 @@ func (ds *dockerService) ListPodSandbox(_ context.Context, r *runtimeapi.ListPod
 	// 从checkpoint（/var/lib/dockershim/sandbox）中查找不在上面（通过访问docker api获得的容器id）
 	// 这些容器可能不存在或退出状态--设置状态为PodSandboxState_SANDBOX_NOTREADY
 	for _, id := range checkpoints {
+		// 跳过在docker api获得的容器id
 		if _, ok := sandboxIDs[id]; ok {
 			continue
 		}
 		checkpoint := NewPodSandboxCheckpoint("", "", &CheckpointData{})
 		// 读取/var/lib/dockershim/sandbox/{id}内容，json.Unmashal到checkpoint
 		err := ds.checkpointManager.GetCheckpoint(id, checkpoint)
+		// 发生任何错误，都跳过这个container
 		if err != nil {
 			klog.Errorf("Failed to retrieve checkpoint for sandbox %q: %v", id, err)
 			// when checksum does not match
 			if err == errors.ErrCorruptCheckpoint {
-				// 移除/var/lib/dockershim/sandbox/{id}
+				// checksum不符合，则移除/var/lib/dockershim/sandbox/{id}
 				err = ds.checkpointManager.RemoveCheckpoint(id)
 				if err != nil {
 					klog.Errorf("Failed to delete corrupt checkpoint for sandbox %q: %v", id, err)
@@ -591,6 +642,7 @@ func (ds *dockerService) ListPodSandbox(_ context.Context, r *runtimeapi.ListPod
 			}
 			continue
 		}
+		// checkpointToRuntimeAPISandbox--转换checkpoint数据为*runtimeapi.PodSandbox，并设置state为runtimeapi.PodSandboxState_SANDBOX_NOTREADY
 		result = append(result, checkpointToRuntimeAPISandbox(id, checkpoint))
 	}
 
@@ -694,6 +746,7 @@ func (ds *dockerService) makeSandboxDockerConfig(c *runtimeapi.PodSandboxConfig,
 
 // networkNamespaceMode returns the network runtimeapi.NamespaceMode for this container.
 // Supports: POD, NODE
+// 判断是容器是host网络（返回为2，runtimeapi.NamespaceMode_NODE）或pod网络（返回0，runtimeapi.NamespaceMode_POD）
 func networkNamespaceMode(container *dockertypes.ContainerJSON) runtimeapi.NamespaceMode {
 	if container != nil && container.HostConfig != nil && string(container.HostConfig.NetworkMode) == namespaceModeHost {
 		return runtimeapi.NamespaceMode_NODE
@@ -704,6 +757,7 @@ func networkNamespaceMode(container *dockertypes.ContainerJSON) runtimeapi.Names
 // pidNamespaceMode returns the PID runtimeapi.NamespaceMode for this container.
 // Supports: CONTAINER, NODE
 // TODO(verb): add support for POD PID namespace sharing
+// 判断容器的pid是host模式（返回2，runtimeapi.NamespaceMode_NODE），或container模式（返回1，runtimeapi.NamespaceMode_CONTAINER）
 func pidNamespaceMode(container *dockertypes.ContainerJSON) runtimeapi.NamespaceMode {
 	if container != nil && container.HostConfig != nil && string(container.HostConfig.PidMode) == namespaceModeHost {
 		return runtimeapi.NamespaceMode_NODE
@@ -713,6 +767,7 @@ func pidNamespaceMode(container *dockertypes.ContainerJSON) runtimeapi.Namespace
 
 // ipcNamespaceMode returns the IPC runtimeapi.NamespaceMode for this container.
 // Supports: POD, NODE
+// 判断容器的ipc是host模式（返回2，runtimeapi.NamespaceMode_NODE），或pod模式（返回0，runtimeapi.NamespaceMode_POD）
 func ipcNamespaceMode(container *dockertypes.ContainerJSON) runtimeapi.NamespaceMode {
 	if container != nil && container.HostConfig != nil && string(container.HostConfig.IpcMode) == namespaceModeHost {
 		return runtimeapi.NamespaceMode_NODE

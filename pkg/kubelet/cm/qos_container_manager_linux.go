@@ -79,7 +79,7 @@ func (m *qosContainerManagerImpl) GetQOSContainersInfo() QOSContainersInfo {
 }
 
 // 1. 确保Burstable和BestEffort的cgroup目录存在，Burstable目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/burstable，BestEffort目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/besteffort
-// 2. 启动一个gorutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性
+// 2. 启动一个goroutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性
 func (m *qosContainerManagerImpl) Start(getNodeAllocatable func() v1.ResourceList, activePods ActivePodsFunc) error {
 	cm := m.cgroupManager
 	rootContainer := m.cgroupRoot
@@ -284,6 +284,7 @@ func (m *qosContainerManagerImpl) retrySetMemoryReserve(configs map[v1.PodQOSCla
 	}
 }
 
+// 根据所有active pod来统计Burstable和BestEffort的cgroup属性
 // 设置Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup属性值
 // cpu group设置cpu share值
 // hugepage设置 hugepage.limit_in_bytes为int64最大值

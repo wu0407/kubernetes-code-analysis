@@ -39,6 +39,7 @@ func getContextWithCancel() (context.Context, context.CancelFunc) {
 }
 
 // verifySandboxStatus verified whether all required fields are set in PodSandboxStatus.
+// 必须要有Id、Metadata、metadata.Name、metadata.Namespace、metadata.Uid、CreatedAt字段
 func verifySandboxStatus(status *runtimeapi.PodSandboxStatus) error {
 	if status.Id == "" {
 		return fmt.Errorf("Id is not set")

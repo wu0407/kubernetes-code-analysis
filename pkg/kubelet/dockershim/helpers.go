@@ -82,13 +82,16 @@ func makeLabels(labels, annotations map[string]string) map[string]string {
 
 // extractLabels converts raw docker labels to the CRI labels and annotations.
 // It also filters out internal labels used by this shim.
-// 过滤掉有label为"io.kubernetes.container.name"且"io.kubernetes.docker.type"为"podsandbox"
+// 过滤掉有label为"io.kubernetes.container.name"且"io.kubernetes.docker.type"为"podsandbox"、key为"io.kubernetes.docker.type"、"io.kubernetes.container.logpath"、"io.kubernetes.sandbox.id"
+// 返回annotation为label的key为前缀"annotation."，输出的key为截掉"annotation."前缀
+// 剩下的返回为labels
 func extractLabels(input map[string]string) (map[string]string, map[string]string) {
 	labels := make(map[string]string)
 	annotations := make(map[string]string)
 	for k, v := range input {
 		// Check if the key is used internally by the shim.
 		internal := false
+		// 跳过内部的key "io.kubernetes.docker.type"、"io.kubernetes.container.logpath"、"io.kubernetes.sandbox.id"
 		for _, internalKey := range internalLabelKeys {
 			if k == internalKey {
 				internal = true
@@ -101,6 +104,7 @@ func extractLabels(input map[string]string) (map[string]string, map[string]strin
 
 		// Delete the container name label for the sandbox. It is added in the shim,
 		// should not be exposed via CRI.
+		// 跳过"io.kubernetes.container.name"且io.kubernetes.docker.type值为"podsandbox"
 		if k == types.KubernetesContainerNameLabel &&
 			input[containerTypeLabelKey] == containerTypeLabelSandbox {
 			continue

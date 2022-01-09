@@ -95,6 +95,7 @@ func ExecPluginWithResult(ctx context.Context, pluginPath string, netconf []byte
 	return version.NewResult(confVersion, stdoutBytes)
 }
 
+// 执行命令并忽略命令执行stderr输出
 func ExecPluginWithoutResult(ctx context.Context, pluginPath string, netconf []byte, args CNIArgs, exec Exec) error {
 	if exec == nil {
 		exec = defaultExec

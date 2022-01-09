@@ -490,7 +490,7 @@ func (f *DeltaFIFO) Pop(process PopProcessFunc) (interface{}, error) {
 			continue
 		}
 		delete(f.items, id)
-		// deltafifo 更新indexer
+		// deltafifo 更新indexer，执行informer中的processor的listener
 		err := process(item)
 		if e, ok := err.(ErrRequeue); ok {
 			f.addIfNotPresent(id, item)

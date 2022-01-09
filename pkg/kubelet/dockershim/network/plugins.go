@@ -241,6 +241,8 @@ func (plugin *NoopNetworkPlugin) Status() error {
 	return nil
 }
 
+// 在nsenter里执行ip -o -4 addr show dev eth0 scope global获得网卡的ip地址
+// 在nsenter里执行ip -o -6 addr show dev eth0 scope global获得网卡的ip地址
 func getOnePodIP(execer utilexec.Interface, nsenterPath, netnsPath, interfaceName, addrType string) (net.IP, error) {
 	// Try to retrieve ip inside container network namespace
 	output, err := execer.Command(nsenterPath, fmt.Sprintf("--net=%s", netnsPath), "-F", "--",
@@ -268,11 +270,15 @@ func getOnePodIP(execer utilexec.Interface, nsenterPath, netnsPath, interfaceNam
 // GetPodIP gets the IP of the pod by inspecting the network info inside the pod's network namespace.
 // TODO (khenidak). The "primary ip" in dual stack world does not really exist. For now
 // we are defaulting to v4 as primary
+// 执行nsenter --network {ns path} ip add获取interfaceName网卡的ip地址
 func GetPodIPs(execer utilexec.Interface, nsenterPath, netnsPath, interfaceName string) ([]net.IP, error) {
+	// 如果没启用双栈，先尝试获取ipv4地址，如果失败则获取ipv6地址
 	if !utilfeature.DefaultFeatureGate.Enabled(kubefeatures.IPv6DualStack) {
+		// 在nsenter里执行ip -o　-4 addr show dev eth0 scope global获得网卡的ip地址
 		ip, err := getOnePodIP(execer, nsenterPath, netnsPath, interfaceName, "-4")
 		if err != nil {
 			// Fall back to IPv6 address if no IPv4 address is present
+			// 在nsenter里执行ip -o -6 addr show dev eth0 scope global获得网卡的ip地址
 			ip, err = getOnePodIP(execer, nsenterPath, netnsPath, interfaceName, "-6")
 		}
 		if err != nil {
@@ -286,6 +292,7 @@ func GetPodIPs(execer utilexec.Interface, nsenterPath, netnsPath, interfaceName 
 		list []net.IP
 		errs []error
 	)
+	// 启用双栈，则先获取ipv4地址，然后再获取ipv6地址
 	for _, addrType := range []string{"-4", "-6"} {
 		if ip, err := getOnePodIP(execer, nsenterPath, netnsPath, interfaceName, addrType); err == nil {
 			list = append(list, ip)
@@ -394,12 +401,15 @@ func recordOperation(operation string, start time.Time) {
 	metrics.NetworkPluginOperationsLatency.WithLabelValues(operation).Observe(metrics.SinceInSeconds(start))
 }
 
+// 返回容器的所有ip
 func (pm *PluginManager) GetPodNetworkStatus(podNamespace, podName string, id kubecontainer.ContainerID) (*PodNetworkStatus, error) {
 	defer recordOperation("get_pod_network_status", time.Now())
+	// fullPodName格式为{name}_{namespace}
 	fullPodName := kubecontainer.BuildPodFullName(podName, podNamespace)
 	pm.podLock(fullPodName).Lock()
 	defer pm.podUnlock(fullPodName)
 
+	// 通过执行nsenter --network {ns path} ip add获取网卡的ip地址，获取容器的ip地址
 	netStatus, err := pm.plugin.GetPodNetworkStatus(podNamespace, podName, id)
 	if err != nil {
 		return nil, fmt.Errorf("networkPlugin %s failed on the status hook for pod %q: %v", pm.plugin.Name(), fullPodName, err)
@@ -422,13 +432,26 @@ func (pm *PluginManager) SetUpPod(podNamespace, podName string, id kubecontainer
 	return nil
 }
 
+// kubenet网络插件
+// 1. 调用lo网络插件，执行DEL操作，释放lo网卡
+// 2. 调用bridge网络插件，执行DEL操作，释放eth0网卡和ip
+// 3. 清理pod的hostport对应的iptables规则和chain，关闭bind()调用的hostport端口
+// 4. 清理pod ip相应的tc限速规则
+// 5. 删除plugin.podIPs字段中保存container和ip
+// 6. 确保snat的iptables规则存在
+
+// cni网络插件
+// 1. 执行loopback插件，执行"DEL"操作来释放（实际是lo网卡）网卡（这里plugin.buildCNIRuntimeConf会固定设置rt.IfName为eth0）和删除相关cni插件执行result缓存文件（这里会删除eth0的缓存文件）
+// 2. 遍历执行plugin.defaultNetwork.NetworkConfig.Plugins插件，执行"DEL"操作来释放eth0网卡（可能还有其他网卡，看cni的具体实现）
 func (pm *PluginManager) TearDownPod(podNamespace, podName string, id kubecontainer.ContainerID) error {
 	defer recordOperation("tear_down_pod", time.Now())
+	// 返回 {podName}_{podNamespace}
 	fullPodName := kubecontainer.BuildPodFullName(podName, podNamespace)
 	pm.podLock(fullPodName).Lock()
 	defer pm.podUnlock(fullPodName)
 
 	klog.V(3).Infof("Calling network plugin %s to tear down pod %q", pm.plugin.Name(), fullPodName)
+	// 释放容器的网卡 
 	if err := pm.plugin.TearDownPod(podNamespace, podName, id); err != nil {
 		return fmt.Errorf("networkPlugin %s failed to teardown pod %q network: %v", pm.plugin.Name(), fullPodName, err)
 	}

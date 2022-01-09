@@ -57,6 +57,7 @@ func NewResult(version string, resultBytes []byte) (types.Result, error) {
 		err := reconciler.CheckRaw(version, resultFactory.supportedVersions)
 		if err == nil {
 			// Result supports this version
+			// 使用对应版本的newResult来解析
 			return resultFactory.newResult(resultBytes)
 		}
 	}

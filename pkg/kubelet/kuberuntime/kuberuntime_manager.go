@@ -879,6 +879,9 @@ func (m *kubeGenericRuntimeManager) doBackOff(pod *v1.Pod, container *v1.Contain
 // gracePeriodOverride if specified allows the caller to override the pod default grace period.
 // only hard kill paths are allowed to specify a gracePeriodOverride in the kubelet in order to not corrupt user data.
 // it is useful when doing SIGKILL for hard eviction scenarios, or max grace period during soft eviction scenarios.
+// 从kl.Podkiller()调用这个，则gracePeriodOverride为nil
+// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container），返回所有killContainer结果
+// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container，添加执行结果到result
 func (m *kubeGenericRuntimeManager) KillPod(pod *v1.Pod, runningPod kubecontainer.Pod, gracePeriodOverride *int64) error {
 	err := m.killPodWithSyncResult(pod, runningPod, gracePeriodOverride)
 	return err.Error()
@@ -886,7 +889,11 @@ func (m *kubeGenericRuntimeManager) KillPod(pod *v1.Pod, runningPod kubecontaine
 
 // killPodWithSyncResult kills a runningPod and returns SyncResult.
 // Note: The pod passed in could be *nil* when kubelet restarted.
+// 从kl.Podkiller()调用这个，则gracePeriodOverride为nil
+// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container），返回所有killContainer结果
+// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有sandbox container，添加执行结果到result
 func (m *kubeGenericRuntimeManager) killPodWithSyncResult(pod *v1.Pod, runningPod kubecontainer.Pod, gracePeriodOverride *int64) (result kubecontainer.PodSyncResult) {
+	// 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container），返回所有killContainer结果
 	killContainerResults := m.killContainersWithSyncResult(pod, runningPod, gracePeriodOverride)
 	for _, containerResult := range killContainerResults {
 		result.AddSyncResult(containerResult)
@@ -897,6 +904,10 @@ func (m *kubeGenericRuntimeManager) killPodWithSyncResult(pod *v1.Pod, runningPo
 	result.AddSyncResult(killSandboxResult)
 	// Stop all sandboxes belongs to same pod
 	for _, podSandbox := range runningPod.Sandboxes {
+		// runtime为dockershim
+		// 1. 获取pod namespace、pod name和是否为host网络模式，先尝试从docker inspect信息中获取，如果出错则dockershim的checkpoint中获取
+		// 2. 调用网络插件释放容器的网卡
+		// 3. 停止sandbox container，10s的优雅关闭时间
 		if err := m.runtimeService.StopPodSandbox(podSandbox.ID.ID); err != nil {
 			killSandboxResult.Fail(kubecontainer.ErrKillPodSandbox, err.Error())
 			klog.Errorf("Failed to stop sandbox %q", podSandbox.ID)
@@ -908,6 +919,7 @@ func (m *kubeGenericRuntimeManager) killPodWithSyncResult(pod *v1.Pod, runningPo
 
 // GetPodStatus retrieves the status of the pod, including the
 // information of all containers in the pod that are visible in Runtime.
+// 返回pod的uid、name、namespace、以及所有sanbox状态、ips、所有容器状态
 func (m *kubeGenericRuntimeManager) GetPodStatus(uid kubetypes.UID, name, namespace string) (*kubecontainer.PodStatus, error) {
 	// Now we retain restart count of container as a container label. Each time a container
 	// restarts, pod will read the restart count from the registered dead container, increment
@@ -922,11 +934,13 @@ func (m *kubeGenericRuntimeManager) GetPodStatus(uid kubetypes.UID, name, namesp
 	// Anyhow, we only promised "best-effort" restart count reporting, we can just ignore
 	// these limitations now.
 	// TODO: move this comment to SyncPod.
+	// 根据pod的uid和运行状态state，获取所有sandbox容器的id列表，按照创建时间倒序排（最新创建的排前面）
 	podSandboxIDs, err := m.getSandboxIDByPodUID(uid, nil)
 	if err != nil {
 		return nil, err
 	}
 
+	// 输出"{name}_{namespace}_{uid}"
 	podFullName := format.Pod(&v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -939,6 +953,7 @@ func (m *kubeGenericRuntimeManager) GetPodStatus(uid kubetypes.UID, name, namesp
 	sandboxStatuses := make([]*runtimeapi.PodSandboxStatus, len(podSandboxIDs))
 	podIPs := []string{}
 	for idx, podSandboxID := range podSandboxIDs {
+		// 如果为dockershim，则返回podsandbox的pod的元信息（name、namespace、uid、attempt（重启次数）和容器的信息（id、state运行状态、创建时间、Labels、Annotations、ip、内核命名空间、额外ip）
 		podSandboxStatus, err := m.runtimeService.PodSandboxStatus(podSandboxID)
 		if err != nil {
 			klog.Errorf("PodSandboxStatus of sandbox %q for pod %q error: %v", podSandboxID, podFullName, err)
@@ -948,11 +963,13 @@ func (m *kubeGenericRuntimeManager) GetPodStatus(uid kubetypes.UID, name, namesp
 
 		// Only get pod IP from latest sandbox
 		if idx == 0 && podSandboxStatus.State == runtimeapi.PodSandboxState_SANDBOX_READY {
+			// 验证并返回podSandbox里的所有ip（primary IP和additional ips）
 			podIPs = m.determinePodSandboxIPs(namespace, name, podSandboxStatus)
 		}
 	}
 
 	// Get statuses of all containers visible in the pod.
+	// 获取pod里所有container的状态（id、运行状态、创建时间、启动时间、完成时间、挂载、退出码、退出Reason、Message、Labels、annotations、log路径）
 	containerStatuses, err := m.getPodContainerStatuses(uid, name, namespace)
 	if err != nil {
 		if m.logReduction.ShouldMessageBePrinted(err.Error(), podFullName) {

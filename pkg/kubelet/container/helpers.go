@@ -226,6 +226,7 @@ func IsHostNetworkPod(pod *v1.Pod) bool {
 }
 
 // TODO(random-liu): Convert PodStatus to running Pod, should be deprecated soon
+// 返回pod正在运行的container和sandbox
 func ConvertPodStatusToRunningPod(runtimeName string, podStatus *PodStatus) Pod {
 	runningPod := Pod{
 		ID:        podStatus.ID,
@@ -281,6 +282,7 @@ func FormatPod(pod *Pod) string {
 }
 
 // GetContainerSpec gets the container spec by containerName.
+// 从pod信息中获取container信息（类型为v1.Container）
 func GetContainerSpec(pod *v1.Pod, containerName string) *v1.Container {
 	var containerSpec *v1.Container
 	podutil.VisitContainers(&pod.Spec, func(c *v1.Container) bool {
