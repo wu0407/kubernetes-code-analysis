@@ -22,6 +22,8 @@ func (s *BlkioGroup) Name() string {
 	return "blkio"
 }
 
+// 创建"blkio" subsystem cgroup子系统路径
+// 将d.pid（不为-1时）加入到"blkio" subsystem cgroup下的"cgroup.procs"文件
 func (s *BlkioGroup) Apply(d *cgroupData) error {
 	_, err := d.join("blkio")
 	if err != nil && !cgroups.IsNotFound(err) {

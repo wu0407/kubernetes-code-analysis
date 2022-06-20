@@ -85,6 +85,11 @@ func cadvisorInfoToCPUandMemoryStats(info *cadvisorapiv2.ContainerInfo) (*statsa
 // cadvisorInfoToContainerStats returns the statsapi.ContainerStats converted
 // from the container and filesystem info.
 // 返回最近的cpu和memory的使用情况，容器日志所在文件系统的状态，容器根文件系统的使用状态，Accelerators状态、UserDefinedMetrics
+// 返回statsapi.ContainerStats
+// 其中StartTime为info.Spec.CreationTime
+// 其中CPU和memory为info中cpu和memory使用情况
+// Logs里的文件系统大小、使用量、inode总数、inode剩余量、inode使用量为rootfs中的，UsedBytes（容器的读写层的存储使用量）为info中最近一个cstat.Filesystem里TotalUsageBytes - BaseUsageBytes
+// Rootfs里文件系统大小、使用量、inode总数、inode剩余量使用imageFs中的，UsedBytes为info中最近一个cstat.BaseUsageBytes（docker存储的目录使用量），InodesUsed为info中最近一个cstat.InodeUsage
 func cadvisorInfoToContainerStats(name string, info *cadvisorapiv2.ContainerInfo, rootFs, imageFs *cadvisorapiv2.FsInfo) *statsapi.ContainerStats {
 	result := &statsapi.ContainerStats{
 		StartTime: metav1.NewTime(info.Spec.CreationTime),
@@ -104,6 +109,7 @@ func cadvisorInfoToContainerStats(name string, info *cadvisorapiv2.ContainerInfo
 	if rootFs != nil {
 		// The container logs live on the node rootfs device
 		// 返回文件系统状态信息（大小、使用量、inode总数、inode剩余量、inode使用量）
+		// cstat只用来获取最近的监控采集时间，其他值都是rootFs
 		result.Logs = buildLogsStats(cstat, rootFs)
 	}
 
@@ -114,17 +120,22 @@ func cadvisorInfoToContainerStats(name string, info *cadvisorapiv2.ContainerInfo
 	}
 
 	cfs := cstat.Filesystem
+	// 如果container有Filesystem监控数据，则设置result.Rootfs.UsedBytes、result.Logs.UsedBytes、result.Rootfs.InodesUsed
 	if cfs != nil {
 		if cfs.BaseUsageBytes != nil {
 			if result.Rootfs != nil {
+				// 如果runtime为docker，*cfs.BaseUsageBytes为docker存储的目录使用量
 				rootfsUsage := *cfs.BaseUsageBytes
 				result.Rootfs.UsedBytes = &rootfsUsage
 			}
+			// runtime为docker，则cfs.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量
 			if cfs.TotalUsageBytes != nil && result.Logs != nil {
 				logsUsage := *cfs.TotalUsageBytes - *cfs.BaseUsageBytes
+				// 容器的读写层的存储使用量
 				result.Logs.UsedBytes = &logsUsage
 			}
 		}
+		// runtime为docker，则cfs.InodeUsage为docker存储的目录的inode数量
 		if cfs.InodeUsage != nil && result.Rootfs != nil {
 			rootInodes := *cfs.InodeUsage
 			result.Rootfs.InodesUsed = &rootInodes
@@ -183,6 +194,7 @@ func cadvisorInfoToNetworkStats(name string, info *cadvisorapiv2.ContainerInfo) 
 		Time: metav1.NewTime(cstat.Timestamp),
 	}
 
+	// []cadvisorapiv1.InterfaceStats转成[]statsapi.InterfaceStats
 	for i := range cstat.Network.Interfaces {
 		inter := cstat.Network.Interfaces[i]
 		iStat := statsapi.InterfaceStats{
@@ -193,6 +205,7 @@ func cadvisorInfoToNetworkStats(name string, info *cadvisorapiv2.ContainerInfo) 
 			TxErrors: &inter.TxErrors,
 		}
 
+		// eth0网卡状态设置为iStats.InterfaceStats
 		if inter.Name == defaultNetworkInterfaceName {
 			iStats.InterfaceStats = iStat
 		}
@@ -305,11 +318,14 @@ func getCgroupInfo(cadvisor cadvisor.Interface, containerName string, updateStat
 
 // getCgroupStats returns the latest stats of the container having the
 // specified containerName from cadvisor.
+// 从cadvisor中获得containerName的最近一个ContainerStats（容器的监控状态cpu、内存、网络、blkio、pid等）
 func getCgroupStats(cadvisor cadvisor.Interface, containerName string, updateStats bool) (*cadvisorapiv2.ContainerStats, error) {
+	// 等待所有的container的housekeeping（更新监控数据）完成后，从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态cpu、内存、网络、blkio、pid等）
 	info, err := getCgroupInfo(cadvisor, containerName, updateStats)
 	if err != nil {
 		return nil, err
 	}
+	// 返回info.Stats里的最后一个ContainerStats
 	stats, found := latestContainerStats(info)
 	if !found {
 		return nil, fmt.Errorf("failed to get latest stats from container info for %q", containerName)
@@ -317,7 +333,7 @@ func getCgroupStats(cadvisor cadvisor.Interface, containerName string, updateSta
 	return stats, nil
 }
 
-// 返回文件系统状态信息
+// 返回文件系统状态信息，比buildRootfsStats增加InodesUsed字段
 func buildLogsStats(cstat *cadvisorapiv2.ContainerStats, rootFs *cadvisorapiv2.FsInfo) *statsapi.FsStats {
 	fsStats := &statsapi.FsStats{
 		Time:           metav1.NewTime(cstat.Timestamp),
@@ -357,6 +373,14 @@ func uint64Ptr(i uint64) *uint64 {
 	return &i
 }
 
+// 返回statsapi.FsStats
+// 其中AvailableBytes为rootFsInfo.Available
+// 其中CapacityBytes为rootFsInfo.Capacity
+// 其中InodesFree为rootFsInfo.InodesFree
+// 其中Inodes为rootFsInfo.Inodes
+// 其中Time为这些里面取最晚的时间，rootFsInfo.Timestamp、所有container里container.Rootfs.Time最晚的，所有volume里volume.FsStats.Time最晚的，podLogStats不为nil则所有podLogStats.Time里最晚的时间
+// 其中UsedBytes这些里面相加，所有container.Rootfs.UsedBytes相加、所有container.Logs.UsedBytes相加、所有volume.FsStats.UsedBytes相加、podLogStats不为nil则所有podLogStats.UsedBytes相加
+// 其中InodesUsed为这些相加，所有container.Rootfs.InodesUsed相加、监控数据是从cri获取则所有container的container.Logs.InodesUsed相加、所有volume.InodesUsed相加、podLogStats不为nil则所有podLogStats.InodesUsed相加
 func calcEphemeralStorage(containers []statsapi.ContainerStats, volumes []statsapi.VolumeStats, rootFsInfo *cadvisorapiv2.FsInfo,
 	podLogStats *statsapi.FsStats, isCRIStatsProvider bool) *statsapi.FsStats {
 	result := &statsapi.FsStats{
@@ -367,30 +391,53 @@ func calcEphemeralStorage(containers []statsapi.ContainerStats, volumes []statsa
 		Inodes:         rootFsInfo.Inodes,
 	}
 	for _, container := range containers {
+		// result.Time为取result.Time和container.Rootfs.Time里最晚的时间
+		// result.InodesUsed，将result.InodesUsed和container.Rootfs.InodesUsed相加
+		// result.UsedBytes，将result.UsedBytes和container.Rootfs.UsedBytes相加
+		// 有container logs使用状态数据，则result.UsedBytes为result.UsedBytes加container.Logs.UsedBytes
+		// 有container logs使用状态数据，且监控数据是从cri获取的，则result.InodesUsed为result.InodesUsed加上container.Logs.InodesUsed
 		addContainerUsage(result, &container, isCRIStatsProvider)
 	}
 	for _, volume := range volumes {
+		// result.UsedBytes为result.UsedBytes加volume.FsStats.UsedBytes
 		result.UsedBytes = addUsage(result.UsedBytes, volume.FsStats.UsedBytes)
+		// result.InodesUsed为result.InodesUsed加volume.InodesUsed
 		result.InodesUsed = addUsage(result.InodesUsed, volume.InodesUsed)
+		// result.Time为取result.Time和volume.FsStats.Time里最晚的时间
 		result.Time = maxUpdateTime(&result.Time, &volume.FsStats.Time)
 	}
 	if podLogStats != nil {
+		// result.UsedBytes为result.UsedBytes加podLogStats.UsedBytes
 		result.UsedBytes = addUsage(result.UsedBytes, podLogStats.UsedBytes)
+		// result.InodesUsed为result.InodesUsed加podLogStats.InodesUsed
 		result.InodesUsed = addUsage(result.InodesUsed, podLogStats.InodesUsed)
+		// result.Time为取result.Time和podLogStats.Time里最晚的时间
 		result.Time = maxUpdateTime(&result.Time, &podLogStats.Time)
 	}
 	return result
 }
 
+// stat.Time为取stat.Time和container.Rootfs.Time里最晚的时间
+// stat.InodesUsed，将stat.InodesUsed和container.Rootfs.InodesUsed相加
+// stat.UsedBytes，将stat.UsedBytes和container.Rootfs.UsedBytes相加
+// 有container logs使用状态数据，则stat.UsedBytes为stat.UsedBytes加container.Logs.UsedBytes
+// 有container logs使用状态数据，且监控数据是从cri获取的，则stat.InodesUsed为stat.InodesUsed加上container.Logs.InodesUsed
 func addContainerUsage(stat *statsapi.FsStats, container *statsapi.ContainerStats, isCRIStatsProvider bool) {
 	if rootFs := container.Rootfs; rootFs != nil {
+		// stat.Time和rootFs.Time里最晚的时间
 		stat.Time = maxUpdateTime(&stat.Time, &rootFs.Time)
+		// 将stat.InodesUsed和rootFs.InodesUsed相加
 		stat.InodesUsed = addUsage(stat.InodesUsed, rootFs.InodesUsed)
+		// 将stat.UsedBytes和rootFs.UsedBytes相加
 		stat.UsedBytes = addUsage(stat.UsedBytes, rootFs.UsedBytes)
+		// 有container logs使用状态数据
 		if logs := container.Logs; logs != nil {
+			// stat.UsedBytes加logs.UsedBytes
 			stat.UsedBytes = addUsage(stat.UsedBytes, logs.UsedBytes)
 			// We have accurate container log inode usage for CRI stats provider.
+			// 监控数据是从cri获取的
 			if isCRIStatsProvider {
+				// stat.InodesUsed加上logs.InodesUsed
 				stat.InodesUsed = addUsage(stat.InodesUsed, logs.InodesUsed)
 			}
 			stat.Time = maxUpdateTime(&stat.Time, &logs.Time)
@@ -398,6 +445,7 @@ func addContainerUsage(stat *statsapi.FsStats, container *statsapi.ContainerStat
 	}
 }
 
+// 返回最晚的时间
 func maxUpdateTime(first, second *metav1.Time) metav1.Time {
 	if first.Before(second) {
 		return *second
@@ -405,6 +453,7 @@ func maxUpdateTime(first, second *metav1.Time) metav1.Time {
 	return *first
 }
 
+// 进行相加
 func addUsage(first, second *uint64) *uint64 {
 	if first == nil {
 		return second

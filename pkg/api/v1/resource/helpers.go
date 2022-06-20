@@ -58,13 +58,16 @@ func maxResourceList(list, new v1.ResourceList) {
 // containers of the pod. If PodOverhead feature is enabled, pod overhead is added to the
 // total container resource requests and to the total container limits which have a
 // non-zero quantity.
+// 统计pod的各种资源的limit和request
 func PodRequestsAndLimits(pod *v1.Pod) (reqs, limits v1.ResourceList) {
 	reqs, limits = v1.ResourceList{}, v1.ResourceList{}
+	// 统计普通container的各种资源的request和limit
 	for _, container := range pod.Spec.Containers {
 		addResourceList(reqs, container.Resources.Requests)
 		addResourceList(limits, container.Resources.Limits)
 	}
 	// init containers define the minimum of any resource
+	// 统计initcontainer的各种资源的request和limit
 	for _, container := range pod.Spec.InitContainers {
 		maxResourceList(reqs, container.Resources.Requests)
 		maxResourceList(limits, container.Resources.Limits)
@@ -72,6 +75,7 @@ func PodRequestsAndLimits(pod *v1.Pod) (reqs, limits v1.ResourceList) {
 
 	// if PodOverhead feature is supported, add overhead for running a pod
 	// to the sum of reqeuests and to non-zero limits:
+	// 启用PodOverhead，则累加上PodOverhead的各种资源的request和非0的limit
 	if pod.Spec.Overhead != nil && utilfeature.DefaultFeatureGate.Enabled(features.PodOverhead) {
 		addResourceList(reqs, pod.Spec.Overhead)
 
@@ -87,6 +91,9 @@ func PodRequestsAndLimits(pod *v1.Pod) (reqs, limits v1.ResourceList) {
 }
 
 // GetResourceRequestQuantity finds and returns the request quantity for a specific resource.
+// 所有container的resourceName资源的request总的大小
+// 如果所有container的resourceName资源的总request小于所有init container里的request的最大值，则使用init container的request
+// pod定义了Overhead且启用了"PodOverhead"，resourceName资源的request总的大小（pod里container的资源request）不为0，则resourceName资源的request总的大小加上podOverhead
 func GetResourceRequestQuantity(pod *v1.Pod, resourceName v1.ResourceName) resource.Quantity {
 	requestQuantity := resource.Quantity{}
 
@@ -99,6 +106,7 @@ func GetResourceRequestQuantity(pod *v1.Pod, resourceName v1.ResourceName) resou
 		requestQuantity = resource.Quantity{Format: resource.DecimalSI}
 	}
 
+	// resourceName为"ephemeral-storage"且没有启用"LocalStorageCapacityIsolation"功能
 	if resourceName == v1.ResourceEphemeralStorage && !utilfeature.DefaultFeatureGate.Enabled(features.LocalStorageCapacityIsolation) {
 		// if the local storage capacity isolation feature gate is disabled, pods request 0 disk
 		return requestQuantity
@@ -110,8 +118,10 @@ func GetResourceRequestQuantity(pod *v1.Pod, resourceName v1.ResourceName) resou
 		}
 	}
 
+	// requestQuantity小于所有init container里的request的最大值，则使用init container的request
 	for _, container := range pod.Spec.InitContainers {
 		if rQuantity, ok := container.Resources.Requests[resourceName]; ok {
+			// requestQuantity没有init的request大，则使用init container的request
 			if requestQuantity.Cmp(rQuantity) < 0 {
 				requestQuantity = rQuantity.DeepCopy()
 			}
@@ -120,6 +130,7 @@ func GetResourceRequestQuantity(pod *v1.Pod, resourceName v1.ResourceName) resou
 
 	// if PodOverhead feature is supported, add overhead for running a pod
 	// to the total requests if the resource total is non-zero
+	// pod定义了Overhead且启用了"PodOverhead"，requestQuantity（pod里container的资源request）不为0，则requestQuantity加上podOverhead
 	if pod.Spec.Overhead != nil && utilfeature.DefaultFeatureGate.Enabled(features.PodOverhead) {
 		if podOverhead, ok := pod.Spec.Overhead[resourceName]; ok && !requestQuantity.IsZero() {
 			requestQuantity.Add(podOverhead)
@@ -146,11 +157,14 @@ func GetResourceRequest(pod *v1.Pod, resource v1.ResourceName) int64 {
 
 // ExtractResourceValueByContainerName extracts the value of a resource
 // by providing container name
+// 从pod里的name为containerName的container中获取ResourceFieldSelector.Resource的值
 func ExtractResourceValueByContainerName(fs *v1.ResourceFieldSelector, pod *v1.Pod, containerName string) (string, error) {
+	// 从pod里所有container和initcontainer里查找name为containerName的container
 	container, err := findContainerInPod(pod, containerName)
 	if err != nil {
 		return "", err
 	}
+	// 获得container里ResourceFieldSelector.Resource的值
 	return ExtractContainerResourceValue(fs, container)
 }
 
@@ -171,8 +185,10 @@ func ExtractResourceValueByContainerNameAndNodeAllocatable(fs *v1.ResourceFieldS
 
 // ExtractContainerResourceValue extracts the value of a resource
 // in an already known container
+// 获得container里ResourceFieldSelector.Resource的值
 func ExtractContainerResourceValue(fs *v1.ResourceFieldSelector, container *v1.Container) (string, error) {
 	divisor := resource.Quantity{}
+	// ResourceFieldSelector里没有指定Divisor，则默认为1
 	if divisor.Cmp(fs.Divisor) == 0 {
 		divisor = resource.MustParse("1")
 	} else {
@@ -219,6 +235,7 @@ func convertResourceEphemeralStorageToString(ephemeralStorage *resource.Quantity
 }
 
 // findContainerInPod finds a container by its name in the provided pod
+// 从pod里所有container和initcontainer里查找name为containerName的container
 func findContainerInPod(pod *v1.Pod, containerName string) (*v1.Container, error) {
 	for _, container := range pod.Spec.Containers {
 		if container.Name == containerName {
@@ -235,6 +252,7 @@ func findContainerInPod(pod *v1.Pod, containerName string) (*v1.Container, error
 
 // MergeContainerResourceLimits checks if a limit is applied for
 // the container, and if not, it sets the limit to the passed resource list.
+// 设置container的resource limit，如果container某种resource没有设置limit，则设置为allocatable里对应resource的值
 func MergeContainerResourceLimits(container *v1.Container,
 	allocatable v1.ResourceList) {
 	if container.Resources.Limits == nil {

@@ -89,6 +89,7 @@ func newProp(name string, units interface{}) systemdDbus.Property {
 // system. This functions similarly to systemd's `sd_booted(3)`: internally, it
 // checks whether /run/systemd/system/ exists and is a directory.
 // http://www.freedesktop.org/software/systemd/man/sd_booted.html
+// 判断"/run/systemd/system"是否存在且是一个目录
 func isRunningSystemd() bool {
 	fi, err := os.Lstat("/run/systemd/system")
 	if err != nil {
@@ -97,7 +98,9 @@ func isRunningSystemd() bool {
 	return fi.IsDir()
 }
 
+// 判断"/run/systemd/system"是否存在且是一个目录且创建一个systemdDbus成功
 func UseSystemd() bool {
+	// 判断"/run/systemd/system"是否存在且是一个目录
 	if !isRunningSystemd() {
 		return false
 	}
@@ -107,6 +110,7 @@ func UseSystemd() bool {
 
 	if theConn == nil {
 		var err error
+		// 新建一个systemdbus连接
 		theConn, err = systemdDbus.New()
 		if err != nil {
 			return false
@@ -135,17 +139,24 @@ func NewSystemdCgroupsManager() (func(config *configs.Cgroup, paths map[string]s
 	}, nil
 }
 
+// 执行systemd临时unit（类似执行systemd-run命令）来创建相应的cgroup目录，并设置相应的资源属性值（MemoryLimit、"CPUShares"、"CPUQuotaPerSecUSec"、"BlockIOWeight"、"TasksMax"）这里没有支持cpuset设置，这个需要systemd244版本
+// 如果pid为-1，则直接返回。否则将pid写入到cgroup子系统下的"cgroup.procs"文件
 func (m *LegacyManager) Apply(pid int) error {
 	var (
 		c          = m.Cgroups
+		// c.Name不为".slice"结尾，则返回{c.ScopePrefix}-{c.Name}+".scope"
+		// c.Name为".slice"结尾，则返回c.Name
 		unitName   = getUnitName(c)
 		slice      = "system.slice"
 		properties []systemdDbus.Property
 	)
 
+	// 已经知道了所有cgroup子系统的路径
 	if c.Paths != nil {
 		paths := make(map[string]string)
 		for name, path := range c.Paths {
+			// 获得subsystem cgroup的路径，比如subsystem为"cpu", 返回"/sys/fs/cgroup/cpu,cpuacct/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice"
+			// 必须m.Cgroups.Name不为空
 			_, err := getSubsystemPath(m.Cgroups, name)
 			if err != nil {
 				// Don't fail if a cgroup hierarchy was not found, just skip this subsystem
@@ -157,6 +168,7 @@ func (m *LegacyManager) Apply(pid int) error {
 			paths[name] = path
 		}
 		m.Paths = paths
+		// 遍历m.Paths将pid写入path下的"cgroup.procs"文件
 		return cgroups.EnterPid(m.Paths, pid)
 	}
 
@@ -182,6 +194,9 @@ func (m *LegacyManager) Apply(pid int) error {
 	// Check if we can delegate. This is only supported on systemd versions 218 and above.
 	if !strings.HasSuffix(unitName, ".slice") {
 		// Assume scopes always support delegation.
+		// https://systemd.io/CGROUP_DELEGATION/#delegation
+		// https://www.freedesktop.org/software/systemd/man/systemd.resource-control.html#Delegate=
+		// 开启后将更多的资源控制交给进程自己管理。开启后unit可以在单其cgroup下创建和管理其自己的cgroup的私人子层级，systemd将不在维护其cgroup以及将其进程从unit的cgroup里移走
 		properties = append(properties, newProp("Delegate", true))
 	}
 
@@ -193,6 +208,8 @@ func (m *LegacyManager) Apply(pid int) error {
 		newProp("BlockIOAccounting", true))
 
 	// Assume DefaultDependencies= will always work (the check for it was previously broken.)
+	// https://www.freedesktop.org/software/systemd/man/systemd.unit.html#DefaultDependencies=
+	// If set to no, this option does not disable all implicit dependencies, just non-essential ones.
 	properties = append(properties,
 		newProp("DefaultDependencies", false))
 
@@ -217,6 +234,9 @@ func (m *LegacyManager) Apply(pid int) error {
 			// (integer percentage of CPU) internally.  This means that if a fractional percent of
 			// CPU is indicated by Resources.CpuQuota, we need to round up to the nearest
 			// 10ms (1% of a second) such that child cgroups can set the cpu.cfs_quota_us they expect.
+			// Resources.CpuQuota是多少个Resources.CpuPeriod
+			// 首先将c.Resources.CpuQuota转成一个cpuPeriod为1000000 microseconds（即一个cpuPeriod为1s），c.Resources.CpuQuota*1000000 / c.Resources.CpuPeriod = cpuQuotaPerSecUSe
+			// 在一个cpucpuPeriod为1秒microseconds的值，不能整除10000（10ms），则将cpuQuotaPerSecUSe向上取整，cpuQuotaPerSecUSec = ((cpuQuotaPerSecUSec / 10000) + 1) * 10000
 			cpuQuotaPerSecUSec = uint64(c.Resources.CpuQuota*1000000) / c.Resources.CpuPeriod
 			if cpuQuotaPerSecUSec%10000 != 0 {
 				cpuQuotaPerSecUSec = ((cpuQuotaPerSecUSec / 10000) + 1) * 10000
@@ -240,12 +260,16 @@ func (m *LegacyManager) Apply(pid int) error {
 	// We have to set kernel memory here, as we can't change it once
 	// processes have been attached to the cgroup.
 	if c.Resources.KernelMemory != 0 {
+		// 创建memory的cgroup路径
+		// 当memory cgroup的目录下没有绑定pid文件，设置memory的cgroup路径下的memory.kmem.limit_in_bytes为-1（无限制）
 		if err := setKernelMemory(c); err != nil {
 			return err
 		}
 	}
 
 	statusChan := make(chan string, 1)
+	// https://www.freedesktop.org/software/systemd/man/systemd-run.html
+	// 类似执行systemd-run命令，运行临时的systemd unit
 	if _, err := theConn.StartTransientUnit(unitName, "replace", properties, statusChan); err == nil {
 		select {
 		case <-statusChan:
@@ -256,12 +280,26 @@ func (m *LegacyManager) Apply(pid int) error {
 		return err
 	}
 
+	// 将pid写入到cgroup子系统下的"cgroup.procs"文件
+	// "name=systemd"不处理
+	// "cpuset"
+	//    1. 递归的创建cpuset的cgroup父目录
+	//    2. 如果递归路径下面的"cpuset.cpus"和"cpuset.mems"文件的内容为空，则设置为其父目录里对应文件的值
+	//    3. 创建cpuset的cgroup目录
+	//    4. cgroup里设置了CpusetCpus和CpusetMems值，则写入进程cpuset的cgroup目录下"cpuset.cpus"和"cpuset.mems"文件
+	//    5. 如果path路径下面的"cpuset.cpus"和"cpuset.mems"文件的内容为空，则设置为父目录里对应文件的值
+	//    6. 如果pid为-1，则直接返回。否则将pid写入（覆盖）到进程cpuset的cgroup下的"cgroup.procs"文件，最多重试5次
+	// "devices"、"memory"、"cpu"、"cpuacct"、"pids"、"hugetlb"、"blkio"、"perf_event"、"freezer"、"net_prio"、"net_cls"
+	//   1. 创建subsystem cgroup子系统路径并将pid写入到subsystem cgroup子系统路径下的"cgroup.procs"文件，如果pid为-1，则直接返回。
+	//   其中"devices"发生错误直接返回，其他子系统发生cgroup子系统NotFoundError不存错误可以忽略，其他错误直接返回
 	if err := joinCgroups(c, pid); err != nil {
 		return err
 	}
 
+	// 将所有存在的cgroup子系统路径写入到m.Paths
 	paths := make(map[string]string)
 	for _, s := range legacySubsystems {
+		// 获得subsystem cgroup的路径，比如subsystem为"cpu", 返回"/sys/fs/cgroup/cpu,cpuacct/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice"
 		subsystemPath, err := getSubsystemPath(m.Cgroups, s.Name())
 		if err != nil {
 			// Don't fail if a cgroup hierarchy was not found, just skip this subsystem
@@ -301,21 +339,37 @@ func (m *LegacyManager) GetUnifiedPath() (string, error) {
 	return "", errors.New("unified path is only supported when running in unified mode")
 }
 
+// 创建subsystem cgroup子系统路径并将pid写入到subsystem cgroup子系统路径下的"cgroup.procs"文件
 func join(c *configs.Cgroup, subsystem string, pid int) (string, error) {
+	// 获得subsystem cgroup的路径，比如subsystem为"cpu", 返回"/sys/fs/cgroup/cpu,cpuacct/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice"
 	path, err := getSubsystemPath(c, subsystem)
 	if err != nil {
 		return "", err
 	}
 
+	// 创建subsystem cgroup子系统路径
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return "", err
 	}
+	// 将pid写入到path下的"cgroup.procs"文件，最多重试5次
 	if err := cgroups.WriteCgroupProc(path, pid); err != nil {
 		return "", err
 	}
 	return path, nil
 }
 
+// 将pid写入到cgroup子系统下的"cgroup.procs"文件
+// "name=systemd"不处理
+// "cpuset"
+//    1. 递归的创建cpuset的cgroup父目录
+//    2. 如果递归路径下面的"cpuset.cpus"和"cpuset.mems"文件的内容为空，则设置为其父目录里对应文件的值
+//    3. 创建cpuset的cgroup目录
+//    4. cgroup里设置了CpusetCpus和CpusetMems值，则写入进程cpuset的cgroup目录下"cpuset.cpus"和"cpuset.mems"文件
+//    5. 如果path路径下面的"cpuset.cpus"和"cpuset.mems"文件的内容为空，则设置为父目录里对应文件的值
+//    6. 如果pid为-1，则直接返回。否则将pid写入（覆盖）到进程cpuset的cgroup下的"cgroup.procs"文件，最多重试5次
+// "devices"、"memory"、"cpu"、"cpuacct"、"pids"、"hugetlb"、"blkio"、"perf_event"、"freezer"、"net_prio"、"net_cls"
+//   1. 创建subsystem cgroup子系统路径并将pid写入到subsystem cgroup子系统路径下的"cgroup.procs"文件，如果pid为-1，则直接返回。
+//   其中"devices"发生错误直接返回，其他子系统发生cgroup子系统NotFoundError不存错误可以忽略，其他错误直接返回
 func joinCgroups(c *configs.Cgroup, pid int) error {
 	for _, sys := range legacySubsystems {
 		name := sys.Name()
@@ -323,25 +377,38 @@ func joinCgroups(c *configs.Cgroup, pid int) error {
 		case "name=systemd":
 			// let systemd handle this
 		case "cpuset":
+			// 如果dir目录下"cpuset.cpus"和"cpuset.mems"文件为空，则写入dir下的"cgroup.procs"文件会报错"write error: No space left on device"，所以这里会特殊处理
+
+			// 获得subsystem cgroup的路径，比如subsystem为"cpuset", 返回"/sys/fs/cgroup/cpuset/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice"
 			path, err := getSubsystemPath(c, name)
+			// 忽略获取cpuset cgroup路径时候发生的NotFoundError错误
 			if err != nil && !cgroups.IsNotFound(err) {
 				return err
 			}
 			s := &fs.CpusetGroup{}
+			// 递归的创建cpuset的cgroup父目录
+			// 如果递归路径下面的"cpuset.cpus"和"cpuset.mems"文件的内容为空，则设置为其父目录里对应文件的值
+			// 创建cpuset的cgroup目录
+			// cgroup里设置了CpusetCpus和CpusetMems值，则写入进程cpuset的cgroup目录下"cpuset.cpus"和"cpuset.mems"文件
+			// 如果path路径下面的"cpuset.cpus"和"cpuset.mems"文件的内容为空，则设置为父目录里对应文件的值
+			// 将pid写入（覆盖）到进程cpuset的cgroup下的"cgroup.procs"文件，最多重试5次
 			if err := s.ApplyDir(path, c, pid); err != nil {
 				return err
 			}
 		default:
+			// 创建subsystem cgroup子系统路径并将pid写入到subsystem cgroup子系统路径下的"cgroup.procs"文件
 			_, err := join(c, name, pid)
 			if err != nil {
 				// Even if it's `not found` error, we'll return err
 				// because devices cgroup is hard requirement for
 				// container security.
+				// 为devices cgroup，则返回任意错误
 				if name == "devices" {
 					return err
 				}
 				// For other subsystems, omit the `not found` error
 				// because they are optional.
+				// 其他cgroup子系统可以忽略不存在
 				if !cgroups.IsNotFound(err) {
 					return err
 				}
@@ -386,12 +453,17 @@ func ExpandSlice(slice string) (string, error) {
 	return path, nil
 }
 
+// 获得subsystem cgroup的路径，比如subsystem为"cpu", 返回"/sys/fs/cgroup/cpu,cpuacct/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice"
 func getSubsystemPath(c *configs.Cgroup, subsystem string) (string, error) {
+	// 如果是cgroup2子系统，返回"/sys/fs/cgroup"
+	// 否则cgroup1子系统，找到subsystem子系统在/proc/self/mountinfo信息里挂载目录（匹配cgroupPath）和root目录
+	// 比如cgroupPath为"/sys/fs/cgroup" subsystem为"cpu", 返回"/sys/fs/cgroup/cpu,cpuacct"
 	mountpoint, err := cgroups.FindCgroupMountpoint(c.Path, subsystem)
 	if err != nil {
 		return "", err
 	}
 
+	// 从/proc/1/cgroup获得subsystem对应的相对subsystem cgroup根路径的路径，比如"cpu"对应"/"
 	initPath, err := cgroups.GetInitCgroup(subsystem)
 	if err != nil {
 		return "", err
@@ -404,6 +476,7 @@ func getSubsystemPath(c *configs.Cgroup, subsystem string) (string, error) {
 		slice = c.Parent
 	}
 
+	// 对"-"进行转换，test-a-b.slice becomes /test.slice/test-a.slice/test-a-b.slice.
 	slice, err = ExpandSlice(slice)
 	if err != nil {
 		return "", err
@@ -490,6 +563,8 @@ func (m *LegacyManager) Set(container *configs.Config) error {
 	return nil
 }
 
+// c.Name不为".slice"结尾，则返回{c.ScopePrefix}-{c.Name}+".scope"
+// c.Name为".slice"结尾，则返回c.Name
 func getUnitName(c *configs.Cgroup) string {
 	// by default, we create a scope unless the user explicitly asks for a slice.
 	if !strings.HasSuffix(c.Name, ".slice") {
@@ -498,17 +573,22 @@ func getUnitName(c *configs.Cgroup) string {
 	return c.Name
 }
 
+// 创建memory的cgroup路径
+// 当memory cgroup的目录下没有绑定pid，设置memory的cgroup路径下的memory.kmem.limit_in_bytes为-1（无限制）
 func setKernelMemory(c *configs.Cgroup) error {
+	// 获得subsystem cgroup的路径，比如subsystem为"memory", 返回"/sys/fs/cgroup/memory/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice"
 	path, err := getSubsystemPath(c, "memory")
 	if err != nil && !cgroups.IsNotFound(err) {
 		return err
 	}
 
+	// 创建memory cgroup的路径
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return err
 	}
 	// do not try to enable the kernel memory if we already have
 	// tasks in the cgroup.
+	// 读取memory cgroup的目录下"tasks"文件
 	content, err := ioutil.ReadFile(filepath.Join(path, "tasks"))
 	if err != nil {
 		return err
@@ -516,6 +596,10 @@ func setKernelMemory(c *configs.Cgroup) error {
 	if len(content) > 0 {
 		return nil
 	}
+	// memory cgroup的路径里没有pid，则设置
+	// 将"1"写入到path下的memory.kmem.limit_in_bytes文件
+	// 如果发生了"EBUSY"错误，说明cgroup路径下面还有子cgroup路径或cgroup.procs里已经有进程绑定了，直接返回
+	// 否则将"-1"写入到path下的memory.kmem.limit_in_bytes文件，设置为无限制
 	return fs.EnableKernelMemoryAccounting(path)
 }
 

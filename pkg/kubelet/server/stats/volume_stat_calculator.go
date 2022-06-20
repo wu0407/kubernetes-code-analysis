@@ -59,9 +59,14 @@ func newVolumeStatCalculator(statsProvider Provider, jitterPeriod time.Duration,
 }
 
 // StartOnce starts pod volume calc that will occur periodically in the background until s.StopOnce is called
+// 启动一个goroutine，周期性获得pod各个volume的挂载目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free，并将状态保存到s.latest
+// 返回volumeStatCalculator
 func (s *volumeStatCalculator) StartOnce() *volumeStatCalculator {
 	s.startO.Do(func() {
 		go wait.JitterUntil(func() {
+			// 获得pod各个volume的获取目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free
+			// 并将状态分为两类EphemeralVolumes（EmptyDir且EmptyDir底层存储不是内存、ConfigMap、GitRepo）和PersistentVolumes
+			// 将状态保存到s.latest
 			s.calcAndStoreStats()
 		}, s.jitterPeriod, 1.0, true, s.stopChannel)
 	})
@@ -78,6 +83,8 @@ func (s *volumeStatCalculator) StopOnce() *volumeStatCalculator {
 }
 
 // getLatest returns the most recent PodVolumeStats from the cache
+// 从s.latest里获取PodVolumeStats（pod各个volume的获取目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free）
+// 状态分为两类EphemeralVolumes（EmptyDir且EmptyDir底层存储不是内存、ConfigMap、GitRepo）和PersistentVolumes
 func (s *volumeStatCalculator) GetLatest() (PodVolumeStats, bool) {
 	result := s.latest.Load()
 	if result == nil {
@@ -88,8 +95,12 @@ func (s *volumeStatCalculator) GetLatest() (PodVolumeStats, bool) {
 
 // calcAndStoreStats calculates PodVolumeStats for a given pod and writes the result to the s.latest cache.
 // If the pod references PVCs, the prometheus metrics for those are updated with the result.
+// 获得pod各个volume的获取目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free
+// 并将状态分为两类EphemeralVolumes（EmptyDir且EmptyDir底层存储不是内存、ConfigMap、GitRepo）和PersistentVolumes
+// 将状态保存到s.latest
 func (s *volumeStatCalculator) calcAndStoreStats() {
 	// Find all Volumes for the Pod
+	// pod的outerVolumeSpecName（比如pod.Spec.Volumes[x].Name）对应的volume.Mounter
 	volumes, found := s.statsProvider.ListVolumesForPod(s.pod.UID)
 	if !found {
 		return
@@ -105,6 +116,7 @@ func (s *volumeStatCalculator) calcAndStoreStats() {
 	var ephemeralStats []stats.VolumeStats
 	var persistentStats []stats.VolumeStats
 	for name, v := range volumes {
+		// 获取目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free
 		metric, err := v.GetMetrics()
 		if err != nil {
 			// Expected for Volumes that don't support Metrics
@@ -116,13 +128,17 @@ func (s *volumeStatCalculator) calcAndStoreStats() {
 		// Lookup the volume spec and add a 'PVCReference' for volumes that reference a PVC
 		volSpec := volumesSpec[name]
 		var pvcRef *stats.PVCReference
+		// volume是个pvc
 		if pvcSource := volSpec.PersistentVolumeClaim; pvcSource != nil {
 			pvcRef = &stats.PVCReference{
+				// pvc name
 				Name:      pvcSource.ClaimName,
 				Namespace: s.pod.GetNamespace(),
 			}
 		}
+		// 将*volume.Metrics转成stats.VolumeStats
 		volumeStats := s.parsePodVolumeStats(name, pvcRef, metric, volSpec)
+		// EmptyDir且EmptyDir底层存储不是内存、ConfigMap、GitRepo
 		if isVolumeEphemeral(volSpec) {
 			ephemeralStats = append(ephemeralStats, volumeStats)
 		} else {
@@ -132,11 +148,13 @@ func (s *volumeStatCalculator) calcAndStoreStats() {
 	}
 
 	// Store the new stats
+	// 将pod的volume使用状态保存到s.latest里
 	s.latest.Store(PodVolumeStats{EphemeralVolumes: ephemeralStats,
 		PersistentVolumes: persistentStats})
 }
 
 // parsePodVolumeStats converts (internal) volume.Metrics to (external) stats.VolumeStats structures
+// 将*volume.Metrics转成stats.VolumeStats
 func (s *volumeStatCalculator) parsePodVolumeStats(podName string, pvcRef *stats.PVCReference, metric *volume.Metrics, volSpec v1.Volume) stats.VolumeStats {
 
 	var available, capacity, used, inodes, inodesFree, inodesUsed uint64
@@ -167,6 +185,7 @@ func (s *volumeStatCalculator) parsePodVolumeStats(podName string, pvcRef *stats
 	}
 }
 
+// 如果volume是EmptyDir且EmptyDir底层存储不是内存、ConfigMap、GitRepo，返回true
 func isVolumeEphemeral(volume v1.Volume) bool {
 	if (volume.EmptyDir != nil && volume.EmptyDir.Medium == v1.StorageMediumDefault) ||
 		volume.ConfigMap != nil || volume.GitRepo != nil {

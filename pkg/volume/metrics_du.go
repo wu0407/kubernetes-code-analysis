@@ -46,16 +46,19 @@ func (md *metricsDu) GetMetrics() (*Metrics, error) {
 		return metrics, NewNoPathDefinedError()
 	}
 
+	// 执行xfs_quota或du命令获取路径磁盘使用量
 	err := md.runDiskUsage(metrics)
 	if err != nil {
 		return metrics, err
 	}
 
+	// 执行xfs_quota或find，获得目录的inode数量
 	err = md.runFind(metrics)
 	if err != nil {
 		return metrics, err
 	}
 
+	// 文件系统的available bytes, byte capacity,total inodes, inodes free
 	err = md.getFsInfo(metrics)
 	if err != nil {
 		return metrics, err
@@ -66,6 +69,7 @@ func (md *metricsDu) GetMetrics() (*Metrics, error) {
 
 // runDiskUsage gets disk usage of md.path and writes the results to metrics.Used
 func (md *metricsDu) runDiskUsage(metrics *Metrics) error {
+	// 执行xfs_quota或du命令获取路径磁盘使用量
 	used, err := fs.DiskUsage(md.path)
 	if err != nil {
 		return err
@@ -75,7 +79,9 @@ func (md *metricsDu) runDiskUsage(metrics *Metrics) error {
 }
 
 // runFind executes the "find" command and writes the results to metrics.InodesUsed
+// 执行xfs_quota或find，获得目录的inode数量
 func (md *metricsDu) runFind(metrics *Metrics) error {
+	// 执行xfs_quota或find，获得目录的inode数量
 	inodesUsed, err := fs.Find(md.path)
 	if err != nil {
 		return err
@@ -86,7 +92,9 @@ func (md *metricsDu) runFind(metrics *Metrics) error {
 
 // getFsInfo writes metrics.Capacity and metrics.Available from the filesystem
 // info
+// 返回文件系统的available bytes, byte capacity,total inodes, inodes free
 func (md *metricsDu) getFsInfo(metrics *Metrics) error {
+	// 类似执行df命令，返回(available bytes, byte capacity, byte usage, total inodes, inodes free, inode usage, error)
 	available, capacity, _, inodes, inodesFree, _, err := fs.FsInfo(md.path)
 	if err != nil {
 		return NewFsInfoFailedError(err)

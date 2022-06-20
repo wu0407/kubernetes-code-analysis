@@ -441,6 +441,7 @@ type localVolume struct {
 	volume.MetricsProvider
 }
 
+// linux系统默认为"/var/lib/kubelet/pods"+{podUID}+"/volumes/kubernetes.io~local-volume"+{volumeName}
 func (l *localVolume) GetPath() string {
 	return l.plugin.host.GetPodVolumeDir(l.podUID, utilstrings.EscapeQualifiedName(localVolumePluginName), l.volName)
 }

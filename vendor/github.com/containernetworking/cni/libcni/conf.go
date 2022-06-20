@@ -214,7 +214,8 @@ func LoadConfList(dir, name string) (*NetworkConfigList, error) {
 	return ConfListFromConf(singleConf)
 }
 
-// 使用新的newValues里的各个字段覆盖original *NetworkConfig相应Network和Bytes的字段（如果Network中未定义这个字段，则只会在Bytes中添加这个字段），返回新的*NetworkConfig
+// 使用新的newValues里的各个item覆盖original *NetworkConfig里相应Network和Bytes的字段（如果Network中未定义这个字段，则只会在Bytes中添加这个字段），返回新的*NetworkConfig
+// newValues里的各个item覆盖original.Bytes里一样的item，然后使用json.Marshal为[]byte，重新生成*NetworkConfig
 func InjectConf(original *NetworkConfig, newValues map[string]interface{}) (*NetworkConfig, error) {
 	config := make(map[string]interface{})
 	err := json.Unmarshal(original.Bytes, &config)

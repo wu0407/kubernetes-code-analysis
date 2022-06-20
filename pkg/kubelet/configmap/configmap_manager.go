@@ -79,6 +79,7 @@ type configMapManager struct {
 	manager manager.Manager
 }
 
+// 如果是watch方式，从c.manager.items获取对象的objectCacheItem，在objectCacheItem的store中获取对象的资源（secret或configmap）。如果secret或configmap是不可修改的，则停止这个对象的reflector。
 func (c *configMapManager) GetConfigMap(namespace, name string) (*v1.ConfigMap, error) {
 	object, err := c.manager.GetObject(namespace, name)
 	if err != nil {

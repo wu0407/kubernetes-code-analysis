@@ -276,8 +276,10 @@ func (vm *volumeManager) Run(sourcesReady config.SourcesReady, stopCh <-chan str
 	klog.Infof("Shutting down Kubelet Volume Manager")
 }
 
+// 获取pod已经挂载的volume
 func (vm *volumeManager) GetMountedVolumesForPod(podName types.UniquePodName) container.VolumeMap {
 	podVolumes := make(container.VolumeMap)
+	// 获取pod已经挂载的volume
 	for _, mountedVolume := range vm.actualStateOfWorld.GetMountedVolumesForPod(podName) {
 		podVolumes[mountedVolume.OuterVolumeSpecName] = container.VolumeInfo{
 			Mounter:             mountedVolume.Mounter,
@@ -289,11 +291,15 @@ func (vm *volumeManager) GetMountedVolumesForPod(podName types.UniquePodName) co
 	return podVolumes
 }
 
+// 返回pod的挂载pv里annotation["pv.beta.kubernetes.io/gid"]里定义的gid（不在pod.Spec.SecurityContext.SupplementalGroups里）
 func (vm *volumeManager) GetExtraSupplementalGroupsForPod(pod *v1.Pod) []int64 {
+	// pod uid转成types.UniquePodName
 	podName := util.GetUniquePodName(pod)
 	supplementalGroups := sets.NewString()
 
+	// 遍历pod已经挂载的volume
 	for _, mountedVolume := range vm.actualStateOfWorld.GetMountedVolumesForPod(podName) {
+		// mountedVolume是pv，且pv里annotation["pv.beta.kubernetes.io/gid"]
 		if mountedVolume.VolumeGidValue != "" {
 			supplementalGroups.Insert(mountedVolume.VolumeGidValue)
 		}
@@ -301,7 +307,12 @@ func (vm *volumeManager) GetExtraSupplementalGroupsForPod(pod *v1.Pod) []int64 {
 
 	result := make([]int64, 0, supplementalGroups.Len())
 	for _, group := range supplementalGroups.List() {
+		// 如果group为空，则返回0，false
+		// 如果group不是合法数字，则返回0，false
+		// 如果group转换成int64值，在pod.Spec.SecurityContext.SupplementalGroups里，则返回0和false
+		// 否则返回group转换成int64值，true
 		iGroup, extra := getExtraSupplementalGid(group, pod)
+		// 已经请求过，则跳过
 		if !extra {
 			continue
 		}
@@ -358,11 +369,13 @@ func (vm *volumeManager) MarkVolumesAsReportedInUse(
 	vm.desiredStateOfWorld.MarkVolumesReportedInUse(volumesReportedAsInUse)
 }
 
+// 在2m3s内等待pod的所有volume进行挂载
 func (vm *volumeManager) WaitForAttachAndMount(pod *v1.Pod) error {
 	if pod == nil {
 		return nil
 	}
 
+	// pod里的所有普通container、initcontainer、EphemeralContainer里的挂载的volume和volumeDevice
 	expectedVolumes := getExpectedVolumes(pod)
 	if len(expectedVolumes) == 0 {
 		// No volumes to verify
@@ -370,23 +383,29 @@ func (vm *volumeManager) WaitForAttachAndMount(pod *v1.Pod) error {
 	}
 
 	klog.V(3).Infof("Waiting for volumes to attach and mount for pod %q", format.Pod(pod))
+	// pod uid转成types.UniquePodName
 	uniquePodName := util.GetUniquePodName(pod)
 
 	// Some pods expect to have Setup called over and over again to update.
 	// Remount plugins for which this is true. (Atomically updating volumes,
 	// like Downward API, depend on this to update the contents of the volume).
+	// 设置vm.desiredStateOfWorldPopulator.pods.processedPods里的uniquePodName为false
 	vm.desiredStateOfWorldPopulator.ReprocessPod(uniquePodName)
 
+	// 在2m3s内执行是否pod是否有未挂载的volume，如果有未挂载，则间隔300ms进行重试
 	err := wait.PollImmediate(
 		podAttachAndMountRetryInterval,
 		podAttachAndMountTimeout,
+		// 返回验证是否pod是否有未挂载的volume函数
 		vm.verifyVolumesMountedFunc(uniquePodName, expectedVolumes))
 
 	if err != nil {
 		unmountedVolumes :=
+			// 获得pod未挂载volume列表
 			vm.getUnmountedVolumes(uniquePodName, expectedVolumes)
 		// Also get unattached volumes for error message
 		unattachedVolumes :=
+			// 返回未attach到这个node上volume列表
 			vm.getUnattachedVolumes(expectedVolumes)
 
 		if len(unmountedVolumes) == 0 {
@@ -406,9 +425,11 @@ func (vm *volumeManager) WaitForAttachAndMount(pod *v1.Pod) error {
 
 // getUnattachedVolumes returns a list of the volumes that are expected to be attached but
 // are not currently attached to the node
+// 返回未attach到这个node上volume列表
 func (vm *volumeManager) getUnattachedVolumes(expectedVolumes []string) []string {
 	unattachedVolumes := []string{}
 	for _, volume := range expectedVolumes {
+		// volume未attach到这个node上，volume不在vm.actualStateOfWorld.attachedVolumes里
 		if !vm.actualStateOfWorld.VolumeExists(v1.UniqueVolumeName(volume)) {
 			unattachedVolumes = append(unattachedVolumes, volume)
 		}
@@ -418,11 +439,14 @@ func (vm *volumeManager) getUnattachedVolumes(expectedVolumes []string) []string
 
 // verifyVolumesMountedFunc returns a method that returns true when all expected
 // volumes are mounted.
+// 返回验证是否pod是否有未挂载的volume函数
 func (vm *volumeManager) verifyVolumesMountedFunc(podName types.UniquePodName, expectedVolumes []string) wait.ConditionFunc {
 	return func() (done bool, err error) {
+		// 如果vm.desiredStateOfWorld.podErrors保存了错误，返回podName在vm.desiredStateOfWorld.podErrors的值并将podName从dsw.podErrors移除
 		if errs := vm.desiredStateOfWorld.PopPodErrors(podName); len(errs) > 0 {
 			return true, errors.New(strings.Join(errs, "; "))
 		}
+		// 获得pod未挂载volume列表
 		return len(vm.getUnmountedVolumes(podName, expectedVolumes)) == 0, nil
 	}
 }
@@ -431,11 +455,14 @@ func (vm *volumeManager) verifyVolumesMountedFunc(podName types.UniquePodName, e
 // the actual state of the world, and uses it to process the list of
 // expectedVolumes. It returns a list of unmounted volumes.
 // The list also includes volume that may be mounted in uncertain state.
+// 获得pod未挂载volume列表
 func (vm *volumeManager) getUnmountedVolumes(podName types.UniquePodName, expectedVolumes []string) []string {
 	mountedVolumes := sets.NewString()
+	// 获取pod已经挂载的volume
 	for _, mountedVolume := range vm.actualStateOfWorld.GetMountedVolumesForPod(podName) {
 		mountedVolumes.Insert(mountedVolume.OuterVolumeSpecName)
 	}
+	// 返回未挂载的volume
 	return filterUnmountedVolumes(mountedVolumes, expectedVolumes)
 }
 
@@ -453,6 +480,7 @@ func filterUnmountedVolumes(mountedVolumes sets.String, expectedVolumes []string
 
 // getExpectedVolumes returns a list of volumes that must be mounted in order to
 // consider the volume setup step for this pod satisfied.
+// 所有普通container、initcontainer、EphemeralContainer里的挂载的volume和volumeDevice
 func getExpectedVolumes(pod *v1.Pod) []string {
 	mounts, devices := util.GetPodVolumeNames(pod)
 	return mounts.Union(devices).UnsortedList()
@@ -461,6 +489,10 @@ func getExpectedVolumes(pod *v1.Pod) []string {
 // getExtraSupplementalGid returns the value of an extra supplemental GID as
 // defined by an annotation on a volume and a boolean indicating whether the
 // volume defined a GID that the pod doesn't already request.
+// 如果volumeGidValue为空，则返回0，false
+// 如果volumeGidValue不是合法数字，则返回0，false
+// 如果volumeGidValue转换成int64值，在pod.Spec.SecurityContext.SupplementalGroups里，则返回0和false
+// 否则返回volumeGidValue转换成int64值，true（不在pod.Spec.SecurityContext.SupplementalGroups里）
 func getExtraSupplementalGid(volumeGidValue string, pod *v1.Pod) (int64, bool) {
 	if volumeGidValue == "" {
 		return 0, false
@@ -473,6 +505,7 @@ func getExtraSupplementalGid(volumeGidValue string, pod *v1.Pod) (int64, bool) {
 
 	if pod.Spec.SecurityContext != nil {
 		for _, existingGid := range pod.Spec.SecurityContext.SupplementalGroups {
+			// 如果volume的gid在pod.Spec.SecurityContext.SupplementalGroups里，则返回0和false
 			if gid == int64(existingGid) {
 				return 0, false
 			}

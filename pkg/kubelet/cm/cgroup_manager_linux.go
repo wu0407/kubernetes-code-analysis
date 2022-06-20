@@ -75,6 +75,7 @@ func escapeSystemdCgroupName(part string) string {
 	return strings.Replace(part, "-", "_", -1)
 }
 
+// 替换"_"为"-"
 func unescapeSystemdCgroupName(part string) string {
 	return strings.Replace(part, "_", "-", -1)
 }
@@ -90,6 +91,7 @@ func (cgroupName CgroupName) ToSystemd() string {
 	}
 	newparts := []string{}
 	for _, part := range cgroupName {
+		// 替换"-"成"_"
 		part = escapeSystemdCgroupName(part)
 		newparts = append(newparts, part)
 	}
@@ -102,12 +104,17 @@ func (cgroupName CgroupName) ToSystemd() string {
 	return result
 }
 
+// 从name中解析出CgroupName
+// name比如为"/kubepods.slice/kubepods-besteffort.slice/kubepods-besteffort-podeb424a44_7004_429d_9925_fbfbc69a7749.slice"
+// 返回["kubepods", "besteffort", "podeb424a44-7004-429d-9925-fbfbc69a7749"]
 func ParseSystemdToCgroupName(name string) CgroupName {
 	driverName := path.Base(name)
+	// 移除".slice"后缀
 	driverName = strings.TrimSuffix(driverName, systemdSuffix)
 	parts := strings.Split(driverName, "-")
 	result := []string{}
 	for _, part := range parts {
+		// 替换"_"为"-"
 		result = append(result, unescapeSystemdCgroupName(part))
 	}
 	return CgroupName(result)
@@ -125,6 +132,7 @@ func ParseCgroupfsToCgroupName(name string) CgroupName {
 	return CgroupName(components)
 }
 
+// name是否有".slice"后缀
 func IsSystemdStyleName(name string) bool {
 	return strings.HasSuffix(name, systemdSuffix)
 }
@@ -151,6 +159,7 @@ func (l *libcontainerAdapter) newManager(cgroups *libcontainerconfigs.Cgroup, pa
 		}, nil
 	case libcontainerSystemd:
 		// this means you asked systemd to manage cgroups, but systemd was not on the host, so all you can do is panic...
+		// 判断"/run/systemd/system"是否存在且是一个目录且创建一个systemdDbus成功
 		if !cgroupsystemd.UseSystemd() {
 			panic("systemd cgroup manager not available")
 		}
@@ -202,6 +211,8 @@ func NewCgroupManager(cs *CgroupSubsystems, cgroupDriver string) CgroupManager {
 
 // Name converts the cgroup to the driver specific value in cgroupfs form.
 // This always returns a valid cgroupfs path even when systemd driver is in use!
+// cgroup driver为systemd，比如{"kubepods", "burstable", "pod1234-abcd-5678-efgh"} becomes "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod1234_abcd_5678_efgh.slice"
+// cgroup driver为cgroupfs ，则"/kubepods/burstable/pod1234_abcd_5678_efgh"
 func (m *cgroupManagerImpl) Name(name CgroupName) string {
 	if m.adapter.cgroupManagerType == libcontainerSystemd {
 		return name.ToSystemd()
@@ -218,7 +229,9 @@ func (m *cgroupManagerImpl) CgroupName(name string) CgroupName {
 }
 
 // buildCgroupPaths builds a path to each cgroup subsystem for the specified name.
+// 在m.subsystems.MountPoints里每个cgroup子系统的路径都添加上转成cgroup driver的路径
 func (m *cgroupManagerImpl) buildCgroupPaths(name CgroupName) map[string]string {
+	// 转成cgroup driver的路径名
 	cgroupFsAdaptedName := m.Name(name)
 	cgroupPaths := make(map[string]string, len(m.subsystems.MountPoints))
 	for key, val := range m.subsystems.MountPoints {
@@ -232,9 +245,12 @@ func (m *cgroupManagerImpl) buildCgroupPaths(name CgroupName) map[string]string 
 // and split it appropriately, using essentially the logic below.
 // This was done for cgroupfs in opencontainers/runc#497 but a counterpart
 // for systemd was never introduced.
+// 
 // 设置cgroupConfig的Name（转成systemd路径的目录名）和Parent（转成systemd路径的父目录）
+// 比如  cgroupConfig.Name为[]string["kubepods", "besteffort", "pod33affd6b_2117_4b1a_9b47_4d33869b6ea1"]
+// libcontainerCgroupConfig.Name为"kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice"，libcontainerCgroupConfig.Parent为"/kubepods-besteffort.slice"
 func updateSystemdCgroupInfo(cgroupConfig *libcontainerconfigs.Cgroup, cgroupName CgroupName) {
-	// cgroupName转成systemd cgroup路径，比如["kubepods"]转成/sys/fs/cgroup/{cgroup subsystem}/kubepods.slice
+	// cgroupName转成systemd cgroup路径，比如["kubepods"]转成"/kubepods.slice"
 	dir, base := path.Split(cgroupName.ToSystemd())
 	if dir == "/" {
 		dir = "-.slice"
@@ -248,8 +264,9 @@ func updateSystemdCgroupInfo(cgroupConfig *libcontainerconfigs.Cgroup, cgroupNam
 // Exists checks if all subsystem cgroups already exist
 func (m *cgroupManagerImpl) Exists(name CgroupName) bool {
 	// Get map of all cgroup paths on the system for the particular cgroup
-	// 如果的name--rootCgroup为 ["/"]，在cgroup driver为systemd情况下，则cgroupPaths为各个子系统在系统中的挂载，比如cpu-->/sys/fs/cgroup/cpu,cpuacct
+	// 如果的name为空，在cgroup driver为systemd情况下，则cgroupPaths为各个子系统在系统中的挂载，比如cpu-->/sys/fs/cgroup/cpu,cpuacct
 	// 如果是name是["system"]，在cgroup driver为systemd情况下，则cgroupPaths里 cpu挂载-->/sys/fs/cgroup/cpu,cpuacct/system.slice
+	// 如果是cgroup driver为cgroupfs，name是["system"]，cgroupPaths里 cpu挂载-->/sys/fs/cgroup/cpu,cpuacct/system
 	cgroupPaths := m.buildCgroupPaths(name)
 
 	// the presence of alternative control groups not known to runc confuses
@@ -408,6 +425,7 @@ func (m *cgroupManagerImpl) toResources(resourceConfig *ResourceConfig) *libcont
 		pageSizes.Insert(sizeString)
 	}
 	// for each page size omitted, limit to 0
+	// resourceConfig.HugePageLimit里没有设置的其他pagesize，设置limit为0
 	for _, pageSize := range cgroupfs.HugePageSizes {
 		if pageSizes.Has(pageSize) {
 			continue
@@ -444,8 +462,11 @@ func (m *cgroupManagerImpl) Update(cgroupConfig *CgroupConfig) error {
 	// depending on the cgroup driver in use, so we need this conditional here.
 	if m.adapter.cgroupManagerType == libcontainerSystemd {
 		// 设置libcontainerCgroupConfig的Name（cgroupConfig.Name转成systemd路径的目录名）和Parent（cgroupConfig.Name转成systemd路径的父目录）
+		// 比如  cgroupConfig.Name为[]string["kubepods", "besteffort", "pod33affd6b_2117_4b1a_9b47_4d33869b6ea1"]
+		// libcontainerCgroupConfig.Name为"kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice"，libcontainerCgroupConfig.Parent为"/kubepods-besteffort.slice"
 		updateSystemdCgroupInfo(libcontainerCgroupConfig, cgroupConfig.Name)
 	} else {
+		// 比如上面例子，则libcontainerCgroupConfig.Path为"/kubepods/besteffort/pod33affd6b_2117_4b1a_9b47_4d33869b6ea1"
 		libcontainerCgroupConfig.Path = cgroupConfig.Name.ToCgroupfs()
 	}
 
@@ -461,12 +482,19 @@ func (m *cgroupManagerImpl) Update(cgroupConfig *CgroupConfig) error {
 }
 
 // Create creates the specified cgroup
+// cgroup driver为systemd
+//   1. 调用systemdDbus执行systemd临时unit（类似执行systemd-run命令）来创建相应的cgroup目录，并设置相应的资源属性值（MemoryLimit、"CPUShares"、"CPUQuotaPerSecUSec"、"BlockIOWeight"、"TasksMax"）这里没有支持cpuset设置，这个需要systemd244版本
+//   2. 设置各个cgroup系统（cpu、memory、pid、hugepage在系统中开启的）的属性
+// cgroup driver为cgroupfs
+//   1. 创建各个cgroup系统目录，设置一些基本的cgroup子系统属性
+//   2. 设置各个cgroup系统（cpu、memory、pid、hugepage在系统中开启的）的属性
 func (m *cgroupManagerImpl) Create(cgroupConfig *CgroupConfig) error {
 	start := time.Now()
 	defer func() {
 		metrics.CgroupManagerDuration.WithLabelValues("create").Observe(metrics.SinceInSeconds(start))
 	}()
 
+	// ResourceConfig转换成runc的libcontainer的Resources
 	resources := m.toResources(cgroupConfig.ResourceParameters)
 
 	libcontainerCgroupConfig := &libcontainerconfigs.Cgroup{
@@ -475,8 +503,13 @@ func (m *cgroupManagerImpl) Create(cgroupConfig *CgroupConfig) error {
 	// libcontainer consumes a different field and expects a different syntax
 	// depending on the cgroup driver in use, so we need this conditional here.
 	if m.adapter.cgroupManagerType == libcontainerSystemd {
+		// 设置libcontainerCgroupConfig的Name（转成systemd路径的目录名）和Parent（转成systemd路径的父目录）
+		// 比如  cgroupConfig.Name为[]string["kubepods", "besteffort", "pod33affd6b_2117_4b1a_9b47_4d33869b6ea1"]
+		// libcontainerCgroupConfig.Name为"kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice"，libcontainerCgroupConfig.Parent为"/kubepods-besteffort.slice"
 		updateSystemdCgroupInfo(libcontainerCgroupConfig, cgroupConfig.Name)
 	} else {
+		// 拼成路径
+		// 比如上面例子，则libcontainerCgroupConfig.Path为"/kubepods/besteffort/pod33affd6b_2117_4b1a_9b47_4d33869b6ea1"
 		libcontainerCgroupConfig.Path = cgroupConfig.Name.ToCgroupfs()
 	}
 
@@ -496,14 +529,18 @@ func (m *cgroupManagerImpl) Create(cgroupConfig *CgroupConfig) error {
 	// It creates cgroup files for each subsystems and writes the pid
 	// in the tasks file. We use the function to create all the required
 	// cgroup files but not attach any "real" pid to the cgroup.
-	// cgroup driver为systemd，比如cgroupConfig.Name为["kubepods"]，创建/sys/fs/cgroup/{cgroup system}/kubepods.slice目录和设置cgroup.procs为-1
-	// cgroup driver为cgroupfs，比如cgroupConfig.Name为["kubepods"]，创建/sys/fs/cgroup/{cgroup system}/kubepods目录和设置cgroup.procs为-1
+	// cgroup driver为systemd，比如cgroupConfig.Name为["kubepods"]，创建/sys/fs/cgroup/{cgroup system}/kubepods.slice目录和设置相应的cgroup属性
+	//   1. 调用systemdDbus执行systemd临时unit（类似执行systemd-run命令）来创建相应的cgroup目录，并设置相应的资源属性值（MemoryLimit、"CPUShares"、"CPUQuotaPerSecUSec"、"BlockIOWeight"、"TasksMax"）这里没有支持cpuset设置，这个需要systemd244版本
+	// 
+	// cgroup driver为cgroupfs，比如cgroupConfig.Name为["kubepods"]，创建/sys/fs/cgroup/{cgroup system}/kubepods目录和设置相应的cgroup属性
+	//  1. 创建各个cgroup系统目录，cpuset和memory和cpu设置一些基本的属性
 	if err := manager.Apply(-1); err != nil {
 		return err
 	}
 
 	// it may confuse why we call set after we do apply, but the issue is that runc
 	// follows a similar pattern.  it's needed to ensure cpu quota is set properly.
+	// 这里因为runc库里的apply不会设置所有子系统的所有属性，需要手动调用必须的cgroup子系统的Set()方法，设置这些需要的cgroup子系统的属性（比如cgroup driver为cgroupfs的memory子系统的"memory.limit_in_bytes"，所有cgroup driver设置"cpu.cfs_period_us"）
 	// 设置各个cgroup系统（cpu、memory、pid、hugepage在系统中开启的）的属性
 	if err := m.Update(cgroupConfig); err != nil {
 		utilruntime.HandleError(fmt.Errorf("cgroup update failed %v", err))

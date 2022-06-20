@@ -19,6 +19,8 @@ func (s *HugetlbGroup) Name() string {
 	return "hugetlb"
 }
 
+// 创建"hugetlb" subsystem cgroup子系统路径
+// 将d.pid（不为-1时）加入到"hugetlb" subsystem cgroup下的"cgroup.procs"文件
 func (s *HugetlbGroup) Apply(d *cgroupData) error {
 	_, err := d.join("hugetlb")
 	if err != nil && !cgroups.IsNotFound(err) {

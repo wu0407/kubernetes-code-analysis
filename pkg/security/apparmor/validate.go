@@ -46,9 +46,11 @@ type Validator interface {
 
 // NewValidator is in order to find AppArmor FS
 func NewValidator(runtime string) Validator {
+	// 检查操作系统和内核是否支持AppArmor和featureGate开启AppArmor
 	if err := validateHost(runtime); err != nil {
 		return &validator{validateHostErr: err}
 	}
+	// 在"/proc/mounts"里找到"apparmor securityfs"挂载路径
 	appArmorFS, err := getAppArmorFS()
 	if err != nil {
 		return &validator{
@@ -65,15 +67,20 @@ type validator struct {
 	appArmorFS      string
 }
 
+// 验证pod的所有container的profile是合法且已加载
 func (v *validator) Validate(pod *v1.Pod) error {
+	// pod的annotations第一个包含前缀"container.apparmor.security.beta.kubernetes.io/"的annotation的值不为"unconfined"，则返回true，代表需要apparmor验证
+	// 其他情况代表不需要验证（第一个包含前缀"container.apparmor.security.beta.kubernetes.io/"的annotation的值为"unconfined"或没有这个前缀的annotation）
 	if !isRequired(pod) {
 		return nil
 	}
 
+	// 检查主机条件检测的时候是否有不匹配的项
 	if v.ValidateHost() != nil {
 		return v.validateHostErr
 	}
 
+	// 从v.appArmorFS +"/profiles"文件中读取出"profile-name"配置
 	loadedProfiles, err := v.getLoadedProfiles()
 	if err != nil {
 		return fmt.Errorf("could not read loaded profiles: %v", err)
@@ -81,6 +88,8 @@ func (v *validator) Validate(pod *v1.Pod) error {
 
 	var retErr error
 	podutil.VisitContainers(&pod.Spec, func(container *v1.Container) bool {
+		// GetProfileName----》pod的annotations["container.apparmor.security.beta.kubernetes.io/"+containerName]
+		// 检查profile格式是否合法和是否已经加载了
 		retErr = validateProfile(GetProfileName(pod, container.Name), loadedProfiles)
 		if retErr != nil {
 			return false
@@ -96,8 +105,10 @@ func (v *validator) ValidateHost() error {
 }
 
 // Verify that the host and runtime is capable of enforcing AppArmor profiles.
+// 检查操作系统和内核是否支持AppArmor和featureGate开启AppArmor
 func validateHost(runtime string) error {
 	// Check feature-gates
+	// 默认是开启的
 	if !utilfeature.DefaultFeatureGate.Enabled(features.AppArmor) {
 		return errors.New("AppArmor disabled by feature-gate")
 	}
@@ -121,11 +132,14 @@ func validateHost(runtime string) error {
 }
 
 // Verify that the profile is valid and loaded.
+// 检查profile格式是否合法和是否已经加载了
 func validateProfile(profile string, loadedProfiles map[string]bool) error {
+	// 检查profile格式
 	if err := ValidateProfileFormat(profile); err != nil {
 		return err
 	}
 
+	// profile包含"localhost/"前缀，检查profile是否在loadedProfiles里
 	if strings.HasPrefix(profile, ProfileNamePrefix) {
 		profileName := strings.TrimPrefix(profile, ProfileNamePrefix)
 		if !loadedProfiles[profileName] {
@@ -137,16 +151,23 @@ func validateProfile(profile string, loadedProfiles map[string]bool) error {
 }
 
 // ValidateProfileFormat checks the format of the profile.
+// 检查profile格式
+// 合法的格式为：
+// 1. profile为空或"runtime/default"或"unconfined"
+// 2. 包含"localhost/"前缀
 func ValidateProfileFormat(profile string) error {
+	// profile为空或"runtime/default"或"unconfined"，都是合法的
 	if profile == "" || profile == ProfileRuntimeDefault || profile == ProfileNameUnconfined {
 		return nil
 	}
+	// 必须包含"localhost/"前缀
 	if !strings.HasPrefix(profile, ProfileNamePrefix) {
 		return fmt.Errorf("invalid AppArmor profile name: %q", profile)
 	}
 	return nil
 }
 
+// 从v.appArmorFS +"/profiles"文件中读取出"profile-name"配置
 func (v *validator) getLoadedProfiles() (map[string]bool, error) {
 	profilesPath := path.Join(v.appArmorFS, "profiles")
 	profilesFile, err := os.Open(profilesPath)
@@ -181,6 +202,7 @@ func parseProfileName(profileLine string) string {
 	return strings.TrimSpace(profileLine[:modeIndex])
 }
 
+// 在"/proc/mounts"里找到"apparmor securityfs"挂载路径
 func getAppArmorFS() (string, error) {
 	mountsFile, err := os.Open("/proc/mounts")
 	if err != nil {

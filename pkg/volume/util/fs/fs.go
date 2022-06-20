@@ -32,6 +32,7 @@ import (
 
 // FSInfo linux returns (available bytes, byte capacity, byte usage, total inodes, inodes free, inode usage, error)
 // for the filesystem that path resides upon.
+// 类似执行df命令，返回(available bytes, byte capacity, byte usage, total inodes, inodes free, inode usage, error)
 func FsInfo(path string) (int64, int64, int64, int64, int64, int64, error) {
 	statfs := &unix.Statfs_t{}
 	err := unix.Statfs(path, statfs)
@@ -56,16 +57,20 @@ func FsInfo(path string) (int64, int64, int64, int64, int64, int64, error) {
 }
 
 // DiskUsage gets disk usage of specified path.
+// 执行xfs_quota或du命令获取路径磁盘使用量
 func DiskUsage(path string) (*resource.Quantity, error) {
 	// First check whether the quota system knows about this directory
 	// A nil quantity with no error means that the path does not support quotas
 	// and we should use other mechanisms.
+	// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} quota -p -N -n -v -b {id}"
 	data, err := fsquota.GetConsumption(path)
+	// 如果输出不为空，说明是xfs系统
 	if data != nil {
 		return data, nil
 	} else if err != nil {
 		return nil, fmt.Errorf("unable to retrieve disk consumption via quota for %s: %v", path, err)
 	}
+	// 输出为空，代表不是xfs系统，则执行du命令来获取磁盘使用大小
 	// Uses the same niceness level as cadvisor.fs does when running du
 	// Uses -B 1 to always scale to a blocksize of 1 byte
 	out, err := exec.Command("nice", "-n", "19", "du", "-x", "-s", "-B", "1", path).CombinedOutput()
@@ -82,6 +87,7 @@ func DiskUsage(path string) (*resource.Quantity, error) {
 
 // Find uses the equivalent of the command `find <path> -dev -printf '.' | wc -c` to count files and directories.
 // While this is not an exact measure of inodes used, it is a very good approximation.
+// 执行xfs_quota或find，获得目录的inode数量
 func Find(path string) (int64, error) {
 	if path == "" {
 		return 0, fmt.Errorf("invalid directory")
@@ -89,7 +95,10 @@ func Find(path string) (int64, error) {
 	// First check whether the quota system knows about this directory
 	// A nil quantity with no error means that the path does not support quotas
 	// and we should use other mechanisms.
+	// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} quota -p -N -n -v -i {id}"
+	// 返回命令输出的数字
 	inodes, err := fsquota.GetInodes(path)
+	// 返回不为nil，说明文件系统是xfs
 	if inodes != nil {
 		return inodes.Value(), nil
 	} else if err != nil {
@@ -97,6 +106,7 @@ func Find(path string) (int64, error) {
 	}
 	var counter byteCounter
 	var stderr bytes.Buffer
+	// 文件系统不是xfs，则执行"find {path} -xdev -printf ."
 	findCmd := exec.Command("find", path, "-xdev", "-printf", ".")
 	findCmd.Stdout, findCmd.Stderr = &counter, &stderr
 	if err := findCmd.Start(); err != nil {

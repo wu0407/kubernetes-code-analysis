@@ -693,6 +693,7 @@ func (asw *actualStateOfWorld) VolumeExistsWithSpecName(podName volumetypes.Uniq
 	return false
 }
 
+// volume是否attach到这个node上，volume是否在asw.attachedVolumes里
 func (asw *actualStateOfWorld) VolumeExists(
 	volumeName v1.UniqueVolumeName) bool {
 	asw.RLock()
@@ -738,6 +739,7 @@ func (asw *actualStateOfWorld) GetAllMountedVolumes() []MountedVolume {
 	return mountedVolume
 }
 
+// 获取pod已经挂载的volume
 func (asw *actualStateOfWorld) GetMountedVolumesForPod(
 	podName volumetypes.UniquePodName) []MountedVolume {
 	asw.RLock()
@@ -748,6 +750,7 @@ func (asw *actualStateOfWorld) GetMountedVolumesForPod(
 			if mountedPodName == podName && podObj.volumeMountStateForPod == operationexecutor.VolumeMounted {
 				mountedVolume = append(
 					mountedVolume,
+					// 根据podObj、volumeObj生成MountedVolume
 					getMountedVolume(&podObj, &volumeObj))
 			}
 		}
@@ -894,6 +897,7 @@ func IsFSResizeRequiredError(err error) bool {
 
 // getMountedVolume constructs and returns a MountedVolume object from the given
 // mountedPod and attachedVolume objects.
+// 根据mountedPod、attachedVolume生成MountedVolume
 func getMountedVolume(
 	mountedPod *mountedPod, attachedVolume *attachedVolume) MountedVolume {
 	return MountedVolume{

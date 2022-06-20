@@ -339,6 +339,7 @@ func MachineInfo(nodeName string,
 			}
 
 			// 一般都为nil
+			// 返回所有device plugin的resource的capacity（包括health和unhealthy的）、所有device plugin的resource的allocatable（包括health的），所有删除掉的resource
 			devicePluginCapacity, devicePluginAllocatable, removedDevicePlugins = devicePluginResourceCapacityFunc()
 			if devicePluginCapacity != nil {
 				for k, v := range devicePluginCapacity {
@@ -359,6 +360,8 @@ func MachineInfo(nodeName string,
 				// This is required to differentiate the device plugin managed
 				// resources and the cluster-level resources, which are absent in
 				// node status.
+				// cluster-level extend resources如果Capacity为0，会从node status中移除（cluster-level extend resources不会在device plugin中）
+				// device plugin managed resources不会从node status中移除，而是置为0
 				node.Status.Capacity[v1.ResourceName(removedResource)] = *resource.NewQuantity(int64(0), resource.DecimalSI)
 			}
 		}

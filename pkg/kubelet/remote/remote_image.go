@@ -80,6 +80,7 @@ func (r *RemoteImageService) ImageStatus(image *runtimeapi.ImageSpec) (*runtimea
 	ctx, cancel := getContextWithTimeout(r.timeout)
 	defer cancel()
 
+	// 如果runtime是dockershim，返回docker image inspect结果
 	resp, err := r.imageClient.ImageStatus(ctx, &runtimeapi.ImageStatusRequest{
 		Image: image,
 	})
@@ -88,6 +89,7 @@ func (r *RemoteImageService) ImageStatus(image *runtimeapi.ImageSpec) (*runtimea
 		return nil, err
 	}
 
+	// 必须id不为空且size大于0
 	if resp.Image != nil {
 		if resp.Image.Id == "" || resp.Image.Size_ == 0 {
 			errorMessage := fmt.Sprintf("Id or size of image %q is not set", image.Image)
@@ -100,10 +102,16 @@ func (r *RemoteImageService) ImageStatus(image *runtimeapi.ImageSpec) (*runtimea
 }
 
 // PullImage pulls an image with authentication config.
+// 如果runtime是dockershim
+// 拉取镜像，并启动一个goroutine 每10s记录拉取状态（进度条）到日志。
+// 执行docker image inspect，并校验镜像地址与返回的结果是否一致，如果inspect结果中有RepoDigests，则返回digest，否则返回镜像id
 func (r *RemoteImageService) PullImage(image *runtimeapi.ImageSpec, auth *runtimeapi.AuthConfig, podSandboxConfig *runtimeapi.PodSandboxConfig) (string, error) {
 	ctx, cancel := getContextWithCancel()
 	defer cancel()
 
+	// 如果runtime是dockershim
+	// 拉取镜像，并启动一个goroutine 每10s记录拉取状态（进度条）到日志。
+	// 执行docker image inspect，并校验镜像地址与返回的结果是否一致，如果inspect结果中有RepoDigests，则返回digest，否则返回镜像id
 	resp, err := r.imageClient.PullImage(ctx, &runtimeapi.PullImageRequest{
 		Image:         image,
 		Auth:          auth,

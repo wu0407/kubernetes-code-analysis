@@ -36,6 +36,7 @@ import (
 // threadSafeStore because it takes a write lock every time it checks if
 // an item has expired.
 type ExpirationCache struct {
+	// cacheStorage保存了TimestampedEntry（保存了obj和timestamp和key）
 	cacheStorage     ThreadSafeStore
 	keyFunc          KeyFunc
 	clock            clock.Clock
@@ -63,6 +64,7 @@ type TTLPolicy struct {
 
 // IsExpired returns true if the given object is older than the ttl, or it can't
 // determine its age.
+// 判断TimestampedEntry是否过期了
 func (p *TTLPolicy) IsExpired(obj *TimestampedEntry) bool {
 	return p.TTL > 0 && p.Clock.Since(obj.Timestamp) > p.TTL
 }
@@ -78,31 +80,40 @@ type TimestampedEntry struct {
 }
 
 // getTimestampedEntry returns the TimestampedEntry stored under the given key.
+// 从cacheStorage中获取TimestampedEntry
 func (c *ExpirationCache) getTimestampedEntry(key string) (*TimestampedEntry, bool) {
+	// 如果cacheStorage中没有找到这个key，则item为nil
 	item, _ := c.cacheStorage.Get(key)
+	// 找到了则转换为TimestampedEntry
 	if tsEntry, ok := item.(*TimestampedEntry); ok {
 		return tsEntry, true
 	}
+	// 没有找到
 	return nil, false
 }
 
 // getOrExpire retrieves the object from the TimestampedEntry if and only if it hasn't
 // already expired. It holds a write lock across deletion.
+// 从cacheStorage中获取TimestampedEntry，如果过期执行惰性删除，返回nil, false
+// 未过期，则返回TimestampedEntry里的Obj, true
 func (c *ExpirationCache) getOrExpire(key string) (interface{}, bool) {
 	// Prevent all inserts from the time we deem an item as "expired" to when we
 	// delete it, so an un-expired item doesn't sneak in under the same key, just
 	// before the Delete.
 	c.expirationLock.Lock()
 	defer c.expirationLock.Unlock()
+	// 从cacheStorage中获取TimestampedEntry
 	timestampedItem, exists := c.getTimestampedEntry(key)
 	if !exists {
 		return nil, false
 	}
+	// 判断TimestampedEntry是否过期了，过期了就执行删除
 	if c.expirationPolicy.IsExpired(timestampedItem) {
 		klog.V(4).Infof("Entry %v: %+v has expired", key, timestampedItem.Obj)
 		c.cacheStorage.Delete(key)
 		return nil, false
 	}
+	// 未过期
 	return timestampedItem.Obj, true
 }
 
@@ -114,11 +125,16 @@ func (c *ExpirationCache) GetByKey(key string) (interface{}, bool, error) {
 
 // Get returns unexpired items. It purges the cache of expired items in the
 // process.
+// 先根据c.keyFunc算出key
+// 从c.cacheStorage中根据key获取TimestampedEntry，如果过期执行惰性删除，返回nil, false, 错误
+// 未过期，则返回TimestampedEntry里的Obj, true, nil
 func (c *ExpirationCache) Get(obj interface{}) (interface{}, bool, error) {
 	key, err := c.keyFunc(obj)
 	if err != nil {
 		return nil, false, KeyError{obj, err}
 	}
+	// 从c.cacheStorage中获取TimestampedEntry，如果过期执行惰性删除，返回nil, false
+	// 未过期，则返回TimestampedEntry里的Obj, true
 	obj, exists := c.getOrExpire(key)
 	return obj, exists, nil
 }
@@ -145,6 +161,7 @@ func (c *ExpirationCache) ListKeys() []string {
 
 // Add timestamps an item and inserts it into the cache, overwriting entries
 // that might exist under the same key.
+// 添加对象到c.cacheStorage
 func (c *ExpirationCache) Add(obj interface{}) error {
 	key, err := c.keyFunc(obj)
 	if err != nil {
@@ -153,6 +170,7 @@ func (c *ExpirationCache) Add(obj interface{}) error {
 	c.expirationLock.Lock()
 	defer c.expirationLock.Unlock()
 
+	// 将TimestampedEntry添加到c.cacheStorage
 	c.cacheStorage.Add(key, &TimestampedEntry{obj, c.clock.Now(), key})
 	return nil
 }

@@ -34,8 +34,8 @@ func applySandboxSecurityContext(lc *runtimeapi.LinuxPodSandboxConfig, config *d
 
 	var sc *runtimeapi.LinuxContainerSecurityContext
 	if lc.SecurityContext != nil {
-		// LinuxSandboxSecurityContext转成LinuxContainerSecurityContext
-		// LinuxSandboxSecurityContext跟LinuxContainerSecurityContext比，没有Capabilities、ApparmorProfile、RunAsUsername、NoNewPrivs、MaskedPaths、ReadonlyPaths
+		// （lc.SecurityContext）runtimeapi.LinuxSandboxSecurityContext转成（sc）runtimeapi.LinuxContainerSecurityContext
+		// LinuxSandboxSecurityContext跟LinuxContainerSecurityContext比，LinuxContainerSecurityContext没有Capabilities、ApparmorProfile、RunAsUsername、NoNewPrivs、MaskedPaths、ReadonlyPaths
 		sc = &runtimeapi.LinuxContainerSecurityContext{
 			// 忽略lc.SecurityContext里Privileged和SeccompProfilePath
 			SupplementalGroups: lc.SecurityContext.SupplementalGroups,
@@ -53,7 +53,7 @@ func applySandboxSecurityContext(lc *runtimeapi.LinuxPodSandboxConfig, config *d
 		return err
 	}
 
-	// 设置HostConfig的GroupAdd、Privileged（sandbox不设置）、ReadonlyRootfs、CapAdd（不设置）、CapDrop（不设置）、SecurityOpt、MaskedPaths（为nil）、ReadonlyPaths（为nil）
+	// 设置HostConfig的GroupAdd、Privileged（sandbox不设置）、ReadonlyRootfs、CapAdd（不设置）、CapDrop（不设置）、SecurityOpt（只有selinux）、MaskedPaths（为nil）、ReadonlyPaths（为nil）
 	if err := modifyHostConfig(sc, hc, separator); err != nil {
 		return err
 	}
@@ -63,23 +63,28 @@ func applySandboxSecurityContext(lc *runtimeapi.LinuxPodSandboxConfig, config *d
 }
 
 // applyContainerSecurityContext updates docker container options according to security context.
+// 设置config.User和hc的GroupAdd、Privileged、ReadonlyRootfs、CapAdd、CapDrop、SecurityOpt（包含selinux、apparmor、NoNewPrivs，但是没有Seccomp）、MaskedPaths、ReadonlyPaths、PidMode、NetworkMode、IpcMode、UTSMode
 func applyContainerSecurityContext(lc *runtimeapi.LinuxContainerConfig, podSandboxID string, config *dockercontainer.Config, hc *dockercontainer.HostConfig, separator rune) error {
 	if lc == nil {
 		return nil
 	}
 
+	// 根据sc *runtimeapi.LinuxContainerSecurityContext的RunAsUser、RunAsUsername、RunAsGroup，设置config.User
 	err := modifyContainerConfig(lc.SecurityContext, config)
 	if err != nil {
 		return err
 	}
+	// 设置hc *dockercontainer.HostConfig的GroupAdd、Privileged、ReadonlyRootfs、CapAdd、CapDrop、SecurityOpt（包含selinux、apparmor、NoNewPrivs，但是没有Seccomp）、MaskedPaths、ReadonlyPaths
 	if err := modifyHostConfig(lc.SecurityContext, hc, separator); err != nil {
 		return err
 	}
+	// 根据lc.SecurityContext.GetNamespaceOptions() *runtimeapi.NamespaceOption设置hc的PidMode、NetworkMode、IpcMode、UTSMode
 	modifyContainerNamespaceOptions(lc.SecurityContext.GetNamespaceOptions(), podSandboxID, hc)
 	return nil
 }
 
 // modifyContainerConfig applies container security context config to dockercontainer.Config.
+// 根据sc *runtimeapi.LinuxContainerSecurityContext的RunAsUser、RunAsUsername、RunAsGroup，设置config.User
 func modifyContainerConfig(sc *runtimeapi.LinuxContainerSecurityContext, config *dockercontainer.Config) error {
 	if sc == nil {
 		return nil
@@ -105,7 +110,7 @@ func modifyContainerConfig(sc *runtimeapi.LinuxContainerSecurityContext, config 
 }
 
 // modifyHostConfig applies security context config to dockercontainer.HostConfig.
-// 设置HostConfig的GroupAdd、Privileged、ReadonlyRootfs、CapAdd、CapDrop、SecurityOpt、MaskedPaths、ReadonlyPaths
+// 设置HostConfig的GroupAdd、Privileged、ReadonlyRootfs、CapAdd、CapDrop、SecurityOpt（包含selinux、apparmor、NoNewPrivs，但是没有Seccomp）、MaskedPaths、ReadonlyPaths
 func modifyHostConfig(sc *runtimeapi.LinuxContainerSecurityContext, hostConfig *dockercontainer.HostConfig, separator rune) error {
 	if sc == nil {
 		return nil
@@ -134,6 +139,7 @@ func modifyHostConfig(sc *runtimeapi.LinuxContainerSecurityContext, hostConfig *
 
 	// Apply apparmor options.
 	// apparmorSecurityOpts为["apparmor<separator><profileName>"]
+	// 比如separator为"="，则["apparmor=<profileName>", "apparmor=<profileName>"]
 	apparmorSecurityOpts, err := getApparmorSecurityOpts(sc, separator)
 	if err != nil {
 		return fmt.Errorf("failed to generate apparmor security options: %v", err)
@@ -153,15 +159,18 @@ func modifyHostConfig(sc *runtimeapi.LinuxContainerSecurityContext, hostConfig *
 }
 
 // modifySandboxNamespaceOptions apply namespace options for sandbox
+// 设置hostConfig的IpcMode、NetworkMode、PidMode
 func modifySandboxNamespaceOptions(nsOpts *runtimeapi.NamespaceOption, hostConfig *dockercontainer.HostConfig, network *knetwork.PluginManager) {
 	// The sandbox's PID namespace is the one that's shared, so CONTAINER and POD are equivalent for it
 	if nsOpts.GetPid() == runtimeapi.NamespaceMode_NODE {
 		hostConfig.PidMode = namespaceModeHost
 	}
+	// 设置hostConfig的IpcMode、NetworkMode
 	modifyHostOptionsForSandbox(nsOpts, network, hostConfig)
 }
 
 // modifyContainerNamespaceOptions apply namespace options for container
+// 根据nsOpts *runtimeapi.NamespaceOption设置hostConfig的PidMode、NetworkMode、IpcMode、UTSMode
 func modifyContainerNamespaceOptions(nsOpts *runtimeapi.NamespaceOption, podSandboxID string, hostConfig *dockercontainer.HostConfig) {
 	switch nsOpts.GetPid() {
 	case runtimeapi.NamespaceMode_NODE:
@@ -171,10 +180,12 @@ func modifyContainerNamespaceOptions(nsOpts *runtimeapi.NamespaceOption, podSand
 	case runtimeapi.NamespaceMode_TARGET:
 		hostConfig.PidMode = dockercontainer.PidMode(fmt.Sprintf("container:%v", nsOpts.GetTargetId()))
 	}
+	// 设置hostConfig *dockercontainer.HostConfig的NetworkMode、IpcMode、UTSMode
 	modifyHostOptionsForContainer(nsOpts, podSandboxID, hostConfig)
 }
 
 // modifyHostOptionsForSandbox applies NetworkMode/UTSMode to sandbox's dockercontainer.HostConfig.
+// 设置hc的IpcMode、NetworkMode
 func modifyHostOptionsForSandbox(nsOpts *runtimeapi.NamespaceOption, network *knetwork.PluginManager, hc *dockercontainer.HostConfig) {
 	if nsOpts.GetIpc() == runtimeapi.NamespaceMode_NODE {
 		hc.IpcMode = namespaceModeHost
@@ -200,6 +211,7 @@ func modifyHostOptionsForSandbox(nsOpts *runtimeapi.NamespaceOption, network *kn
 }
 
 // modifyHostOptionsForContainer applies NetworkMode/UTSMode to container's dockercontainer.HostConfig.
+// 设置hc *dockercontainer.HostConfig的NetworkMode、IpcMode、UTSMode
 func modifyHostOptionsForContainer(nsOpts *runtimeapi.NamespaceOption, podSandboxID string, hc *dockercontainer.HostConfig) {
 	sandboxNSMode := fmt.Sprintf("container:%v", podSandboxID)
 	hc.NetworkMode = dockercontainer.NetworkMode(sandboxNSMode)

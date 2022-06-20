@@ -15,6 +15,8 @@ func (s *NetPrioGroup) Name() string {
 	return "net_prio"
 }
 
+// 创建"net_prio" subsystem cgroup子系统路径
+// 将d.pid（不为-1时）加入到"net_prio" subsystem cgroup下的"cgroup.procs"文件
 func (s *NetPrioGroup) Apply(d *cgroupData) error {
 	_, err := d.join("net_prio")
 	if err != nil && !cgroups.IsNotFound(err) {

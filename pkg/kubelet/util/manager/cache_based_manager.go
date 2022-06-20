@@ -214,15 +214,19 @@ type cacheBasedManager struct {
 	registeredPods map[objectKey]*v1.Pod
 }
 
+// 
 func (c *cacheBasedManager) GetObject(namespace, name string) (runtime.Object, error) {
 	return c.objectStore.Get(namespace, name)
 }
 
+// 将pod添加到c.registeredPods字段中，在c.objectStore里增加相关secret或configmap的引用计数，如果这个对象不存在，则创建一个新的reflector（只watch和list这个资源）
 func (c *cacheBasedManager) RegisterPod(pod *v1.Pod) {
+	// 获取相关secrets或configmaps
 	names := c.getReferencedObjects(pod)
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	for name := range names {
+		// 增加secret或configmap的引用计数，如果这个对象不存在，则创建一个新的reflector（只watch和list这个资源）
 		c.objectStore.AddReference(pod.Namespace, name)
 	}
 	var prev *v1.Pod
@@ -230,17 +234,23 @@ func (c *cacheBasedManager) RegisterPod(pod *v1.Pod) {
 	prev = c.registeredPods[key]
 	c.registeredPods[key] = pod
 	if prev != nil {
+		// 如果之前存在相同名字的pod，则重复的增加引用计数，这个时候需要减少引用计数
 		for name := range c.getReferencedObjects(prev) {
 			// On an update, the .Add() call above will have re-incremented the
 			// ref count of any existing object, so any objects that are in both
 			// names and prev need to have their ref counts decremented. Any that
 			// are only in prev need to be completely removed. This unconditional
 			// call takes care of both cases.
+			// 减少这个item（对象的namespace为prev.Namespace和名称为name）的引用次数，如果应用次数等于0，则停止这个item的reflector，并删除这个item
+			// 为什么要先AddReference，再DeleteReference？
+			// 因为这里pod可能更新了secret或configmap，先执行对新pod执行AddReference（防止已有的secret或configmap减到0，reflector被停止），然后对老podDeleteReference。如果只对新的pod执行AddReference，则老的pod移除的secret或configmap的reflector一直在
 			c.objectStore.DeleteReference(prev.Namespace, name)
 		}
 	}
 }
 
+// 根据objectKey（name和namespace构成）从registeredPods字段中找到这个pod
+// 如果pod不为空，则减少相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
 func (c *cacheBasedManager) UnregisterPod(pod *v1.Pod) {
 	var prev *v1.Pod
 	key := objectKey{namespace: pod.Namespace, name: pod.Name}
@@ -249,7 +259,9 @@ func (c *cacheBasedManager) UnregisterPod(pod *v1.Pod) {
 	prev = c.registeredPods[key]
 	delete(c.registeredPods, key)
 	if prev != nil {
+		// 获取相关secrets或configmaps
 		for name := range c.getReferencedObjects(prev) {
+			// 减少这个item（对象的namespace为prev.Namespace和名称为name）的引用次数，如果应用次数等于0，则停止这个item的reflector，并删除这个item
 			c.objectStore.DeleteReference(prev.Namespace, name)
 		}
 	}

@@ -26,15 +26,27 @@ import (
 	"k8s.io/kubernetes/pkg/kubelet/cm"
 )
 
+// 返回nodeconfig里的KubeletCgroupsName、RuntimeCgroupsName、SystemCgroupsName和pod cgroup root（比如"/kubepods.slice"）
+// 这些container最近的cpu和memory的使用情况，Accelerators状态（gpu）、UserDefinedMetrics（kubelet没有）、最近的网卡状态
+// 其中statsapi.ContainerStats里Logs, Rootfs为nil，并将Name（cgroup路径）改为对应的类型名
 func (sp *summaryProviderImpl) GetSystemContainersStats(nodeConfig cm.NodeConfig, podStats []statsapi.PodStats, updateStats bool) (stats []statsapi.ContainerStats) {
 	systemContainers := map[string]struct {
 		name             string
 		forceStatsUpdate bool
 		startTime        metav1.Time
 	}{
+		// KubeletCgroupsName默认为空
+		// "kubelet"
 		statsapi.SystemContainerKubelet: {name: nodeConfig.KubeletCgroupsName, forceStatsUpdate: false, startTime: sp.kubeletCreationTime},
+		// RuntimeCgroupsName默认为空
+		// "runtime"
 		statsapi.SystemContainerRuntime: {name: nodeConfig.RuntimeCgroupsName, forceStatsUpdate: false},
+		// SystemCgroupsName默认为空
+		// "misc"
 		statsapi.SystemContainerMisc:    {name: nodeConfig.SystemCgroupsName, forceStatsUpdate: false},
+		// systemd为cgroup driver，默认返回为"/kubepods.slice"
+		// cgroupfs为cgroup driver，则返回"/kubepods"
+		// "pods"
 		statsapi.SystemContainerPods:    {name: sp.provider.GetPodCgroupRoot(), forceStatsUpdate: updateStats},
 	}
 	for sys, cont := range systemContainers {
@@ -42,6 +54,7 @@ func (sp *summaryProviderImpl) GetSystemContainersStats(nodeConfig cm.NodeConfig
 		if cont.name == "" {
 			continue
 		}
+		// 返回cont.name容器最近的cpu和memory的使用情况，Accelerators状态（gpu）、UserDefinedMetrics（kubelet没有）、最近的网卡状态
 		s, _, err := sp.provider.GetCgroupStats(cont.name, cont.forceStatsUpdate)
 		if err != nil {
 			klog.Errorf("Failed to get system container stats for %q: %v", cont.name, err)

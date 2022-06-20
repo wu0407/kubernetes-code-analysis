@@ -159,6 +159,11 @@ func NewResource(rl v1.ResourceList) *Resource {
 }
 
 // Add adds ResourceList into Resource.
+// 将rl中的cpu（乘以1000）累加到r.MilliCPU
+// 将rl中的memory累加到r.Memory
+// 将rl中的pods累加到r.AllowedPodNumber
+// 如果启用了"LocalStorageCapacityIsolation"，则rl中的"ephemeral-storage"累加到r.EphemeralStorage
+// 如果资源名字是ScalarResourceName，则将对应的资源的值累加到r.ScalarResources对应资源
 func (r *Resource) Add(rl v1.ResourceList) {
 	if r == nil {
 		return
@@ -178,7 +183,13 @@ func (r *Resource) Add(rl v1.ResourceList) {
 				r.EphemeralStorage += rQuant.Value()
 			}
 		default:
+			// 资源名字是下面几种情况
+			// 是扩展资源（包含斜杠，或不是“kubernetes.io/”为前缀，且不是“request.”为前缀。且将"requests." 加上name组成字符串，验证这个字符串是合法）
+			// 或name包含"hugepages-"前缀
+			// 或name为"kubernetes.io/"前缀
+			// 或name包含"attachable-volumes-"前缀
 			if v1helper.IsScalarResourceName(rName) {
+				// 将对应的资源的值累加到r.ScalarResources对应资源
 				r.AddScalar(rName, rQuant.Value())
 			}
 		}
@@ -235,6 +246,7 @@ func (r *Resource) SetScalar(name v1.ResourceName, quantity int64) {
 }
 
 // SetMaxResource compares with ResourceList and takes max value for each Resource.
+// 如果rl里的资源的值大于r中对应的资源值，则更新r中对应资源值为rl中的值
 func (r *Resource) SetMaxResource(rl v1.ResourceList) {
 	if r == nil {
 		return
@@ -243,18 +255,26 @@ func (r *Resource) SetMaxResource(rl v1.ResourceList) {
 	for rName, rQuantity := range rl {
 		switch rName {
 		case v1.ResourceMemory:
+			// memory的值大于r.Memory，则更新r.Memory值
 			if mem := rQuantity.Value(); mem > r.Memory {
 				r.Memory = mem
 			}
 		case v1.ResourceCPU:
+			// 如果cpu的值大于r.MilliCPU，则更新r.MilliCPU
 			if cpu := rQuantity.MilliValue(); cpu > r.MilliCPU {
 				r.MilliCPU = cpu
 			}
 		case v1.ResourceEphemeralStorage:
+			// ephemeral-storage值大于r.EphemeralStorage，则更新r.EphemeralStorage
 			if ephemeralStorage := rQuantity.Value(); ephemeralStorage > r.EphemeralStorage {
 				r.EphemeralStorage = ephemeralStorage
 			}
 		default:
+			// 资源名称是下面几种情况，如果值大于r.ScalarResources里对应资源的值，则更新r.ScalarResources里对应资源的值
+			// 是扩展资源（包含斜杠，或不是“kubernetes.io/”为前缀，且不是“request.”为前缀。且将"requests." 加上name组成字符串，验证这个字符串是合法）
+			// 或name包含"hugepages-"前缀
+			// 或name为"kubernetes.io/"前缀
+			// 或name包含"attachable-volumes-"前缀
 			if v1helper.IsScalarResourceName(rName) {
 				value := rQuantity.Value()
 				if value > r.ScalarResources[rName] {
@@ -472,6 +492,7 @@ func (n *NodeInfo) String() string {
 		podKeys, n.requestedResource, n.nonzeroRequest, n.usedPorts, n.allocatableResource)
 }
 
+// pod.Spec.Affinity.PodAffinity或pod.Spec.Affinity.PodAntiAffinity不为nil
 func hasPodAffinityConstraints(pod *v1.Pod) bool {
 	affinity := pod.Spec.Affinity
 	return affinity != nil && (affinity.PodAffinity != nil || affinity.PodAntiAffinity != nil)
@@ -479,6 +500,9 @@ func hasPodAffinityConstraints(pod *v1.Pod) bool {
 
 // AddPod adds pod information to this NodeInfo.
 func (n *NodeInfo) AddPod(pod *v1.Pod) {
+	// res为各个init container的cpu request、所有普通container的总cpu request中的最大值，加上Overhead的cpu
+	// non0CPU为各个init container的cpu request（没有设置request，则为默认值100）、所有普通container的总cpu request（没有设置request，则为默认值100）中的最大值，加上Overhead的cpu
+	// non0Mem为各个init container的memory request（没有设置request，则为默认200Mi）、所有普通container的总memory request（没有设置request，则为默认200Mi）中的最大值，加上Overhead的Memory
 	res, non0CPU, non0Mem := calculateResource(pod)
 	n.requestedResource.MilliCPU += res.MilliCPU
 	n.requestedResource.Memory += res.Memory
@@ -492,13 +516,16 @@ func (n *NodeInfo) AddPod(pod *v1.Pod) {
 	n.nonzeroRequest.MilliCPU += non0CPU
 	n.nonzeroRequest.Memory += non0Mem
 	n.pods = append(n.pods, pod)
+	// pod.Spec.Affinity.PodAffinity或pod.Spec.Affinity.PodAntiAffinity不为nil
 	if hasPodAffinityConstraints(pod) {
 		n.podsWithAffinity = append(n.podsWithAffinity, pod)
 	}
 
 	// Consume ports when pods added.
+	// 将pod中所有普通container的port信息，添加到n.usedPorts
 	n.UpdateUsedPorts(pod, true)
 
+	// 原子性的加1
 	n.generation = nextGeneration()
 }
 
@@ -569,10 +596,20 @@ func (n *NodeInfo) resetSlicesIfEmpty() {
 }
 
 // resourceRequest = max(sum(podSpec.Containers), podSpec.InitContainers) + overHead
+// res为各个init container的cpu request、所有普通container的总cpu request中的最大值，加上Overhead的cpu
+// non0CPU为各个init container的cpu request（没有设置request，则为默认值100）、所有普通container的总cpu request（没有设置request，则为默认值100）中的最大值，加上Overhead的cpu
+// non0Mem为各个init container的memory request（没有设置request，则为默认200Mi）、所有普通container的总memory request（没有设置request，则为默认200Mi）中的最大值，加上Overhead的Memory
 func calculateResource(pod *v1.Pod) (res Resource, non0CPU int64, non0Mem int64) {
 	resPtr := &res
 	for _, c := range pod.Spec.Containers {
+		// 将rl中的cpu（乘以1000）累加到r.MilliCPU
+		// 将rl中的memory累加到r.Memory
+		// 将rl中的pods累加到r.AllowedPodNumber
+		// 如果启用了"LocalStorageCapacityIsolation"，则rl中的"ephemeral-storage"累加到r.EphemeralStorage
+		// 如果资源名字是ScalarResourceName，则将对应的资源的值累加到r.ScalarResources对应资源
 		resPtr.Add(c.Resources.Requests)
+		// request中没有指定cpu，则cpu request默认为100。否则，有就返回cpu request的值（乘以1000）
+		// request中没有指定memory，则memory request为200Mi，有就返回memory request值
 		non0CPUReq, non0MemReq := schedutil.GetNonzeroRequests(&c.Resources.Requests)
 		non0CPU += non0CPUReq
 		non0Mem += non0MemReq
@@ -580,25 +617,36 @@ func calculateResource(pod *v1.Pod) (res Resource, non0CPU int64, non0Mem int64)
 	}
 
 	for _, ic := range pod.Spec.InitContainers {
+		// init container的request中的各个资源值，大于resPtr中的对应资源值，则更新resPtr中的值。（resPtr里保存了各个资源的request的最大值）
 		resPtr.SetMaxResource(ic.Resources.Requests)
 		non0CPUReq, non0MemReq := schedutil.GetNonzeroRequests(&ic.Resources.Requests)
+		// non0CPU为各个init container的cpu request、所有普通container的总cpu request中的最大值
 		if non0CPU < non0CPUReq {
 			non0CPU = non0CPUReq
 		}
 
+		// non0Mem为各个init container的memory request、所有普通container的总memory request中的最大值
 		if non0Mem < non0MemReq {
 			non0Mem = non0MemReq
 		}
 	}
 
 	// If Overhead is being utilized, add to the total requests for the pod
+	// pod.Spec.Overhead不为nil，且启用pod.Spec.Overhead特性
 	if pod.Spec.Overhead != nil && utilfeature.DefaultFeatureGate.Enabled(features.PodOverhead) {
+		// 将rl中的cpu（乘以1000）累加到r.MilliCPU
+		// 将rl中的memory累加到r.Memory
+		// 将rl中的pods累加到r.AllowedPodNumber
+		// 如果启用了"LocalStorageCapacityIsolation"，则rl中的"ephemeral-storage"累加到r.EphemeralStorage
+		// 如果资源名字是ScalarResourceName，则将对应的资源的值累加到r.ScalarResources对应资源
 		resPtr.Add(pod.Spec.Overhead)
 		if _, found := pod.Spec.Overhead[v1.ResourceCPU]; found {
+			// non0CPU累加Overhead的cpu
 			non0CPU += pod.Spec.Overhead.Cpu().MilliValue()
 		}
 
 		if _, found := pod.Spec.Overhead[v1.ResourceMemory]; found {
+			// non0Mem累加Overhead的Memory
 			non0Mem += pod.Spec.Overhead.Memory().Value()
 		}
 	}
@@ -607,12 +655,14 @@ func calculateResource(pod *v1.Pod) (res Resource, non0CPU int64, non0Mem int64)
 }
 
 // UpdateUsedPorts updates the UsedPorts of NodeInfo.
+// 将pod中所有普通container的port信息，添加到n.usedPorts，或从n.usedPorts移除
 func (n *NodeInfo) UpdateUsedPorts(pod *v1.Pod, add bool) {
 	for j := range pod.Spec.Containers {
 		container := &pod.Spec.Containers[j]
 		for k := range container.Ports {
 			podPort := &container.Ports[k]
 			if add {
+				// 将hostport添加进n.usedPorts中
 				n.usedPorts.Add(podPort.HostIP, string(podPort.Protocol), podPort.HostPort)
 			} else {
 				n.usedPorts.Remove(podPort.HostIP, string(podPort.Protocol), podPort.HostPort)

@@ -37,7 +37,17 @@ const (
 // multiplied by 10 (barring exceptional cases) + a configurable quantity which is between -1000
 // and 1000. Containers with higher OOM scores are killed if the system runs out of memory.
 // See https://lwn.net/Articles/391222/ for more information.
+// 计算container的OOMScoreAdjust值
+// 1. pod是static pod或mirror pod，或pod设置了优先级且优先级大于2000000000，则OOMScoreAdjust值为-998
+// 2. "Guaranteed"的pod，OOMScoreAdjust值为-998
+// 3. "BestEffort"的pod，OOMScoreAdjust值为1000
+// 4. "Burstable"的pod的container，算法是
+// 先计算1000-(1000*{memory request}/{node节点的memory capcity})的值
+// 这个值小于2，则oomScoreAdjust设置为2
+// 这个值等于1000，则oomScoreAdjust调整为999
+// 其他情况oomScoreAdjust为这个值
 func GetContainerOOMScoreAdjust(pod *v1.Pod, container *v1.Container, memoryCapacity int64) int {
+	// pod是static pod或mirror pod，或pod设置了优先级且优先级大于2000000000，返回true。其他情况返回false
 	if types.IsCriticalPod(pod) {
 		// Critical pods should be the last to get killed.
 		return guaranteedOOMScoreAdj
@@ -59,14 +69,22 @@ func GetContainerOOMScoreAdjust(pod *v1.Pod, container *v1.Container, memoryCapa
 	// which use more than their request will have an OOM score of 1000 and will be prime
 	// targets for OOM kills.
 	// Note that this is a heuristic, it won't work if a container has many small processes.
+	// burstable pod算法
+	// 先计算1000-(1000*{memory  request}/{node节点的memory capcity})的值
+	// 这个值小于2，则oomScoreAdjust设置为2
+	// 这个值等于1000，则oomScoreAdjust调整为999
+	// 其他情况oomScoreAdjust为这个值
 	memoryRequest := container.Resources.Requests.Memory().Value()
+	// request不会超过memoryCapacity（node节点的memory capcity），即oomScoreAdjust最小值为0，最大值为1000
 	oomScoreAdjust := 1000 - (1000*memoryRequest)/memoryCapacity
 	// A guaranteed pod using 100% of memory can have an OOM score of 10. Ensure
 	// that burstable pods have a higher OOM score adjustment.
+	// oomScoreAdjust小于2，则oomScoreAdjust设置为2
 	if int(oomScoreAdjust) < (1000 + guaranteedOOMScoreAdj) {
 		return (1000 + guaranteedOOMScoreAdj)
 	}
 	// Give burstable pods a higher chance of survival over besteffort pods.
+	// oomScoreAdjust大于等于2，且等于besteffortOOMScoreAdj（1000），则oomScoreAdjust调整为999（要小于besteffortOOMScoreAdj）
 	if int(oomScoreAdjust) == besteffortOOMScoreAdj {
 		return int(oomScoreAdjust - 1)
 	}

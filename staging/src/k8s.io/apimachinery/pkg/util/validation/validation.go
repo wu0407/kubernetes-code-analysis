@@ -408,12 +408,15 @@ const envVarNameFmtErrMsg string = "a valid environment variable name must consi
 var envVarNameRegexp = regexp.MustCompile("^" + envVarNameFmt + "$")
 
 // IsEnvVarName tests if a string is a valid environment variable name.
+// value必须匹配"^[-._a-zA-Z][-._a-zA-Z0-9]*$"，且value不是"."、".."，且前缀不是".."，则返回为空
 func IsEnvVarName(value string) []string {
 	var errs []string
+	// value不匹配"^[-._a-zA-Z][-._a-zA-Z0-9]*$"
 	if !envVarNameRegexp.MatchString(value) {
 		errs = append(errs, RegexError(envVarNameFmtErrMsg, envVarNameFmt, "my.env-name", "MY_ENV.NAME", "MyEnvName1"))
 	}
 
+	// 验证value是"."、".."，或前缀是".."，会返回信息
 	errs = append(errs, hasChDirPrefix(value)...)
 	return errs
 }
@@ -477,6 +480,7 @@ func InclusiveRangeError(lo, hi int) string {
 	return fmt.Sprintf(`must be between %d and %d, inclusive`, lo, hi)
 }
 
+// value是"."、".."，或前缀是".."，会返回信息
 func hasChDirPrefix(value string) []string {
 	var errs []string
 	switch {

@@ -192,6 +192,7 @@ func BuildContainerID(typ, ID string) ContainerID {
 }
 
 // Convenience method for creating a ContainerID from an ID string.
+// 字符串解析出ContainerID
 func ParseContainerID(containerID string) ContainerID {
 	var id ContainerID
 	if err := id.ParseString(containerID); err != nil {
@@ -200,6 +201,7 @@ func ParseContainerID(containerID string) ContainerID {
 	return id
 }
 
+// 从data解析出Type和ID，data格式应该是"{type}://{id}"
 func (c *ContainerID) ParseString(data string) error {
 	// Trim the quotes and split the type and ID.
 	parts := strings.Split(strings.Trim(data, "\""), "://")
@@ -319,6 +321,7 @@ type ContainerStatus struct {
 
 // FindContainerStatusByName returns container status in the pod status with the given name.
 // When there are multiple containers' statuses with the same name, the first match will be returned.
+// 从podStatus.ContainerStatuses里，返回第一个名为containerName的ContainerStatus
 func (podStatus *PodStatus) FindContainerStatusByName(containerName string) *ContainerStatus {
 	for _, containerStatus := range podStatus.ContainerStatuses {
 		if containerStatus.Name == containerName {

@@ -215,25 +215,34 @@ func GetDeviceNameFromMount(mounter Interface, mountPath string) (string, int, e
 // IsNotMountPoint enumerates all the mountpoints using List() and
 // the list of mountpoints may be large, then it uses
 // isMountPointMatch to evaluate whether the directory is a mountpoint.
+// 如果file的设备号与父目录的设备号不一样，说明file是挂载点，直接返回false
+// 否则从"/proc/mounts"文件里查找，是否为挂载路径
 func IsNotMountPoint(mounter Interface, file string) (bool, error) {
 	// IsLikelyNotMountPoint provides a quick check
 	// to determine whether file IS A mountpoint.
+	// 当file的设备号与父目录的设备号不一样（但是不能判断同一目录下的bind挂载），则为file为挂载点，返回false，否则返回true
 	notMnt, notMntErr := mounter.IsLikelyNotMountPoint(file)
 	if notMntErr != nil && os.IsPermission(notMntErr) {
 		// We were not allowed to do the simple stat() check, e.g. on NFS with
 		// root_squash. Fall back to /proc/mounts check below.
+		// 如果出现权限错误，则读取/proc/mounts来判断是否为挂载点
 		notMnt = true
 		notMntErr = nil
 	}
+	// 不是权限错误，返回错误
 	if notMntErr != nil {
 		return notMnt, notMntErr
 	}
 	// identified as mountpoint, so return this fact.
+	// 是挂载点，直接返回false
 	if notMnt == false {
 		return notMnt, nil
 	}
 
+	// 不是挂载点（因为有可能是同一目录下的bind挂载）或权限错误，则还要进行下面的确认
+
 	// Resolve any symlinks in file, kernel would do the same and use the resolved path in /proc/mounts.
+	// 获得file真实的路径，如果为链接，则为指向的路径
 	resolvedFile, err := filepath.EvalSymlinks(file)
 	if err != nil {
 		return true, err
@@ -241,11 +250,13 @@ func IsNotMountPoint(mounter Interface, file string) (bool, error) {
 
 	// check all mountpoints since IsLikelyNotMountPoint
 	// is not reliable for some mountpoint types.
+	// 读取并解析"/proc/mounts"文件
 	mountPoints, mountPointsErr := mounter.List()
 	if mountPointsErr != nil {
 		return notMnt, mountPointsErr
 	}
 	for _, mp := range mountPoints {
+		// resolvedFile是mp挂载路径，直接返回false
 		if isMountPointMatch(mp, resolvedFile) {
 			notMnt = false
 			break
@@ -268,6 +279,10 @@ func MakeBindOpts(options []string) (bool, []string, []string) {
 // options and ensures the sensitiveOptions are never logged. This method should
 // be used by callers that pass sensitive material (like passwords) as mount
 // options.
+// 第一个返回 options和sensitiveOptions里是否包含了"bind"
+// 第二各返回 options和sensitiveOptions里包含了"_netdev"，返回{"bind", "_netdev"}，否则返回{"bind"}
+// 第三个返回 options里不包含了"bind"和"remount"，返回{"bind", "remount", option...}，否则返回{"bind", "remount"}
+// 第四各返回 sensitiveOptions里不包含了"bind"和"remount"，返回sensitiveOptions，否则返回空
 func MakeBindOptsSensitive(options []string, sensitiveOptions []string) (bool, []string, []string, []string) {
 	// Because we have an FD opened on the subpath bind mount, the "bind" option
 	// needs to be included, otherwise the mount target will error as busy if you
@@ -282,10 +297,13 @@ func MakeBindOptsSensitive(options []string, sensitiveOptions []string) (bool, [
 
 	// _netdev is a userspace mount option and does not automatically get added when
 	// bind mount is created and hence we must carry it over.
+	// options和sensitiveOptions里是否包含了"_netdev"
 	if checkForNetDev(options, sensitiveOptions) {
+		// options和sensitiveOptions里包含了"_netdev"，则bindOpts里添加"_netdev"
 		bindOpts = append(bindOpts, "_netdev")
 	}
 
+	// options里不包含了"bind"和"remount"，则option添加到bindRemountOpts里
 	for _, option := range options {
 		switch option {
 		case "bind":
@@ -298,6 +316,7 @@ func MakeBindOptsSensitive(options []string, sensitiveOptions []string) (bool, [
 		}
 	}
 
+	// sensitiveOptions里不包含了"bind"和"remount"，则sensitiveOption添加到bindRemountSensitiveOpts里
 	for _, sensitiveOption := range sensitiveOptions {
 		switch sensitiveOption {
 		case "bind":
@@ -313,6 +332,7 @@ func MakeBindOptsSensitive(options []string, sensitiveOptions []string) (bool, [
 	return bind, bindOpts, bindRemountOpts, bindRemountSensitiveOpts
 }
 
+// options和sensitiveOptions里是否包含了"_netdev"
 func checkForNetDev(options []string, sensitiveOptions []string) bool {
 	for _, option := range options {
 		if option == "_netdev" {
@@ -328,11 +348,14 @@ func checkForNetDev(options []string, sensitiveOptions []string) bool {
 }
 
 // PathWithinBase checks if give path is within given base directory.
+// 判断fullPath是否在basePath（下级）里
 func PathWithinBase(fullPath, basePath string) bool {
+	// 计算fullPath相对于basePath的相对路径
 	rel, err := filepath.Rel(basePath, fullPath)
 	if err != nil {
 		return false
 	}
+	// rel是否为".."或前缀为../，相当于fullPath在basePath上级（上级目录或上上级），返回false（代表fullpath不在basepath里）
 	if StartsWithBackstep(rel) {
 		// Needed to escape the base path.
 		return false
@@ -341,6 +364,7 @@ func PathWithinBase(fullPath, basePath string) bool {
 }
 
 // StartsWithBackstep checks if the given path starts with a backstep segment.
+// rel是否为".."或前缀为../
 func StartsWithBackstep(rel string) bool {
 	// normalize to / and check for ../
 	return rel == ".." || strings.HasPrefix(filepath.ToSlash(rel), "../")
@@ -350,6 +374,7 @@ func StartsWithBackstep(rel string) bool {
 // options and sensitiveOptions. Each entry in sensitiveOptions will be
 // replaced with the string sensitiveOptionsRemoved
 // e.g. o1,o2,<masked>,<masked>
+// options和sensitiveOptions使用逗号进行拼接，sensitiveOptions处理为<masked>,<masked>这种格式，比如o1,o2,<masked>,<masked>
 func sanitizedOptionsForLogging(options []string, sensitiveOptions []string) string {
 	seperator := ""
 	if len(options) > 0 && len(sensitiveOptions) > 0 {
@@ -358,6 +383,7 @@ func sanitizedOptionsForLogging(options []string, sensitiveOptions []string) str
 
 	sensitiveOptionsStart := ""
 	sensitiveOptionsEnd := ""
+	// sensitiveOptions不为空，则sensitiveOptions输出为<masked>,<masked>这种格式
 	if len(sensitiveOptions) > 0 {
 		sensitiveOptionsStart = strings.Repeat(sensitiveOptionsRemoved+",", len(sensitiveOptions)-1)
 		sensitiveOptionsEnd = sensitiveOptionsRemoved

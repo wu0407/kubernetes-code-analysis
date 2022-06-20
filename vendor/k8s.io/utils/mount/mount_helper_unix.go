@@ -36,6 +36,7 @@ const (
 )
 
 // IsCorruptedMnt return true if err is about corrupted mount point
+// 是否挂载点损坏错误
 func IsCorruptedMnt(err error) bool {
 	if err == nil {
 		return false
@@ -152,6 +153,7 @@ func ParseMountInfo(filename string) ([]MountInfo, error) {
 
 // isMountPointMatch returns true if the path in mp is the same as dir.
 // Handles case where mountpoint dir has been renamed due to stale NFS mount.
+// dir是否是mp挂载路径
 func isMountPointMatch(mp MountPoint, dir string) bool {
 	deletedDir := fmt.Sprintf("%s\\040(deleted)", dir)
 	return ((mp.Path == dir) || (mp.Path == deletedDir))

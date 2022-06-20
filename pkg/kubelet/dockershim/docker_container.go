@@ -92,6 +92,8 @@ func (ds *dockerService) ListContainers(_ context.Context, r *runtimeapi.ListCon
 // Docker cannot store the log to an arbitrary location (yet), so we create an
 // symlink at LogPath, linking to the actual path of the log.
 // TODO: check if the default values returned by the runtime API are ok.
+// 这里没有进行确保镜像存在的操作，是因为kubelet 调用cri创建容器，会先确保镜像存在
+// 根据*runtimeapi.CreateContainerRequest创建容器
 func (ds *dockerService) CreateContainer(_ context.Context, r *runtimeapi.CreateContainerRequest) (*runtimeapi.CreateContainerResponse, error) {
 	podSandboxID := r.PodSandboxId
 	config := r.GetConfig()
@@ -104,14 +106,29 @@ func (ds *dockerService) CreateContainer(_ context.Context, r *runtimeapi.Create
 		return nil, fmt.Errorf("sandbox config is nil for container %q", config.Metadata.Name)
 	}
 
+	// config里的label，包括["io.kubernetes.pod.name"]={pod name}和["io.kubernetes.pod.namespace"]={pod namespace}和["io.kubernetes.pod.uid"]={pod uid}和["io.kubernetes.container.name"]={container name}
+	// config里的annotation，包括device plugin annotations
+	// ["io.kubernetes.container.hash"]={container hash}
+	// ["io.kubernetes.container.restartCount"]={container restart count}
+	// ["io.kubernetes.container.terminationMessagePath"]={container.TerminationMessagePath}
+	// ["io.kubernetes.container.terminationMessagePolicy"]={container.TerminationMessagePolicy}
+	// ["io.kubernetes.pod.deletionGracePeriod"]={pod.DeletionGracePeriodSeconds}，可能有（但是一般不会有，这个在pod被删除时候，应该不会进行创建容器）
+	// ["io.kubernetes.pod.terminationGracePeriod"]={pod.Spec.TerminationGracePeriodSeconds}
+	// ["io.kubernetes.container.preStopHandler"]={container prestop lifecycle json序列化后}，当container定义了Lifecycle.PreStop
+	// ["io.kubernetes.container.ports"]={container.Ports json序列化后}，当container定义了Ports
+	// 将annotations的key添加"annotation."前缀，然后与labels进行合并
 	labels := makeLabels(config.GetLabels(), config.GetAnnotations())
 	// Apply a the container type label.
+	// 添加["io.kubernetes.docker.type"]="container"
 	labels[containerTypeLabelKey] = containerTypeLabelContainer
 	// Write the container log path in the labels.
+	// 添加["io.kubernetes.container.logpath"]={一般为"/var/log/pods/{pod namespace}_{pod name}_{pod uid}/{containerName}/{container restartCount}.log"}
 	labels[containerLogPathLabelKey] = filepath.Join(sandboxConfig.LogDirectory, config.LogPath)
 	// Write the sandbox ID in the labels.
+	// 添加["io.kubernetes.sandbox.id"]={podSandboxID}
 	labels[sandboxIDLabelKey] = podSandboxID
 
+	// 返回docker的apiversion 
 	apiVersion, err := ds.getDockerAPIVersion()
 	if err != nil {
 		return nil, fmt.Errorf("unable to get the docker API version: %v", err)
@@ -121,13 +138,16 @@ func (ds *dockerService) CreateContainer(_ context.Context, r *runtimeapi.Create
 	if iSpec := config.GetImage(); iSpec != nil {
 		image = iSpec.Image
 	}
+	// 生成"k8s_{container name}_{pod name}_{pod namespace}_{pod uid}_{container attempt}"
 	containerName := makeContainerName(sandboxConfig, config)
+	// kubernetes container不需要设置NetworkingConfig，因为不使用docker的自带网络
 	createConfig := dockertypes.ContainerCreateConfig{
 		Name: containerName,
 		Config: &dockercontainer.Config{
 			// TODO: set User.
 			Entrypoint: dockerstrslice.StrSlice(config.Command),
 			Cmd:        dockerstrslice.StrSlice(config.Args),
+			// 将[]*runtimeapi.KeyValue转成'<key>=<value>'格式的[]string
 			Env:        generateEnvList(config.GetEnvs()),
 			Image:      image,
 			WorkingDir: config.WorkingDir,
@@ -143,6 +163,7 @@ func (ds *dockerService) CreateContainer(_ context.Context, r *runtimeapi.Create
 			},
 		},
 		HostConfig: &dockercontainer.HostConfig{
+			// 将mounts []*runtimeapi.Mount转成'<HostPath>:<ContainerPath>[:options]'格式的[]string
 			Binds: generateMountBindings(config.GetMounts()),
 			RestartPolicy: dockercontainer.RestartPolicy{
 				Name: "no",
@@ -151,6 +172,8 @@ func (ds *dockerService) CreateContainer(_ context.Context, r *runtimeapi.Create
 	}
 
 	hc := createConfig.HostConfig
+	// 设置createConfig.HostConfig里的Resources（包括Memory、MemorySwap、CPUShares、CPUQuota、CPUPeriod，没有CpusetCpus、CpusetMems）和OomScoreAdj
+	// 设置createConfig.Config.User和createConfig.HostConfig的GroupAdd、Privileged、ReadonlyRootfs、CapAdd、CapDrop、SecurityOpt（包含selinux、apparmor、NoNewPrivs，但是没有Seccomp）、MaskedPaths、ReadonlyPaths、PidMode、NetworkMode、IpcMode、UTSMode、CgroupParent
 	err = ds.updateCreateConfig(&createConfig, config, sandboxConfig, podSandboxID, securityOptSeparator, apiVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to update container create config: %v", err)
@@ -166,20 +189,26 @@ func (ds *dockerService) CreateContainer(_ context.Context, r *runtimeapi.Create
 	}
 	hc.Resources.Devices = devices
 
+	// 返回"seccomp"的SecurityOpts，比如seccompProfile为空，返回[]string{"seccomp=unconfined"}
 	securityOpts, err := ds.getSecurityOpts(config.GetLinux().GetSecurityContext().GetSeccompProfilePath(), securityOptSeparator)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate security options for container %q: %v", config.Metadata.Name, err)
 	}
 
+	// "seccomp"的SecurityOpts添加到hc.SecurityOpt
 	hc.SecurityOpt = append(hc.SecurityOpt, securityOpts...)
 
+	// linux系统，不做任何东西
 	cleanupInfo, err := ds.applyPlatformSpecificDockerConfig(r, &createConfig)
 	if err != nil {
 		return nil, err
 	}
 
+	// 创建容器
 	createResp, createErr := ds.client.CreateContainer(createConfig)
 	if createErr != nil {
+		// 为了解决docker 1.11版本以及之前版本的问题，如果docker移除容器发生"device or resource busy"问题，这个容器信息可能未被清理掉。导致创建相同名字容器时出现失败"Conflict. {container id} is already in use by container {container id}"。
+		// 解决这个问题方法是，则再次执行移除发生冲突的旧容器。如果移除成功，则返回nil和原来的错误。如果移除失败，则对容器名字添加随机数字进行再次创建容器，返回创建的容器的返回和错误
 		createResp, createErr = recoverFromCreationConflictIfNeeded(ds.client, createConfig, createErr)
 	}
 
@@ -197,6 +226,8 @@ func (ds *dockerService) CreateContainer(_ context.Context, r *runtimeapi.Create
 
 	// the creation failed, let's clean up right away - we ignore any errors though,
 	// this is best effort
+	// createResp为nil，代表容器创建失败
+	// linux系统不做任何事情
 	ds.performPlatformSpecificContainerCleanupAndLogErrors(containerName, cleanupInfo)
 
 	return nil, createErr
@@ -204,6 +235,7 @@ func (ds *dockerService) CreateContainer(_ context.Context, r *runtimeapi.Create
 
 // getContainerLogPath returns the container log path specified by kubelet and the real
 // path where docker stores the container log.
+// 从docker inspect返回中的获取Lables["io.kubernetes.container.logpath"]的值和docker真实的日志路径
 func (ds *dockerService) getContainerLogPath(containerID string) (string, string, error) {
 	info, err := ds.client.InspectContainer(containerID)
 	if err != nil {
@@ -213,7 +245,9 @@ func (ds *dockerService) getContainerLogPath(containerID string) (string, string
 }
 
 // createContainerLogSymlink creates the symlink for docker container log.
+// 创建kubelet的日志文件软链到docker真实的日志路径
 func (ds *dockerService) createContainerLogSymlink(containerID string) error {
+	// 从docker inspect返回中的获取Lables["io.kubernetes.container.logpath"]的值和docker真实的日志路径
 	path, realPath, err := ds.getContainerLogPath(containerID)
 	if err != nil {
 		return fmt.Errorf("failed to get container %q log path: %v", containerID, err)
@@ -224,26 +258,34 @@ func (ds *dockerService) createContainerLogSymlink(containerID string) error {
 		return nil
 	}
 
+	// docker真实的日志路径不为空
 	if realPath != "" {
 		// Only create the symlink when container log path is specified and log file exists.
 		// Delete possibly existing file first
+		// 先尝试删除kubelet的日志软链文件
 		if err = ds.os.Remove(path); err == nil {
 			klog.Warningf("Deleted previously existing symlink file: %q", path)
 		}
+		// 然后进行path（kubelet的日志软链文件）链接realPath（docker真实的日志路径）
 		if err = ds.os.Symlink(realPath, path); err != nil {
 			return fmt.Errorf("failed to create symbolic link %q to the container log file %q for container %q: %v",
 				path, realPath, containerID, err)
 		}
 	} else {
+		// 如果docker真实的日志路径为空
+
+		// docker的LoggingDriver为"json-file"，返回true，否则返回false
 		supported, err := ds.IsCRISupportedLogDriver()
 		if err != nil {
 			klog.Warningf("Failed to check supported logging driver by CRI: %v", err)
 			return nil
 		}
 
+		// 支持则记录warning日志
 		if supported {
 			klog.Warningf("Cannot create symbolic link because container log file doesn't exist!")
 		} else {
+			// 不支持记录info日志
 			klog.V(5).Infof("Unsupported logging driver by CRI")
 		}
 	}
@@ -252,7 +294,9 @@ func (ds *dockerService) createContainerLogSymlink(containerID string) error {
 }
 
 // removeContainerLogSymlink removes the symlink for docker container log.
+// 移除docker inspect的Lables["io.kubernetes.container.logpath"]的值（kubelet创建的软链）
 func (ds *dockerService) removeContainerLogSymlink(containerID string) error {
+	// 从docker inspect返回中的获取Lables["io.kubernetes.container.logpath"]的值（kubelet创建的软链）
 	path, _, err := ds.getContainerLogPath(containerID)
 	if err != nil {
 		return fmt.Errorf("failed to get container %q log path: %v", containerID, err)
@@ -268,10 +312,12 @@ func (ds *dockerService) removeContainerLogSymlink(containerID string) error {
 }
 
 // StartContainer starts the container.
+// 执行StartContainer操作，然后无论是否启动成功，都创建kubelet的日志文件软链到docker真实的日志路径
 func (ds *dockerService) StartContainer(_ context.Context, r *runtimeapi.StartContainerRequest) (*runtimeapi.StartContainerResponse, error) {
 	err := ds.client.StartContainer(r.ContainerId)
 
 	// Create container log symlink for all containers (including failed ones).
+	// 创建kubelet的日志文件软链到docker真实的日志路径
 	if linkError := ds.createContainerLogSymlink(r.ContainerId); linkError != nil {
 		// Do not stop the container if we failed to create symlink because:
 		//   1. This is not a critical failure.
@@ -298,18 +344,22 @@ func (ds *dockerService) StopContainer(_ context.Context, r *runtimeapi.StopCont
 }
 
 // RemoveContainer removes the container.
+// 先移除kubelet创建的日志软链，然后再执行docker container rm移除容器
 func (ds *dockerService) RemoveContainer(_ context.Context, r *runtimeapi.RemoveContainerRequest) (*runtimeapi.RemoveContainerResponse, error) {
 	// Ideally, log lifecycle should be independent of container lifecycle.
 	// However, docker will remove container log after container is removed,
 	// we can't prevent that now, so we also clean up the symlink here.
+	// 移除docker inspect的Lables["io.kubernetes.container.logpath"]的值（kubelet创建的软链）
 	err := ds.removeContainerLogSymlink(r.ContainerId)
 	if err != nil {
 		return nil, err
 	}
+	// linux系统不做任何事情
 	errors := ds.performPlatformSpecificContainerForContainer(r.ContainerId)
 	if len(errors) != 0 {
 		return nil, fmt.Errorf("failed to run platform-specific clean ups for container %q: %v", r.ContainerId, errors)
 	}
+	// 执行docker container rm
 	err = ds.client.RemoveContainer(r.ContainerId, dockertypes.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
 	if err != nil {
 		return nil, fmt.Errorf("failed to remove container %q: %v", r.ContainerId, err)
@@ -471,6 +521,7 @@ func (ds *dockerService) UpdateContainerResources(_ context.Context, r *runtimea
 	return &runtimeapi.UpdateContainerResourcesResponse{}, nil
 }
 
+// linux系统不做任何事情
 func (ds *dockerService) performPlatformSpecificContainerForContainer(containerID string) (errors []error) {
 	if cleanupInfo, present := ds.containerCleanupInfos[containerID]; present {
 		errors = ds.performPlatformSpecificContainerCleanupAndLogErrors(containerID, cleanupInfo)
@@ -483,11 +534,13 @@ func (ds *dockerService) performPlatformSpecificContainerForContainer(containerI
 	return
 }
 
+// linux系统不做任何事情
 func (ds *dockerService) performPlatformSpecificContainerCleanupAndLogErrors(containerNameOrID string, cleanupInfo *containerCleanupInfo) []error {
 	if cleanupInfo == nil {
 		return nil
 	}
 
+	// linux系统不做任何事情
 	errors := ds.performPlatformSpecificContainerCleanup(cleanupInfo)
 	for _, err := range errors {
 		klog.Warningf("error when cleaning up after container %q: %v", containerNameOrID, err)

@@ -47,25 +47,35 @@ func HasCapabilitiesRequest(container *v1.Container) bool {
 // DetermineEffectiveSecurityContext returns a synthesized SecurityContext for reading effective configurations
 // from the provided pod's and container's security context. Container's fields take precedence in cases where both
 // are set
+// 将pod里的SecurityContext和container里SecurityContext进行合并，以container里SecurityContext为主。
+// 如果container要使用pod.Spec.SecurityContext，则只会使用SELinuxOptions、WindowsOptions、RunAsUser、RunAsGroup、RunAsNonRoot字段
 func DetermineEffectiveSecurityContext(pod *v1.Pod, container *v1.Container) *v1.SecurityContext {
+	// 对pod.Spec.SecurityContext里的SELinuxOptions、WindowsOptions、RunAsUser、RunAsGroup、RunAsNonRoot字段进行拷贝，生成新的*v1.SecurityContext
 	effectiveSc := securityContextFromPodSecurityContext(pod)
 	containerSc := container.SecurityContext
 
+	// 如果pod和container的SecurityContext都为nil，返回空v1.SecurityContext
 	if effectiveSc == nil && containerSc == nil {
 		return &v1.SecurityContext{}
 	}
+	// pod的有效的SecurityContext不为nil，且container的SecurityContext为nil，返回pod有效的SecurityContext
 	if effectiveSc != nil && containerSc == nil {
 		return effectiveSc
 	}
+	// pod的有效的SecurityContext为nil，且container的SecurityContext不为nil，返回container的SecurityContext
 	if effectiveSc == nil && containerSc != nil {
 		return containerSc
 	}
 
+	// pod和container的SecurityContext都不为nil
+
+	// container的SecurityContext.SELinuxOptions不为nil，则使用container的SecurityContext.SELinuxOptions
 	if containerSc.SELinuxOptions != nil {
 		effectiveSc.SELinuxOptions = new(v1.SELinuxOptions)
 		*effectiveSc.SELinuxOptions = *containerSc.SELinuxOptions
 	}
 
+	// container的SecurityContext.WindowsOptions不为nil，则使用container的SecurityContext.WindowsOptions
 	if containerSc.WindowsOptions != nil {
 		// only override fields that are set at the container level, not the whole thing
 		if effectiveSc.WindowsOptions == nil {
@@ -81,41 +91,49 @@ func DetermineEffectiveSecurityContext(pod *v1.Pod, container *v1.Container) *v1
 		}
 	}
 
+	// container的SecurityContext.Capabilities不为nil，则使用container的SecurityContext.Capabilities
 	if containerSc.Capabilities != nil {
 		effectiveSc.Capabilities = new(v1.Capabilities)
 		*effectiveSc.Capabilities = *containerSc.Capabilities
 	}
 
+	// container的SecurityContext.Privileged不为nil，则使用container的SecurityContext.Privileged
 	if containerSc.Privileged != nil {
 		effectiveSc.Privileged = new(bool)
 		*effectiveSc.Privileged = *containerSc.Privileged
 	}
 
+	// container的SecurityContext.RunAsUser不为nil，则使用container的SecurityContext.RunAsUser
 	if containerSc.RunAsUser != nil {
 		effectiveSc.RunAsUser = new(int64)
 		*effectiveSc.RunAsUser = *containerSc.RunAsUser
 	}
 
+	// container的SecurityContext.RunAsGroup不为nil，则使用container的SecurityContext.RunAsGroup
 	if containerSc.RunAsGroup != nil {
 		effectiveSc.RunAsGroup = new(int64)
 		*effectiveSc.RunAsGroup = *containerSc.RunAsGroup
 	}
 
+	// container的SecurityContext.RunAsNonRoot不为nil，则使用container的SecurityContext.RunAsNonRoot
 	if containerSc.RunAsNonRoot != nil {
 		effectiveSc.RunAsNonRoot = new(bool)
 		*effectiveSc.RunAsNonRoot = *containerSc.RunAsNonRoot
 	}
 
+	// container的SecurityContext.ReadOnlyRootFilesystem不为nil，则使用container的SecurityContext.ReadOnlyRootFilesystem
 	if containerSc.ReadOnlyRootFilesystem != nil {
 		effectiveSc.ReadOnlyRootFilesystem = new(bool)
 		*effectiveSc.ReadOnlyRootFilesystem = *containerSc.ReadOnlyRootFilesystem
 	}
 
+	// container的SecurityContext.AllowPrivilegeEscalation不为nil，则使用container的SecurityContext.AllowPrivilegeEscalation
 	if containerSc.AllowPrivilegeEscalation != nil {
 		effectiveSc.AllowPrivilegeEscalation = new(bool)
 		*effectiveSc.AllowPrivilegeEscalation = *containerSc.AllowPrivilegeEscalation
 	}
 
+	// container的SecurityContext.ProcMount不为nil，则使用container的SecurityContext.ProcMount
 	if containerSc.ProcMount != nil {
 		effectiveSc.ProcMount = new(v1.ProcMountType)
 		*effectiveSc.ProcMount = *containerSc.ProcMount
@@ -124,6 +142,7 @@ func DetermineEffectiveSecurityContext(pod *v1.Pod, container *v1.Container) *v1
 	return effectiveSc
 }
 
+// 对pod.Spec.SecurityContext里的SELinuxOptions、WindowsOptions、RunAsUser、RunAsGroup、RunAsNonRoot字段进行拷贝，生成新的*v1.SecurityContext
 func securityContextFromPodSecurityContext(pod *v1.Pod) *v1.SecurityContext {
 	if pod.Spec.SecurityContext == nil {
 		return nil
@@ -160,6 +179,7 @@ func securityContextFromPodSecurityContext(pod *v1.Pod) *v1.SecurityContext {
 }
 
 // AddNoNewPrivileges returns if we should add the no_new_privs option.
+// SecurityContext.AllowPrivilegeEscalation为false，返回true，其他情况返回false
 func AddNoNewPrivileges(sc *v1.SecurityContext) bool {
 	if sc == nil {
 		return false
@@ -201,24 +221,44 @@ var (
 
 // ConvertToRuntimeMaskedPaths converts the ProcMountType to the specified or default
 // masked paths.
+// v1.ProcMountType转成/proc需要额外挂载路径
 func ConvertToRuntimeMaskedPaths(opt *v1.ProcMountType) []string {
+	// opt为"Unmasked"意味容器/proc不需要额外挂载
 	if opt != nil && *opt == v1.UnmaskedProcMount {
 		// Unmasked proc mount should have no paths set as masked.
 		return []string{}
 	}
 
 	// Otherwise, add the default masked paths to the runtime security context.
+	// 其他配置，则/proc额外挂载这些
+	// "/proc/acpi",
+	// "/proc/kcore",
+	// "/proc/keys",
+	// "/proc/latency_stats",
+	// "/proc/timer_list",
+	// "/proc/timer_stats",
+	// "/proc/sched_debug",
+	// "/proc/scsi",
+	// "/sys/firmware",
 	return defaultMaskedPaths
 }
 
 // ConvertToRuntimeReadonlyPaths converts the ProcMountType to the specified or default
 // readonly paths.
+// v1.ProcMountType转成/proc下readonly路径
 func ConvertToRuntimeReadonlyPaths(opt *v1.ProcMountType) []string {
+	// opt为"Unmasked"意味容器/proc不需要额外挂载，不需要readonly路径
 	if opt != nil && *opt == v1.UnmaskedProcMount {
 		// Unmasked proc mount should have no paths set as readonly.
 		return []string{}
 	}
 
 	// Otherwise, add the default readonly paths to the runtime security context.
+	// "/proc/asound",
+	// "/proc/bus",
+	// "/proc/fs",
+	// "/proc/irq",
+	// "/proc/sys",
+	// "/proc/sysrq-trigger",
 	return defaultReadonlyPaths
 }

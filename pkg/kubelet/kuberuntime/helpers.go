@@ -120,7 +120,9 @@ func (m *kubeGenericRuntimeManager) sandboxToKubeContainer(s *runtimeapi.PodSand
 
 // getImageUser gets uid or user name that will run the command(s) from image. The function
 // guarantees that only one of them is set.
+// inspect image获得镜像里设置user id或用户名
 func (m *kubeGenericRuntimeManager) getImageUser(image string) (*int64, string, error) {
+	// 如果runtime是dockershim，则执行的docker image inspect
 	imageStatus, err := m.imageService.ImageStatus(&runtimeapi.ImageSpec{Image: image})
 	if err != nil {
 		return nil, "", err
@@ -128,10 +130,12 @@ func (m *kubeGenericRuntimeManager) getImageUser(image string) (*int64, string, 
 
 	if imageStatus != nil {
 		if imageStatus.Uid != nil {
+			// 有uid就返回uid
 			return &imageStatus.GetUid().Value, "", nil
 		}
 
 		if imageStatus.Username != "" {
+			// 没有uid，但是有username，返回username
 			return nil, imageStatus.Username, nil
 		}
 	}
@@ -142,6 +146,7 @@ func (m *kubeGenericRuntimeManager) getImageUser(image string) (*int64, string, 
 
 // isInitContainerFailed returns true if container has exited and exitcode is not zero
 // or is in unknown state.
+// container状态处于"exited"且ExitCode不为0，或状态为"unknown"，返回true
 func isInitContainerFailed(status *kubecontainer.ContainerStatus) bool {
 	if status.State == kubecontainer.ContainerStateExited && status.ExitCode != 0 {
 		return true
@@ -157,6 +162,7 @@ func isInitContainerFailed(status *kubecontainer.ContainerStatus) bool {
 // getStableKey generates a key (string) to uniquely identify a
 // (pod, container) tuple. The key should include the content of the
 // container, so that any change to the container generates a new key.
+// 返回{pod name}_{pod namespace}_{pod uid}_{container name}_{container hash}
 func getStableKey(pod *v1.Pod, container *v1.Container) string {
 	hash := strconv.FormatUint(kubecontainer.HashContainer(container), 16)
 	return fmt.Sprintf("%s_%s_%s_%s_%s", pod.Name, pod.Namespace, string(pod.UID), container.Name, hash)
@@ -166,16 +172,19 @@ func getStableKey(pod *v1.Pod, container *v1.Container) string {
 const logPathDelimiter = "_"
 
 // buildContainerLogsPath builds log path for container relative to pod logs directory.
+// 返回"{containerName}/{restartCount}.log"
 func buildContainerLogsPath(containerName string, restartCount int) string {
 	return filepath.Join(containerName, fmt.Sprintf("%d.log", restartCount))
 }
 
 // BuildContainerLogsDirectory builds absolute log directory path for a container in pod.
+// 返回"/var/log/pods/{pod namespace}_{pod name}_{pod uid}/{container name}"
 func BuildContainerLogsDirectory(podNamespace, podName string, podUID types.UID, containerName string) string {
 	return filepath.Join(BuildPodLogsDirectory(podNamespace, podName, podUID), containerName)
 }
 
 // BuildPodLogsDirectory builds absolute log directory path for a pod sandbox.
+// 返回"/var/log/pods/{pod namespace}_{pod name}_{pod uid}"
 func BuildPodLogsDirectory(podNamespace, podName string, podUID types.UID) string {
 	return filepath.Join(podLogsRootDirectory, strings.Join([]string{podNamespace, podName,
 		string(podUID)}, logPathDelimiter))
@@ -184,6 +193,7 @@ func BuildPodLogsDirectory(podNamespace, podName string, podUID types.UID) strin
 // parsePodUIDFromLogsDirectory parses pod logs directory name and returns the pod UID.
 // It supports both the old pod log directory /var/log/pods/UID, and the new pod log
 // directory /var/log/pods/NAMESPACE_NAME_UID.
+// 从目录名"/var/log/pods/{pod namespace}_{pod name}_{pod uid}"解析出pod uid
 func parsePodUIDFromLogsDirectory(name string) types.UID {
 	parts := strings.Split(name, logPathDelimiter)
 	return types.UID(parts[len(parts)-1])
@@ -205,6 +215,8 @@ func toKubeRuntimeStatus(status *runtimeapi.RuntimeStatus) *kubecontainer.Runtim
 
 // getSeccompProfileFromAnnotations gets seccomp profile from annotations.
 // It gets pod's profile if containerName is empty.
+// 从annotations["seccomp.security.alpha.kubernetes.io/pod"]或annotations["container.seccomp.security.alpha.kubernetes.io/"+{containerName}]里获得seccompProfile路径
+// 如果annotation的值里包含"localhost/"前缀，则替换为"localhost//var/lib/kubelet/seccomp"+ filepath.FromSlash({name去除"localhost/"})
 func (m *kubeGenericRuntimeManager) getSeccompProfileFromAnnotations(annotations map[string]string, containerName string) string {
 	// try the pod profile.
 	profile, profileOK := annotations[v1.SeccompPodAnnotationKey]
@@ -223,6 +235,8 @@ func (m *kubeGenericRuntimeManager) getSeccompProfileFromAnnotations(annotations
 
 	if strings.HasPrefix(profile, "localhost/") {
 		name := strings.TrimPrefix(profile, "localhost/")
+		// m.seccompProfileRoot默认为"/var/lib/kubelet/seccomp"
+		// 文件路径替换为"/var/lib/kubelet/seccomp"+ filepath.FromSlash(name)
 		fname := filepath.Join(m.seccompProfileRoot, filepath.FromSlash(name))
 		return "localhost/" + fname
 	}
@@ -230,6 +244,7 @@ func (m *kubeGenericRuntimeManager) getSeccompProfileFromAnnotations(annotations
 	return profile
 }
 
+// 根据pod.Spec.HostIPC，返回pod的ipc命名空间模式是Host模式还是POD模式
 func ipcNamespaceForPod(pod *v1.Pod) runtimeapi.NamespaceMode {
 	if pod != nil && pod.Spec.HostIPC {
 		return runtimeapi.NamespaceMode_NODE
@@ -237,6 +252,7 @@ func ipcNamespaceForPod(pod *v1.Pod) runtimeapi.NamespaceMode {
 	return runtimeapi.NamespaceMode_POD
 }
 
+// 根据pod.Spec.HostNetwork，返回pod的网络模式是Host模式还是POD模式
 func networkNamespaceForPod(pod *v1.Pod) runtimeapi.NamespaceMode {
 	if pod != nil && pod.Spec.HostNetwork {
 		return runtimeapi.NamespaceMode_NODE
@@ -244,6 +260,7 @@ func networkNamespaceForPod(pod *v1.Pod) runtimeapi.NamespaceMode {
 	return runtimeapi.NamespaceMode_POD
 }
 
+// 根据pod.Spec.HostPID和pod.Spec.ShareProcessNamespace，返回pod的pid命名空间模式是Host模式、POD模式还是Container模式
 func pidNamespaceForPod(pod *v1.Pod) runtimeapi.NamespaceMode {
 	if pod != nil {
 		if pod.Spec.HostPID {
@@ -259,10 +276,16 @@ func pidNamespaceForPod(pod *v1.Pod) runtimeapi.NamespaceMode {
 
 // namespacesForPod returns the runtimeapi.NamespaceOption for a given pod.
 // An empty or nil pod can be used to get the namespace defaults for v1.Pod.
+// 根据pod.Spec.HostIP，返回pod的ipc模式
+// 根据pod.Spec.HostNetwork，返回网络模式
+// 根据pod.Spec.HostPID和pod.Spec.ShareProcessNamespace，返回pid模式
 func namespacesForPod(pod *v1.Pod) *runtimeapi.NamespaceOption {
 	return &runtimeapi.NamespaceOption{
+		// 返回pod的ipc命名空间模式是Host模式还是POD模式
 		Ipc:     ipcNamespaceForPod(pod),
+		// 返回pod的网络模式是Host模式还是POD模式
 		Network: networkNamespaceForPod(pod),
+		// 返回pod的pid命名空间模式是Host模式、POD模式还是Container模式
 		Pid:     pidNamespaceForPod(pod),
 	}
 }

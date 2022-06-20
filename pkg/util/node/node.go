@@ -93,6 +93,7 @@ func GetPreferredNodeAddress(node *v1.Node, preferredAddressTypes []v1.NodeAddre
 // GetNodeHostIP returns the provided node's IP, based on the priority:
 // 1. NodeInternalIP
 // 2. NodeExternalIP
+// 返回node的ip，首先从取"InternalIP"的第一个ip，如果没有"InternalIP"，则取"ExternalIP"中第一个ip
 func GetNodeHostIP(node *v1.Node) (net.IP, error) {
 	addresses := node.Status.Addresses
 	addressMap := make(map[v1.NodeAddressType][]v1.NodeAddress)

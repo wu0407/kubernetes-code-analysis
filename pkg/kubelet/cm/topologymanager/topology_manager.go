@@ -171,11 +171,20 @@ func (m *manager) GetAffinity(podUID string, containerName string) TopologyHint 
 	return m.podTopologyHints[podUID][containerName]
 }
 
+// 遍历所有的hintProviders生成container的TopologyHint
+// device manager：为container需要的device plugin资源生成可以分配device的TopologyHint
+// cpuManager：如果为static policy，则为container分配需要的cpu，生成TopologyHint。如果为none policy，则不做任何操作
 func (m *manager) accumulateProvidersHints(pod *v1.Pod, container *v1.Container) (providersHints []map[string][]TopologyHint) {
 	// Loop through all hint providers and save an accumulated list of the
 	// hints returned by each hint provider.
 	for _, provider := range m.hintProviders {
 		// Get the TopologyHints from a provider.
+		// device manager在pkg\kubelet\cm\devicemanager\topology_hints.go
+		// 为container需要的device plugin资源生成可以分配device的TopologyHint
+		//
+		// cpuManager
+		// 如果为static policy，则为Guaranteed的pod且container request的cpu为整数的container分配需要的cpu，生成TopologyHint
+		// 如果为none policy，则不做任何操作
 		hints := provider.GetTopologyHints(pod, container)
 		providersHints = append(providersHints, hints)
 		klog.Infof("[topologymanager] TopologyHints for pod '%v', container '%v': %v", pod.Name, container.Name, hints)
@@ -183,8 +192,12 @@ func (m *manager) accumulateProvidersHints(pod *v1.Pod, container *v1.Container)
 	return providersHints
 }
 
+// 从注册的device plugins，分配container的limit中所有需要的资源
+// cpu manager，policy为static policy，为Guaranteed的pod且container request的cpu为整数的container，分配cpu
 func (m *manager) allocateAlignedResources(pod *v1.Pod, container *v1.Container) error {
 	for _, provider := range m.hintProviders {
+		// 从注册的device plugins，分配container的limit中所有需要的资源
+		// policy为static policy，为Guaranteed的pod且container request的cpu为整数的container，分配cpu
 		err := provider.Allocate(pod, container)
 		if err != nil {
 			return err
@@ -195,7 +208,47 @@ func (m *manager) allocateAlignedResources(pod *v1.Pod, container *v1.Container)
 
 // Collect Hints from hint providers and pass to policy to retrieve the best one.
 func (m *manager) calculateAffinity(pod *v1.Pod, container *v1.Container) (TopologyHint, bool) {
+	// 遍历所有的hintProviders生成container的TopologyHint
+	// device manager：为container需要的device plugin资源生成可以分配device的TopologyHint
+	// cpuManager：如果为static policy，则为container分配需要的cpu，生成TopologyHint。如果为none policy，则不做任何操作
 	providersHints := m.accumulateProvidersHints(pod, container)
+	// 如果为none policy，则返回空的TopologyHint和true
+	// 
+	// 如果为"best-effort" policy
+	// 遍历providersHints（所有provider的TopologyHint），输出filteredProvidersHints（类型为[][]TopologyHint）
+	//   如果provider没有TopologyHint，则默认为[]TopologyHint{{nil, true}}
+	//   如果资源没有TopologyHint，则这个资源的TopologyHint，默认为[]TopologyHint{{nil, true}}
+	//   如果资源有TopologyHint且为空（不能跟NUMA affinities），则为[]TopologyHint{{nil, false}}
+	// 从filteredProvidersHints二维[]TopologyHint中，每个[]TopologyHint取一个TopologyHint，进行组合，生成新的[]TopologyHint，然后调用callback
+	// callback是，每一组[]TopologyHint，进行（跟defaultAffinity（亲和所有numaNode）跟所有的TopologyHint进行与计算）聚合，在所有聚合的结果，选出最适合的TopologyHint。
+	// 筛选规则：
+	//   如果TopologyHint的位的值为1的数量相等，则取TopologyHint的NUMANodeAffinity值较小的TopologyHint。
+	//   如果TopologyHint的NUMANodeAffinity位的值为1的数量不相等，则TopologyHint的NUMANodeAffinity位的值为1的数量最小的TopologyHint
+	//   优先选择，聚合的结果TopologyHint的Preferred是true
+	// admit一直返回true
+	// 
+	// 如果为"restricted" policy
+	// 筛选规则与"best-effort"一样，但是admit为筛选的结果TopologyHint的Preferred的值
+	// 
+	// 如果为"single-numa-node" policy
+	// 遍历providersHints（所有provider的TopologyHint），输出filteredHints（类型为[][]TopologyHint）
+	//   如果provider没有TopologyHint，则默认为[]TopologyHint{{nil, true}}
+	//   如果资源没有TopologyHint，则这个资源的TopologyHint，默认为[]TopologyHint{{nil, true}}
+	//   如果资源有TopologyHint且为空（不能跟NUMA affinities），则为[]TopologyHint{{nil, false}}
+	// filteredHints里每个[]TopologyHint里的TopologyHint进行过滤，输出过滤后的singleNumaHints(类型[][]TopologyHint)。
+	// 过滤规则：
+	//   保留TopologyHint，NUMANodeAffinity为nil，且Preferred为true。即资源没有TopologyHint
+	//   保留TopologyHint，NUMANodeAffinity不为nil，且NUMANodeAffinity位的值为1的数量为1（只亲和一个numa），且Preferred为true
+	//   不保留其他TopologyHint
+	// 从singleNumaHints二维[]TopologyHint中，每个[]TopologyHint取一个TopologyHint，进行组合，生成新的[]TopologyHint，然后调用callback
+	// callback是，每一组[]TopologyHint，进行（跟defaultAffinity（亲和所有numaNode）跟所有的TopologyHint进行与计算）聚合，在所有聚合的结果，选出最适合的TopologyHint。
+	// 筛选规则：
+	//   如果TopologyHint的位的值为1的数量相等，则取TopologyHint的NUMANodeAffinity值较小的TopologyHint。
+	//   如果TopologyHint的NUMANodeAffinity位的值为1的数量不相等，则TopologyHint的NUMANodeAffinity位的值为1的数量最小的TopologyHint
+	//   优先选择，聚合的结果TopologyHint的Preferred是true
+	// 如果筛选结果bestHint的NUMANodeAffinity（最佳的NUMANodeAffinity）为默认的defaultAffinity（亲和所有numaNode），则筛选结果bestHint的NUMANodeAffinity为nil
+	// admit为聚合的结果TopologyHint的Preferred的值
+	// 简单概括，就是比"restricted"，多加一道筛选（保留没有亲和和只亲和一个numaNode）和结果NUMANodeAffinity为亲和所有numaNode，则重置NUMANodeAffinity为nil
 	bestHint, admit := m.policy.Merge(providersHints)
 	klog.Infof("[topologymanager] ContainerTopologyHint: %v", bestHint)
 	return bestHint, admit
@@ -206,6 +259,7 @@ func (m *manager) AddHintProvider(h HintProvider) {
 	m.hintProviders = append(m.hintProviders, h)
 }
 
+// 添加container id到m.podMap
 func (m *manager) AddContainer(pod *v1.Pod, containerID string) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
@@ -214,13 +268,16 @@ func (m *manager) AddContainer(pod *v1.Pod, containerID string) error {
 	return nil
 }
 
+// 清理container ID在m.podTopologyHints分配资源
 func (m *manager) RemoveContainer(containerID string) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
 	klog.Infof("[topologymanager] RemoveContainer - Container ID: %v", containerID)
 	podUIDString := m.podMap[containerID]
+	// 从m.podMap中移除
 	delete(m.podMap, containerID)
+	// 从m.podTopologyHints[podUIDString]中移除containerID，如果m.podTopologyHints[podUIDString]长度为0，则将podUIDString从m.podTopologyHints中移除
 	if _, exists := m.podTopologyHints[podUIDString]; exists {
 		delete(m.podTopologyHints[podUIDString], containerID)
 		if len(m.podTopologyHints[podUIDString]) == 0 {
@@ -231,12 +288,24 @@ func (m *manager) RemoveContainer(containerID string) error {
 	return nil
 }
 
+// policy为"none"，行为跟pkg\kubelet\cm\container_manager_linux.go里的resourceAllocator一样
+//   成功为pod里所有普通container和init container，分配container的limit中所有需要device plugins的资源，且成功分配cpu（如果policy为static policy，成功为Guaranteed的pod且container request的cpu为整数的container，分配cpu），则admit通过
+// policy为"best-effort"、"restricted"、"single-numa-node"
+// 遍历所有的hintProviders（cpu manager和device manager）生成container的各个资源的TopologyHint列表
+// 从各个资源的TopologyHint列表中挑出一个TopologyHint，进行组合成[]TopologyHint，然后跟default Affinity（亲和所有numaNode）进行与计算。
+// 在所有组合中，根据各个policy类型，挑选出最合适的TopologyHint。
+// admit结果：
+// policy为"best-effort"，则admit通过
+// policy为"restricted"、"single-numa-node"，则为最合适TopologyHint的Preferred的值
 func (m *manager) Admit(attrs *lifecycle.PodAdmitAttributes) lifecycle.PodAdmitResult {
 	klog.Infof("[topologymanager] Topology Admit Handler")
 	pod := attrs.Pod
 
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+		// policy为"none"，行为跟pkg\kubelet\cm\container_manager_linux.go里的resourceAllocator一样
 		if m.policy.Name() == PolicyNone {
+			// 从注册的device plugins，分配container的limit中所有需要的资源
+			// policy为static policy，为Guaranteed的pod且container request的cpu为整数的container，分配cpu
 			err := m.allocateAlignedResources(pod, &container)
 			if err != nil {
 				return lifecycle.PodAdmitResult{
@@ -248,6 +317,8 @@ func (m *manager) Admit(attrs *lifecycle.PodAdmitAttributes) lifecycle.PodAdmitR
 			continue
 		}
 
+		// 遍历所有的hintProviders（cpu manager和device manager）生成container的各个资源的TopologyHint列表
+		// 根据policy类型，筛选出最佳的TopologyHint
 		result, admit := m.calculateAffinity(pod, &container)
 		if !admit {
 			return lifecycle.PodAdmitResult{
@@ -261,8 +332,11 @@ func (m *manager) Admit(attrs *lifecycle.PodAdmitAttributes) lifecycle.PodAdmitR
 		if m.podTopologyHints[string(pod.UID)] == nil {
 			m.podTopologyHints[string(pod.UID)] = make(map[string]TopologyHint)
 		}
+		// 将container的TopologyHint添加到m.podTopologyHints
 		m.podTopologyHints[string(pod.UID)][container.Name] = result
 
+		// 从注册的device plugins，分配container的limit中所有需要的资源
+		// cpu manager，policy为static policy，为Guaranteed的pod且container request的cpu为整数的container，分配cpu
 		err := m.allocateAlignedResources(pod, &container)
 		if err != nil {
 			return lifecycle.PodAdmitResult{

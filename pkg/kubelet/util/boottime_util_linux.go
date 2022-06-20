@@ -26,11 +26,13 @@ import (
 )
 
 // GetBootTime returns the time at which the machine was started, truncated to the nearest second
+// 返回开机时间点
 func GetBootTime() (time.Time, error) {
 	currentTime := time.Now()
 	var info unix.Sysinfo_t
 	if err := unix.Sysinfo(&info); err != nil {
 		return time.Time{}, fmt.Errorf("error getting system uptime: %s", err)
 	}
+	// 当前时间减去开机时间
 	return currentTime.Add(-time.Duration(info.Uptime) * time.Second).Truncate(time.Second), nil
 }

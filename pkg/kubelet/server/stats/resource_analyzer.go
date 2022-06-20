@@ -44,6 +44,9 @@ func NewResourceAnalyzer(statsProvider Provider, calVolumeFrequency time.Duratio
 }
 
 // Start starts background functions necessary for the ResourceAnalyzer to function
+// 启动一个goroutine，周期性更新ra.fsResourceAnalyzer.cachedVolumeStats
+// ra.fsResourceAnalyzer.cachedVolumeStats保存了volumeStatCalculator集合，用于计算kubelet上所有pod的所有volume状态，volumeStatCalculator用于生成并保存pod的volume状态。
+// 每个pod会启动一个goroutine，周期性获得pod各个volume的目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free，并将状态保存到volumeStatCalculator.latest
 func (ra *resourceAnalyzer) Start() {
 	ra.fsResourceAnalyzer.Start()
 }

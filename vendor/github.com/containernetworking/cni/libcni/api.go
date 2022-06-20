@@ -99,7 +99,7 @@ func NewCNIConfig(path []string, exec invoke.Exec) *CNIConfig {
 	}
 }
 
-// 让cniVersion和name覆盖orig.CNIVersion和orig.name，prevResult赋值给orig.RawPrevResult，orig.Bytes里添加prevResult
+// 让cniVersion和name覆盖orig.CNIVersion和orig.name，prevResult（参数）赋值给orig.RawPrevResult字段，orig.Bytes字段里会有"prevResult": prevResult(参数转成[]byte)
 // 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capability的配置（在rt.CapabilityArgs中）到orig.Bytes里
 func buildOneConfig(name, cniVersion string, orig *NetworkConfig, prevResult types.Result, rt *RuntimeConf) (*NetworkConfig, error) {
 	var err error
@@ -206,6 +206,10 @@ func delCachedResult(netName string, rt *RuntimeConf) error {
 func getCachedResult(netName, cniVersion string, rt *RuntimeConf) (types.Result, error) {
 	// 返回{cacheDir}/results/{netName}/{container id}/{rt.ifName}，比如/var/lib/cni/cache/results/kubenet-loopback-761f2c6dc1503077db58e85e19873758aae73d2fae4b920f9fe24674c1db920a-lo
 	fname := getResultCacheFilePath(netName, rt)
+	// 内容类似
+	// {"cniVersion":"0.2.0","ip4":{"ip":"10.251.0.193/25","gateway":"10.251.0.129","routes":[{"dst":"0.0.0.0/0"}]},"dns":{}}
+	// 后面的cni版本内容格式改成
+	// {"kind":"cniCacheV1","containerId":"f89681f0fc8025fced6ef3d14e220086cff2a7e89876de387b41e7892b0428c5","config":"ewogICJjbmlWZXJzaW9uIjogIjAuMS4wIiwKICAibmFtZSI6ICJrdWJlbmV0IiwKICAidHlwZSI6ICJicmlkZ2UiLAogICJicmlkZ2UiOiAiY2JyMCIsCiAgIm10dSI6IDE1MDAsCiAgImFkZElmIjogImV0aDAiLAogICJpc0dhdGV3YXkiOiB0cnVlLAogICJpcE1hc3EiOiBmYWxzZSwKICAiaGFpcnBpbk1vZGUiOiB0cnVlLAogICJpcGFtIjogewogICAgInR5cGUiOiAiaG9zdC1sb2NhbCIsCiAgICAicmFuZ2VzIjogWwpbewoic3VibmV0IjogIjEwLjI0OC4wLjAvMjUiCn1dXSwKICAgICJyb3V0ZXMiOiBbeyJkc3QiOiAiMC4wLjAuMC8wIn1dCiAgfQp9","ifName":"eth0","networkName":"kubenet","result":{"cniVersion":"0.2.0","dns":{},"ip4":{"gateway":"10.248.0.1","ip":"10.248.0.88/25","routes":[{"dst":"0.0.0.0/0"}]}}}
 	data, err := ioutil.ReadFile(fname)
 	if err != nil {
 		// Ignore read errors; the cached result may not exist on-disk
@@ -262,7 +266,7 @@ func (c *CNIConfig) addNetwork(ctx context.Context, name, cniVersion string, net
 	}
 
 	// 生成新的*NetworkConfig
-	// 让cniVersion和name覆盖net.CNIVersion和net.name，prevResult为net.Bytes里的PrevResult和net.RawPrevResult, 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capability的配置（在rt.CapabilityArgs中）到net.Bytes里
+	// 让cniVersion和name覆盖net.CNIVersion和net.name，prevResult（参数）赋值给newConf.RawPrevResult字段，newConf.Bytes字段里会有"prevResult": {prevResult参数转成[]byte}, 添加key为"runtimeConfig"，value为net.Network.Capabilities中启用的Capability的配置（在rt.CapabilityArgs中）到net.Bytes里
 	newConf, err := buildOneConfig(name, cniVersion, net, prevResult, rt)
 	if err != nil {
 		return nil, err
@@ -340,10 +344,10 @@ func (c *CNIConfig) AddNetworkList(ctx context.Context, list *NetworkConfigList,
 	var err error
 	var result types.Result
 	for _, net := range list.Plugins {
-		// 让list.CNIVersion和list.Name覆盖net.CNIVersion和net.name，result为net.RawPrevResult字段，result为net.Bytes里PrevResult，添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capabiliti的配置（在rt.CapabilityArgs中）到net.Bytes里
+		// 让list.CNIVersion和list.Name覆盖net.CNIVersion和net.name，上一个插件执行的result为新*NetworkConfig.RawPrevResult字段，同时会包含在新*NetworkConfig.Bytes字段（[]byte类型，类似为"preResult": {result转成[]byte}），添加key为"runtimeConfig"，value为net.Network.Capabilities中启用的Capability的配置（在rt.CapabilityArgs中）到net.Bytes里
 		// 生成新的*NetworkConfig，然后新的*NetworkConfig.Bytes做为执行cni插件二进制文件的stdin
-		// c.args("ADD", rt)（c.Path和rt）转成执行命令的环境变量
-		// 执行cni插件二进制文件stdout为result
+		// 然后调用c.args("ADD", rt)生成执行cni插件的环境变量（即把c.Path和rt转成环境变量），最后执行cni插件
+		// cni插件执行的stdout输出会转成为result
 		result, err = c.addNetwork(ctx, list.Name, list.CNIVersion, net, result, rt)
 		if err != nil {
 			return nil, err
@@ -410,7 +414,7 @@ func (c *CNIConfig) delNetwork(ctx context.Context, name, cniVersion string, net
 	}
 
 	// 让cniVersion和name覆盖net.CNIVersion和net.name，prevResult赋值为net.RawPrevResult，net.Bytes里添加prevResult
-	// 添加key为"runtimeConfig"，value为orig.Network.Capabilities中启用的Capabiliti的配置（在rt.CapabilityArgs中）到orig.Bytes里
+	// 添加key为"runtimeConfig"，value为net.Network.Capabilities中启用的Capability的配置（在rt.CapabilityArgs中）到newConf.Bytes里
 	newConf, err := buildOneConfig(name, cniVersion, net, prevResult, rt)
 	if err != nil {
 		return err
@@ -429,12 +433,12 @@ func (c *CNIConfig) delNetwork(ctx context.Context, name, cniVersion string, net
 
 	// kubenet
 	// 执行
-	// echo '{"cniVersion": "0.1.0", "name": "kubenet", "type": "bridge","bridge": "cbr0","mtu": 1500,"addIf": "eth0","isGateway": true,"ipMasq": false,"hairpinMode": true,"ipam": {"type": "host-local","ranges": [[{"subnet": "10.253.0.128/25"}]],"routes": [{"dst": "0.0.0.0/0"}]}}' | \
-	// CNI_COMMAND="ADD" \
+	// echo '{"cniVersion": "0.1.0", "name": "kubenet", "type": "bridge","bridge": "cbr0","mtu": 1500,"addIf": "eth0","isGateway": true,"ipMasq": false,"hairpinMode": true,"ipam": {"type": "host-local","ranges": [[{"subnet": "10.253.0.128/25"}]],"routes": [{"dst": "0.0.0.0/0"}]}, prevResult: {"cniVersion":"0.2.0","ip4":{"ip":"10.251.0.193/25","gateway":"10.251.0.129","routes":[{"dst":"0.0.0.0/0"}]},"dns":{}}}' | \
+	// CNI_COMMAND="DEL" \
 	// CNI_CONTAINERID="{container id}" \
 	// CNI_NETNS="/proc/{container pid}/ns/net" \
 	// CNI_ARGS="" \
-	// CNI_IFNAME="lo" \
+	// CNI_IFNAME="eth0" \
 	// CNI_PATH="/opt/cni/bin" \
 	// /usr/local/bin/bridge
 	// 没有任何输出
@@ -475,11 +479,15 @@ func (c *CNIConfig) DelNetworkList(ctx context.Context, list *NetworkConfigList,
 
 // AddNetwork executes the plugin with the ADD command
 func (c *CNIConfig) AddNetwork(ctx context.Context, net *NetworkConfig, rt *RuntimeConf) (types.Result, error) {
+	// 根据net、rt生成新的*NetworkConfig，然后新的*NetworkConfig.Bytes做为执行cni插件二进制文件的stdin
+	// 然后调用c.args("ADD", rt)生成执行cni插件的环境变量（即把c.Path和rt转成环境变量），最后执行cni插件
+	// cni插件执行的stdout输出会转成为result
 	result, err := c.addNetwork(ctx, net.Network.Name, net.Network.CNIVersion, net, nil, rt)
 	if err != nil {
 		return nil, err
 	}
 
+	// 默认在/var/lib/cni/cache/results/下生成保存插件执行输出的文件
 	if err = setCachedResult(result, net.Network.Name, rt); err != nil {
 		return nil, fmt.Errorf("failed to set network %q cached result: %v", net.Network.Name, err)
 	}
@@ -533,6 +541,7 @@ func (c *CNIConfig) DelNetwork(ctx context.Context, net *NetworkConfig, rt *Runt
 // - every plugin supports the desired version.
 //
 // Returns a list of all capabilities supported by the configuration, or error
+// 遍历所有plugins，验证plugin二进制文件是否存在，版本是否支持配置文件里指定的cniversion版本，返回plugin插件里的所有的Capability
 func (c *CNIConfig) ValidateNetworkList(ctx context.Context, list *NetworkConfigList) ([]string, error) {
 	version := list.CNIVersion
 
@@ -540,10 +549,14 @@ func (c *CNIConfig) ValidateNetworkList(ctx context.Context, list *NetworkConfig
 	caps := map[string]interface{}{}
 
 	errs := []error{}
+	// 遍历所有plugins，验证plugin二进制文件是否存在，版本是否支持配置文件里指定的cniversion版本，返回plugin插件里的所有的Capability
 	for _, net := range list.Plugins {
+		// 1. 检查插件的二进制文件是否存在
+		// 2. version是否插件支持
 		if err := c.validatePlugin(ctx, net.Network.Type, version); err != nil {
 			errs = append(errs, err)
 		}
+		// 统计启用的capabilities
 		for c, enabled := range net.Network.Capabilities {
 			if !enabled {
 				continue
@@ -582,16 +595,21 @@ func (c *CNIConfig) ValidateNetwork(ctx context.Context, net *NetworkConfig) ([]
 }
 
 // validatePlugin checks that an individual plugin's configuration is sane
+// 1. 检查插件的二进制文件是否存在
+// 2. expectedVersion是否插件支持
 func (c *CNIConfig) validatePlugin(ctx context.Context, pluginName, expectedVersion string) error {
+	// 发现是插件的二进制文件存在
 	pluginPath, err := invoke.FindInPath(pluginName, c.Path)
 	if err != nil {
 		return err
 	}
 
+	// 执行version动作获得插件支持的版本
 	vi, err := invoke.GetVersionInfo(ctx, pluginPath, c.exec)
 	if err != nil {
 		return err
 	}
+	// expectedVersion是否匹配支持版本
 	for _, vers := range vi.SupportedVersions() {
 		if vers == expectedVersion {
 			return nil
@@ -613,6 +631,7 @@ func (c *CNIConfig) GetVersionInfo(ctx context.Context, pluginType string) (vers
 }
 
 // =====
+// 忽略rt.CapabilityArgs和rt.CacheDir，只用了rt.ContainerID、rt.NetNS、rt.Args、rt.IfName
 func (c *CNIConfig) args(action string, rt *RuntimeConf) *invoke.Args {
 	return &invoke.Args{
 		Command:     action,

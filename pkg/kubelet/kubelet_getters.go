@@ -41,12 +41,14 @@ import (
 // store data.  These functions are useful to pass interfaces to other modules
 // that may need to know where to write data without getting a whole kubelet
 // instance.
+// 默认为"/var/lib/kubelet"
 func (kl *Kubelet) getRootDir() string {
 	return kl.rootDirectory
 }
 
 // getPodsDir returns the full path to the directory under which pod
 // directories are created.
+// 返回pod的目录，默认为"/var/lib/kubelet/pods"
 func (kl *Kubelet) getPodsDir() string {
 	return filepath.Join(kl.getRootDir(), config.DefaultKubeletPodsDirName)
 }
@@ -91,12 +93,14 @@ func (kl *Kubelet) getVolumeDevicePluginDir(pluginName string) string {
 
 // GetPodDir returns the full path to the per-pod data directory for the
 // specified pod. This directory may not exist if the pod does not exist.
+// 默认为"/var/lib/kubelet/pods"+{podUID}
 func (kl *Kubelet) GetPodDir(podUID types.UID) string {
 	return kl.getPodDir(podUID)
 }
 
 // getPodDir returns the full path to the per-pod directory for the pod with
 // the given UID.
+// 默认为"/var/lib/kubelet/pods"+{podUID}
 func (kl *Kubelet) getPodDir(podUID types.UID) string {
 	return filepath.Join(kl.getPodsDir(), string(podUID))
 }
@@ -111,6 +115,7 @@ func (kl *Kubelet) getPodVolumeSubpathsDir(podUID types.UID) string {
 // getPodVolumesDir returns the full path to the per-pod data directory under
 // which volumes are created for the specified pod.  This directory may not
 // exist if the pod does not exist.
+// 默认为"/var/lib/kubelet/pods"+{podUID}+"/volumes"
 func (kl *Kubelet) getPodVolumesDir(podUID types.UID) string {
 	return filepath.Join(kl.getPodDir(podUID), config.DefaultKubeletVolumesDirName)
 }
@@ -118,6 +123,7 @@ func (kl *Kubelet) getPodVolumesDir(podUID types.UID) string {
 // getPodVolumeDir returns the full path to the directory which represents the
 // named volume under the named plugin for specified pod.  This directory may not
 // exist if the pod does not exist.
+// 默认为"/var/lib/kubelet/pods"+{podUID}+"/volumes"+{pluginName}+{volumeName}
 func (kl *Kubelet) getPodVolumeDir(podUID types.UID, pluginName string, volumeName string) string {
 	return filepath.Join(kl.getPodVolumesDir(podUID), pluginName, volumeName)
 }
@@ -125,12 +131,14 @@ func (kl *Kubelet) getPodVolumeDir(podUID types.UID, pluginName string, volumeNa
 // getPodVolumeDevicesDir returns the full path to the per-pod data directory under
 // which volumes are created for the specified pod. This directory may not
 // exist if the pod does not exist.
+// 默认为"/var/lib/kubelet/pods/{pod uid}/volumeDevices"
 func (kl *Kubelet) getPodVolumeDevicesDir(podUID types.UID) string {
 	return filepath.Join(kl.getPodDir(podUID), config.DefaultKubeletVolumeDevicesDirName)
 }
 
 // getPodVolumeDeviceDir returns the full path to the directory which represents the
 // named plugin for specified pod. This directory may not exist if the pod does not exist.
+// 默认为"/var/lib/kubelet/pods/{pod uid}/volumeDevices/{pluginName}" 
 func (kl *Kubelet) getPodVolumeDeviceDir(podUID types.UID, pluginName string) string {
 	return filepath.Join(kl.getPodVolumeDevicesDir(podUID), pluginName)
 }
@@ -138,6 +146,7 @@ func (kl *Kubelet) getPodVolumeDeviceDir(podUID types.UID, pluginName string) st
 // getPodPluginsDir returns the full path to the per-pod data directory under
 // which plugins may store data for the specified pod.  This directory may not
 // exist if the pod does not exist.
+// 默认为"/var/lib/kubelet/pods/{podUID}/plugins"
 func (kl *Kubelet) getPodPluginsDir(podUID types.UID) string {
 	return filepath.Join(kl.getPodDir(podUID), config.DefaultKubeletPluginsDirName)
 }
@@ -152,6 +161,7 @@ func (kl *Kubelet) getPodPluginDir(podUID types.UID, pluginName string) string {
 // getPodContainerDir returns the full path to the per-pod data directory under
 // which container data is held for the specified pod.  This directory may not
 // exist if the pod or container does not exist.
+// 默认为"/var/lib/kubelet/pods/{podUID}/containers/{container name}"
 func (kl *Kubelet) getPodContainerDir(podUID types.UID, ctrName string) string {
 	return filepath.Join(kl.getPodDir(podUID), config.DefaultKubeletContainersDirName, ctrName)
 }
@@ -163,12 +173,16 @@ func (kl *Kubelet) getPodResourcesDir() string {
 
 // GetPods returns all pods bound to the kubelet and their spec, and the mirror
 // pods.
+// 所有普通pod和static pod，如果static pod，则从status manager中获取最新状态赋值给pod的Status字段
 func (kl *Kubelet) GetPods() []*v1.Pod {
+	// 所有普通pod和static pod
 	pods := kl.podManager.GetPods()
 	// a kubelet running without apiserver requires an additional
 	// update of the static pod status. See #57106
 	for _, p := range pods {
+		// pod的annotation["kubernetes.io/config.source"]值不是"api"
 		if kubelettypes.IsStaticPod(p) {
+			// 从m.podStatuses缓存中获取uid的相关的pod的status，（如果是mirror pod uid则通过static pod uid来查找）
 			if status, ok := kl.statusManager.GetPodStatus(p.UID); ok {
 				klog.V(2).Infof("status for pod %v updated to %v", p.Name, status)
 				p.Status = status
@@ -229,6 +243,7 @@ func (kl *Kubelet) getRuntime() kubecontainer.Runtime {
 }
 
 // GetNode returns the node info for the configured node name of this Kubelet.
+// 当kl.kubeClient为nil，从kl.initialNode手动生成的初始的node对象，否则从informer中获取本机的node对象
 func (kl *Kubelet) GetNode() (*v1.Node, error) {
 	if kl.kubeClient == nil {
 		return kl.initialNode(context.TODO())
@@ -241,6 +256,8 @@ func (kl *Kubelet) GetNode() (*v1.Node, error) {
 // Return kubelet's nodeInfo for this node, except on error or if in standalone mode,
 // in which case return a manufactured nodeInfo representing a node with no pods,
 // zero capacity, and the default labels.
+// 先从informer中获取本机的node对象，成功则返回
+// 否则返回kl.initialNode手动生成的初始的node对象
 func (kl *Kubelet) getNodeAnyWay() (*v1.Node, error) {
 	if kl.kubeClient != nil {
 		if n, err := kl.nodeLister.Get(string(kl.nodeName)); err == nil {
@@ -251,11 +268,13 @@ func (kl *Kubelet) getNodeAnyWay() (*v1.Node, error) {
 }
 
 // GetNodeConfig returns the container manager node config.
+// 返回kl.containerManager.NodeConfig
 func (kl *Kubelet) GetNodeConfig() cm.NodeConfig {
 	return kl.containerManager.GetNodeConfig()
 }
 
 // GetPodCgroupRoot returns the listeral cgroupfs value for the cgroup containing all pods
+
 func (kl *Kubelet) GetPodCgroupRoot() string {
 	return kl.containerManager.GetPodCgroupRoot()
 }
@@ -271,17 +290,22 @@ func (kl *Kubelet) GetHostIP() (net.IP, error) {
 
 // getHostIPAnyway attempts to return the host IP from kubelet's nodeInfo, or
 // the initialNode.
+// 获取kubelet的ip
 func (kl *Kubelet) getHostIPAnyWay() (net.IP, error) {
+	// 先从informer中获取本机的node对象，成功则返回
+	// 否则返回kl.initialNode手动生成的初始的node对象
 	node, err := kl.getNodeAnyWay()
 	if err != nil {
 		return nil, err
 	}
+	// 返回node的ip，首先从取"InternalIP"的第一个ip，如果没有"InternalIP"，则取"ExternalIP"中第一个ip
 	return utilnode.GetNodeHostIP(node)
 }
 
 // GetExtraSupplementalGroupsForPod returns a list of the extra
 // supplemental groups for the Pod. These extra supplemental groups come
 // from annotations on persistent volumes that the pod depends on.
+// 返回pod的挂载pv里annotation["pv.beta.kubernetes.io/gid"]里定义的gid（不在pod.Spec.SecurityContext.SupplementalGroups里）
 func (kl *Kubelet) GetExtraSupplementalGroupsForPod(pod *v1.Pod) []int64 {
 	return kl.volumeManager.GetExtraSupplementalGroupsForPod(pod)
 }

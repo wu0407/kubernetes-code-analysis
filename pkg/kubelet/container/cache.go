@@ -87,7 +87,11 @@ func (c *cache) Get(id types.UID) (*PodStatus, error) {
 	return d.status, d.err
 }
 
+// 尝试从缓存中获取pod的runtime status缓存，成功则直接返回pod的runtime status和是否inspect pod发生错误
+// 否则添加一个订阅记录到c.subscribers[id]，等待chan中有数据，然后返回pod的runtime status和是否inspect pod发生错误
 func (c *cache) GetNewerThan(id types.UID, minTime time.Time) (*PodStatus, error) {
+	// 先从缓存中获取新鲜数据，如果成功将数据放到data chan中，然后返回chan。
+	// 否则c.subscribers[id]列表中增加一个订阅记录，返回chan
 	ch := c.subscribe(id, minTime)
 	d := <-ch
 	return d.status, d.err
@@ -140,14 +144,20 @@ func (c *cache) get(id types.UID) *data {
 
 // getIfNewerThan returns the data it is newer than the given time.
 // Otherwise, it returns nil. The caller should acquire the lock.
+// 从缓存中获取比minTime晚的pod的runtime status
+// 1. 缓存中不存在或缓存中数据过期，且缓存是新鲜的，则返回默认空的数据
+// 2. 缓存中存在且是新鲜的，则返回缓存数据
+// 3. 其他情况，返回nil
 func (c *cache) getIfNewerThan(id types.UID, minTime time.Time) *data {
 	d, ok := c.pods[id]
 	globalTimestampIsNewer := (c.timestamp != nil && c.timestamp.After(minTime))
+	// 缓存中不存在pod的runtime status且缓存生产时间在minTime的之后，返回空数据
 	if !ok && globalTimestampIsNewer {
 		// Status is not cached, but the global timestamp is newer than
 		// minTime, return the default status.
 		return makeDefaultData(id)
 	}
+	// 缓存中存在pod runtime status，且pod runtime status生成时间在miniTime之后或缓存生产时间在minTime的之后
 	if ok && (d.modified.After(minTime) || globalTimestampIsNewer) {
 		// Status is cached, return status if either of the following is true.
 		//   * status was modified after minTime
@@ -155,6 +165,7 @@ func (c *cache) getIfNewerThan(id types.UID, minTime time.Time) *data {
 		return d
 	}
 	// The pod status is not ready.
+	// 其他情况，pod runtime status都是未知状态
 	return nil
 }
 
@@ -183,11 +194,15 @@ func (c *cache) notify(id types.UID, timestamp time.Time) {
 	}
 }
 
+// 先从缓存中获取新鲜数据，如果成功将数据放到data chan中，然后返回chan。
+// 否则c.subscribers[id]列表中增加一个订阅记录
 func (c *cache) subscribe(id types.UID, timestamp time.Time) chan *data {
 	ch := make(chan *data, 1)
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	// 从缓存中获取比minTime晚的pod的runtime status
 	d := c.getIfNewerThan(id, timestamp)
+	// 找到新鲜的数据，或在缓存是新鲜的前提下，未找到数据或找到数据是过期的
 	if d != nil {
 		// If the cache entry is ready, send the data and return immediately.
 		ch <- d

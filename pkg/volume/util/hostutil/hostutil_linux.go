@@ -147,6 +147,7 @@ func (hu *HostUtil) GetFileType(pathname string) (FileType, error) {
 
 // PathExists tests if the given path already exists
 // Error is returned on any other error than "file not found".
+// 执行os.Stat（跟随链接FollowSymlink）判断pathname是否存在
 func (hu *HostUtil) PathExists(pathname string) (bool, error) {
 	return utilpath.Exists(utilpath.CheckFollowSymlink, pathname)
 }
@@ -261,6 +262,7 @@ func (hu *HostUtil) GetOwner(pathname string) (int64, int64, error) {
 }
 
 // GetMode returns permissions of the path.
+// 获取文件的权限
 func (hu *HostUtil) GetMode(pathname string) (os.FileMode, error) {
 	return GetModeLinux(pathname)
 }

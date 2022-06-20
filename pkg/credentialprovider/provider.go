@@ -74,8 +74,13 @@ func (d *defaultDockerConfigProvider) Enabled() bool {
 }
 
 // Provide implements dockerConfigProvider
+// 先从["/var/lib/kubelet/config.json", "当前目录下的config.json", "~/.docker/config.json", "/.docker/config.json"]返回第一个存在且正确配置文件里的内容
+// 没有读取到，则从["/var/lib/kubelet/.dockercfg", "当前目录/.dockercfg", "~/.dockercfg", "/.dockercfg"]，返回第一个存在且正确配置文件里的内容
+// 上面都没有，则返回空的DockerConfig
 func (d *defaultDockerConfigProvider) Provide(image string) DockerConfig {
 	// Read the standard Docker credentials from .dockercfg
+	// 先从["/var/lib/kubelet/config.json", "当前目录下的config.json", "~/.docker/config.json", "/.docker/config.json"]返回第一个存在且正确配置文件里的内容
+	// 没有读取到，则从["/var/lib/kubelet/.dockercfg", "当前目录/.dockercfg", "~/.dockercfg", "/.dockercfg"]，返回第一个存在且正确配置文件里的内容
 	if cfg, err := ReadDockerConfigFile(); err == nil {
 		return cfg
 	} else if !os.IsNotExist(err) {
@@ -90,19 +95,33 @@ func (d *CachingDockerConfigProvider) Enabled() bool {
 }
 
 // Provide implements dockerConfigProvider
+// 从缓存未过期则从d.cacheDockerConfig缓存中获取DockerConfig
+// 否则
+//   先从["/var/lib/kubelet/config.json", "当前目录下的config.json", "~/.docker/config.json", "/.docker/config.json"]返回第一个存在且正确配置文件里的内容
+//   没有读取到，则从["/var/lib/kubelet/.dockercfg", "当前目录/.dockercfg", "~/.dockercfg", "/.dockercfg"]，返回第一个存在且正确配置文件里的内容
+//   上面都没有，则返回空的DockerConfig
+// 更新缓存和过期时间
 func (d *CachingDockerConfigProvider) Provide(image string) DockerConfig {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	// If the cache hasn't expired, return our cache
+	// 缓存未过期，则返回缓存的数据
 	if time.Now().Before(d.expiration) {
 		return d.cacheDockerConfig
 	}
 
+	// 缓存过期了
 	klog.V(2).Infof("Refreshing cache for provider: %v", reflect.TypeOf(d.Provider).String())
+	// 先从["/var/lib/kubelet/config.json", "当前目录下的config.json", "~/.docker/config.json", "/.docker/config.json"]返回第一个存在且正确配置文件里的内容
+	// 没有读取到，则从["/var/lib/kubelet/.dockercfg", "当前目录/.dockercfg", "~/.dockercfg", "/.dockercfg"]，返回第一个存在且正确配置文件里的内容
+	// 上面都没有，则返回空的DockerConfig
 	config := d.Provider.Provide(image)
+	// d.ShouldCache未定义或d.ShouldCache(config)返回true
 	if d.ShouldCache == nil || d.ShouldCache(config) {
+		// 设置缓存
 		d.cacheDockerConfig = config
+		// 设置过期时间
 		d.expiration = time.Now().Add(d.Lifetime)
 	}
 	return config

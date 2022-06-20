@@ -32,11 +32,13 @@ import (
 // the node allocatable.
 // TODO: if/when we have pod level resources, we need to update this function
 // to use those limits instead of node allocatable.
+// 设置pod里所有普通container的resource limit和参数里的container的resource limit，如果container某种resource没有设置limit，则设置为node allocatable里对应resource的值
 func (kl *Kubelet) defaultPodLimitsForDownwardAPI(pod *v1.Pod, container *v1.Container) (*v1.Pod, *v1.Container, error) {
 	if pod == nil {
 		return nil, nil, fmt.Errorf("invalid input, pod cannot be nil")
 	}
 
+	// 先从informer中获取本机的node对象，成功则返回 否则返回kl.initialNode手动生成的初始的node对象
 	node, err := kl.getNodeAnyWay()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to find node object, expected a node")
@@ -45,6 +47,7 @@ func (kl *Kubelet) defaultPodLimitsForDownwardAPI(pod *v1.Pod, container *v1.Con
 	klog.Infof("allocatable: %v", allocatable)
 	outputPod := pod.DeepCopy()
 	for idx := range outputPod.Spec.Containers {
+		// 设置container的resource limit，如果container某种resource没有设置limit，则设置为node allocatable里对应resource的值
 		resource.MergeContainerResourceLimits(&outputPod.Spec.Containers[idx], allocatable)
 	}
 

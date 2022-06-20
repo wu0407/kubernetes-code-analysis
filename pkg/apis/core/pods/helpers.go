@@ -62,11 +62,18 @@ func VisitContainersWithPath(podSpec *api.PodSpec, visitor ContainerVisitorWithP
 // and its value in the pod of the specified version to the internal version,
 // and returns the converted label and value. This function returns an error if
 // the conversion fails.
+// 验证version和label是否合法
+// version只支持"v1"
+// label包含中括号，只支持"metadata.annotations", "metadata.labels"
+// label不包含中括号，支持"metadata.annotations" "metadata.labels" "metadata.name" "metadata.namespace" "metadata.uid" "spec.nodeName" "spec.restartPolicy" "spec.serviceAccountName" "spec.schedulerName" "status.phase" "status.hostIP" "status.podIP" "status.podIPs"
 func ConvertDownwardAPIFieldLabel(version, label, value string) (string, string, error) {
 	if version != "v1" {
 		return "", "", fmt.Errorf("unsupported pod version: %s", version)
 	}
 
+	// 解析label，返回路径、key（如果label包含中括号，即map类型）、是否为map类型
+	// label包含中括号，且path为"metadata.annotations", "metadata.labels"，直接返回label, value, nil。
+	// path不为"metadata.annotations", "metadata.labels"，返回错误
 	if path, _, ok := fieldpath.SplitMaybeSubscriptedPath(label); ok {
 		switch path {
 		case "metadata.annotations", "metadata.labels":
@@ -76,6 +83,7 @@ func ConvertDownwardAPIFieldLabel(version, label, value string) (string, string,
 		}
 	}
 
+	// label不包含中括号
 	switch label {
 	case "metadata.annotations",
 		"metadata.labels",

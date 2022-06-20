@@ -130,7 +130,9 @@ func (kvh *kubeletVolumeHost) GetPodsDir() string {
 	return kvh.kubelet.getPodsDir()
 }
 
+// linux系统默认为"/var/lib/kubelet/pods"+{podUID}+"/volumes"+{pluginName}+{volumeName}
 func (kvh *kubeletVolumeHost) GetPodVolumeDir(podUID types.UID, pluginName string, volumeName string) string {
+	// 默认为"/var/lib/kubelet/pods"+{podUID}+"/volumes"+{pluginName}+{volumeName}
 	dir := kvh.kubelet.getPodVolumeDir(podUID, pluginName, volumeName)
 	if runtime.GOOS == "windows" {
 		dir = util.GetWindowsPath(dir)
@@ -138,6 +140,7 @@ func (kvh *kubeletVolumeHost) GetPodVolumeDir(podUID types.UID, pluginName strin
 	return dir
 }
 
+// 默认为"/var/lib/kubelet/pods/{pod uid}/volumeDevices/{pluginName}" 
 func (kvh *kubeletVolumeHost) GetPodVolumeDeviceDir(podUID types.UID, pluginName string) string {
 	return kvh.kubelet.getPodVolumeDeviceDir(podUID, pluginName)
 }

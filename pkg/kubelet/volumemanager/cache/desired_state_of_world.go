@@ -448,6 +448,7 @@ func (dsw *desiredStateOfWorld) AddErrorToPod(podName types.UniquePodName, err s
 	dsw.podErrors[podName] = sets.NewString(err)
 }
 
+// 返回podName在dsw.podErrors的值，并将podName从dsw.podErrors移除
 func (dsw *desiredStateOfWorld) PopPodErrors(podName types.UniquePodName) []string {
 	dsw.Lock()
 	defer dsw.Unlock()

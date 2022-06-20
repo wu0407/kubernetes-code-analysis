@@ -35,13 +35,14 @@ import (
 // 2. resource name does not have "requests." prefix,
 // to avoid confusion with the convention in quota
 // 3. it satisfies the rules in IsQualifiedName() after converted into quota resource name
+// 包含斜杠，或不是“kubernetes.io/”为前缀，且不是“request.”为前缀。且将"requests." 加上name组成字符串，验证这个字符串是合法
 func IsExtendedResourceName(name v1.ResourceName) bool {
-	// 不包含反斜杆（隐式的“kubernetes.io/”为前缀）或或者 “kubernetes.io/”为前缀或“request.”为前缀
+	// 不包含反斜杆（相当于隐式的“kubernetes.io/”为前缀）或者 “kubernetes.io/”为前缀，或“request.”为前缀
 	if IsNativeResource(name) || strings.HasPrefix(string(name), v1.DefaultResourceRequestsPrefix) {
 		return false
 	}
 	// Ensure it satisfies the rules in IsQualifiedName() after converted into quota resource name
-	// 转成前面是"requests." 加上name
+	// 将"requests." 加上name组成字符串，验证这个字符串是否合法
 	nameForQuota := fmt.Sprintf("%s%s", v1.DefaultResourceRequestsPrefix, string(name))
 	if errs := validation.IsQualifiedName(string(nameForQuota)); len(errs) != 0 {
 		return false
@@ -58,7 +59,7 @@ func IsPrefixedNativeResource(name v1.ResourceName) bool {
 // IsNativeResource returns true if the resource name is in the
 // *kubernetes.io/ namespace. Partially-qualified (unprefixed) names are
 // implicitly in the kubernetes.io/ namespace.
-// 不包含反斜杆（隐式的“kubernetes.io/”为前缀）或或者 “kubernetes.io/”为前缀
+// 不包含反斜杆（相当于隐式的“kubernetes.io/”为前缀）或者 “kubernetes.io/”为前缀
 func IsNativeResource(name v1.ResourceName) bool {
 	return !strings.Contains(string(name), "/") ||
 		IsPrefixedNativeResource(name)
@@ -66,6 +67,7 @@ func IsNativeResource(name v1.ResourceName) bool {
 
 // IsHugePageResourceName returns true if the resource name has the huge page
 // resource prefix.
+// name是否包含"hugepages-"前缀
 func IsHugePageResourceName(name v1.ResourceName) bool {
 	return strings.HasPrefix(string(name), v1.ResourceHugePagesPrefix)
 }
@@ -80,7 +82,9 @@ func HugePageResourceName(pageSize resource.Quantity) v1.ResourceName {
 // HugePageSizeFromResourceName returns the page size for the specified huge page
 // resource name.  If the specified input is not a valid huge page resource name
 // an error is returned.
+// 返回hugepage的pagesize
 func HugePageSizeFromResourceName(name v1.ResourceName) (resource.Quantity, error) {
+	// name不包含"hugepages-"前缀，返回错误
 	if !IsHugePageResourceName(name) {
 		return resource.Quantity{}, fmt.Errorf("resource name: %s is an invalid hugepage name", name)
 	}
@@ -91,6 +95,7 @@ func HugePageSizeFromResourceName(name v1.ResourceName) (resource.Quantity, erro
 // HugePageUnitSizeFromByteSize returns hugepage size has the format.
 // `size` must be guaranteed to divisible into the largest units that can be expressed.
 // <size><unit-prefix>B (1024 = "1KB", 1048576 = "1MB", etc).
+// size转成存储单位格式
 func HugePageUnitSizeFromByteSize(size int64) (string, error) {
 	// hugePageSizeUnitList is borrowed from opencontainers/runc/libcontainer/cgroups/utils.go
 	var hugePageSizeUnitList = []string{"B", "KB", "MB", "GB", "TB", "PB"}
@@ -134,11 +139,16 @@ func IsOvercommitAllowed(name v1.ResourceName) bool {
 		!IsHugePageResourceName(name)
 }
 
+// name包含"attachable-volumes-"前缀，返回true
 func IsAttachableVolumeResourceName(name v1.ResourceName) bool {
 	return strings.HasPrefix(string(name), v1.ResourceAttachableVolumesPrefix)
 }
 
 // Extended and Hugepages resources
+// 是扩展资源（包含斜杠，或不是“kubernetes.io/”为前缀，且不是“request.”为前缀。且将"requests." 加上name组成字符串，验证这个字符串是合法）
+// 或name包含"hugepages-"前缀
+// 或name为"kubernetes.io/"前缀
+// 或name包含"attachable-volumes-"前缀
 func IsScalarResourceName(name v1.ResourceName) bool {
 	return IsExtendedResourceName(name) || IsHugePageResourceName(name) ||
 		IsPrefixedNativeResource(name) || IsAttachableVolumeResourceName(name)
@@ -146,6 +156,7 @@ func IsScalarResourceName(name v1.ResourceName) bool {
 
 // this function aims to check if the service's ClusterIP is set or not
 // the objective is not to perform validation here
+// service是否有分配cluster ip
 func IsServiceIPSet(service *v1.Service) bool {
 	return service.Spec.ClusterIP != v1.ClusterIPNone && service.Spec.ClusterIP != ""
 }

@@ -334,11 +334,14 @@ func (plugin *cniNetworkPlugin) SetUpPod(namespace string, name string, id kubec
 	defer cancelFunc()
 	// Windows doesn't have loNetwork. It comes only with Linux
 	if plugin.loNetwork != nil {
+		// lo接口，调用loopback执行ADD操作
+		// 根据参数生成cni运行的标准输入和环境变量，遍历执行plugin.loNetwork.NetworkConfig.Plugins里的插件执行ADD操作
 		if _, err = plugin.addToNetwork(cniTimeoutCtx, plugin.loNetwork, name, namespace, id, netnsPath, annotations, options); err != nil {
 			return err
 		}
 	}
 
+	// cni配置目录（默认为/etc/cni/net.d）按字母排序第一个带conf或conflist配置文件，根据这个配置，遍历执行plugin.getDefaultNetwork().loNetwork.NetworkConfig.Plugins里的插件执行ADD操作
 	_, err = plugin.addToNetwork(cniTimeoutCtx, plugin.getDefaultNetwork(), name, namespace, id, netnsPath, annotations, options)
 	return err
 }
@@ -377,20 +380,25 @@ func (plugin *cniNetworkPlugin) TearDownPod(namespace string, name string, id ku
 	return plugin.deleteFromNetwork(cniTimeoutCtx, plugin.getDefaultNetwork(), name, namespace, id, netnsPath, nil)
 }
 
+// 生成{namespace}_{name}/{container id}
 func podDesc(namespace, name string, id kubecontainer.ContainerID) string {
 	return fmt.Sprintf("%s_%s/%s", namespace, name, id.ID)
 }
 
+// 根据参数生成cni运行的标准输入和环境变量，遍历执行network.NetworkConfig.Plugins里的插件执行ADD操作
 func (plugin *cniNetworkPlugin) addToNetwork(ctx context.Context, network *cniNetwork, podName string, podNamespace string, podSandboxID kubecontainer.ContainerID, podNetnsPath string, annotations, options map[string]string) (cnitypes.Result, error) {
+	// 设置libcni.RuntimeConf，其中linux操作系统会设置CapabilityArgs为portMappings、bandwidth、ipRanges，windows操作系统为portMappings、bandwidth、ipRanges、dns
 	rt, err := plugin.buildCNIRuntimeConf(podName, podNamespace, podSandboxID, podNetnsPath, annotations, options)
 	if err != nil {
 		klog.Errorf("Error adding network when building cni runtime conf: %v", err)
 		return nil, err
 	}
 
+	// 生成{namespace}_{name}/{container id}
 	pdesc := podDesc(podNamespace, podName, podSandboxID)
 	netConf, cniNet := network.NetworkConfig, network.CNIConfig
 	klog.V(4).Infof("Adding %s to network %s/%s netns %q", pdesc, netConf.Plugins[0].Network.Type, netConf.Name, podNetnsPath)
+	// 遍历调用netConf.Plugins执行ADD操作
 	res, err := cniNet.AddNetworkList(ctx, netConf, rt)
 	if err != nil {
 		klog.Errorf("Error adding %s to network %s/%s: %v", pdesc, netConf.Plugins[0].Network.Type, netConf.Name, err)

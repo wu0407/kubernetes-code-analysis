@@ -60,12 +60,14 @@ type RuntimeHelper interface {
 
 // ShouldContainerBeRestarted checks whether a container needs to be restarted.
 // TODO(yifan): Think about how to refactor this.
+// 返回container是否应该被重启
 func ShouldContainerBeRestarted(container *v1.Container, pod *v1.Pod, podStatus *PodStatus) bool {
 	// Once a pod has been marked deleted, it should not be restarted
 	if pod.DeletionTimestamp != nil {
 		return false
 	}
 	// Get latest container status.
+	// 从podStatus.ContainerStatuses里，返回第一个名为container.Name的ContainerStatus
 	status := podStatus.FindContainerStatusByName(container.Name)
 	// If the container was never started before, we should start it.
 	// NOTE(random-liu): If all historical containers were GC'd, we'll also return true here.
@@ -98,6 +100,7 @@ func ShouldContainerBeRestarted(container *v1.Container, pod *v1.Pod, podStatus 
 // HashContainer returns the hash of the container. It is used to compare
 // the running container with its desired spec.
 // Note: remember to update hashValues in container_hash_test.go as well.
+// 计算container hash值
 func HashContainer(container *v1.Container) uint64 {
 	hash := fnv.New32a()
 	// Omit nil or empty field when calculating hash value
@@ -109,6 +112,7 @@ func HashContainer(container *v1.Container) uint64 {
 
 // EnvVarsToMap constructs a map of environment name to value from a slice
 // of env vars.
+// []EnvVar转成map[string]string
 func EnvVarsToMap(envs []EnvVar) map[string]string {
 	result := map[string]string{}
 	for _, env := range envs {
@@ -141,10 +145,13 @@ func ExpandContainerCommandOnlyStatic(containerCommand []string, envs []v1.EnvVa
 	return command
 }
 
+// 处理mount.SubPathExpr里类似"$(var)"格式，从envs里查找var对应值进行替换，和"$$"格式转义，返回mount.SubPathExpr处理后的值
 func ExpandContainerVolumeMounts(mount v1.VolumeMount, envs []EnvVar) (string, error) {
 
+	// []EnvVar转成map[string]string
 	envmap := EnvVarsToMap(envs)
 	missingKeys := sets.NewString()
+	// 处理mount.SubPathExpr里类似"$(var)"格式，从envmap里查找var对应值进行替换，和"$$"格式转义
 	expanded := expansion.Expand(mount.SubPathExpr, func(key string) string {
 		value, ok := envmap[key]
 		if !ok || len(value) == 0 {
@@ -159,17 +166,24 @@ func ExpandContainerVolumeMounts(mount v1.VolumeMount, envs []EnvVar) (string, e
 	return expanded, nil
 }
 
+// 处理container里Command和Args里类似"$(var)"格式，从envs查找变量值进行替换。或"$$(var)"格式则进行转义，输出"$(var)"
 func ExpandContainerCommandAndArgs(container *v1.Container, envs []EnvVar) (command []string, args []string) {
+	// EnvVarsToMap是 []EnvVar转成map[string]string
+	// 返回函数，在EnvVarsToMap(envs)列表里每个map查找input，找到就返回，否则返回"$({input})"，比如"$(var)"
 	mapping := expansion.MappingFuncFor(EnvVarsToMap(envs))
 
+	// container定义了Command
 	if len(container.Command) != 0 {
 		for _, cmd := range container.Command {
+			// 处理类似"$(var)"格式，执行mapping来替换var，和"$$"格式转义
 			command = append(command, expansion.Expand(cmd, mapping))
 		}
 	}
 
+	// container定义了Args
 	if len(container.Args) != 0 {
 		for _, arg := range container.Args {
+			// 处理类似"$(var)"格式，执行mapping来替换var，和"$$"格式转义
 			args = append(args, expansion.Expand(arg, mapping))
 		}
 	}
@@ -193,6 +207,7 @@ func (irecorder *innerEventRecorder) shouldRecordEvent(object runtime.Object) (*
 		return nil, false
 	}
 	if ref, ok := object.(*v1.ObjectReference); ok {
+		// ref.FieldPath不包含前缀"implicitly required container "，则返回ref和true（代表可以发送事件）
 		if !strings.HasPrefix(ref.FieldPath, ImplicitContainerPrefix) {
 			return ref, true
 		}
@@ -226,7 +241,7 @@ func IsHostNetworkPod(pod *v1.Pod) bool {
 }
 
 // TODO(random-liu): Convert PodStatus to running Pod, should be deprecated soon
-// 返回pod正在运行的container和sandbox
+// 从podStatus中返回pod正在运行的container和sandbox
 func ConvertPodStatusToRunningPod(runtimeName string, podStatus *PodStatus) Pod {
 	runningPod := Pod{
 		ID:        podStatus.ID,
@@ -296,6 +311,7 @@ func GetContainerSpec(pod *v1.Pod, containerName string) *v1.Container {
 }
 
 // HasPrivilegedContainer returns true if any of the containers in the pod are privileged.
+// 只要pod里的一个container的SecurityContext.Privileged为true，则返回true
 func HasPrivilegedContainer(pod *v1.Pod) bool {
 	var hasPrivileged bool
 	podutil.VisitContainers(&pod.Spec, func(c *v1.Container) bool {
@@ -309,6 +325,7 @@ func HasPrivilegedContainer(pod *v1.Pod) bool {
 }
 
 // MakePortMappings creates internal port mapping from api port mapping.
+// 生成portmapping
 func MakePortMappings(container *v1.Container) (ports []PortMapping) {
 	names := make(map[string]struct{})
 	for _, p := range container.Ports {
@@ -341,6 +358,7 @@ func MakePortMappings(container *v1.Container) (ports []PortMapping) {
 		}
 
 		// Protect against a port name being used more than once in a container.
+		// 防止同一container里定义了相同的port name或container port
 		if _, ok := names[pm.Name]; ok {
 			klog.Warningf("Port name conflicted, %q is defined more than once", pm.Name)
 			continue

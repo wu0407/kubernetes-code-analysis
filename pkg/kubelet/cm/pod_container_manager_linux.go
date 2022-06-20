@@ -68,27 +68,43 @@ func (m *podContainerManagerImpl) applyLimits(pod *v1.Pod) error {
 }
 
 // Exists checks if the pod's cgroup already exists
+// 在所有cgroup子系统中，pod的cgroup路径都存在。有一个子系统的路径不存在，则为false。
 func (m *podContainerManagerImpl) Exists(pod *v1.Pod) bool {
+	// 获得pod的cgroup路径，比如"/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podec7bb47a_07ef_48ff_9201_687474994eab.slice"
 	podContainerName, _ := m.GetPodContainerName(pod)
+	// 在所有cgroup子系统中，pod的cgroup路径都存在。有一个子系统的路径不存在，则为false
 	return m.cgroupManager.Exists(podContainerName)
 }
 
 // EnsureExists takes a pod as argument and makes sure that
 // pod cgroup exists if qos cgroup hierarchy flag is enabled.
 // If the pod level container doesn't already exist it is created.
+// 在所有cgroup子系统，创建pod的cgroup路径，并设置相应cgroup（cpu、memory、pid、hugepage在系统中开启的）资源属性的限制
 func (m *podContainerManagerImpl) EnsureExists(pod *v1.Pod) error {
+	// 返回pod的cgroupName和cgroup路径
 	podContainerName, _ := m.GetPodContainerName(pod)
 	// check if container already exist
+	// 在所有cgroup子系统中，pod的cgroup路径都存在。有一个子系统的路径不存在，则为false。
 	alreadyExists := m.Exists(pod)
 	if !alreadyExists {
 		// Create the pod container
 		containerConfig := &CgroupConfig{
 			Name:               podContainerName,
+			// 计算pod里所有container的各个类型的资源总和
+			// m.enforceCPULimits默认为true
+			// m.cpuCFSQuotaPeriod默认为100ms
 			ResourceParameters: ResourceConfigForPod(pod, m.enforceCPULimits, m.cpuCFSQuotaPeriod),
 		}
 		if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.SupportPodPidsLimit) && m.podPidsLimit > 0 {
+			// 启用"SupportPodPidsLimit"功能，且设置了m.podPidsLimit，则设置PidsLimit
 			containerConfig.ResourceParameters.PidsLimit = &m.podPidsLimit
 		}
+		// cgroup driver为systemd
+		//   1. 调用systemdDbus执行systemd临时unit（类似执行systemd-run命令）来创建相应的cgroup目录，并设置相应的资源属性值（MemoryLimit、"CPUShares"、"CPUQuotaPerSecUSec"、"BlockIOWeight"、"TasksMax"）这里没有支持cpuset设置，这个需要systemd244版本
+		//   2. 设置各个cgroup系统（cpu、memory、pid、hugepage在系统中开启的）的属性
+		// cgroup driver为cgroupfs
+		//   1. 创建各个cgroup系统目录，cpuset和memory和cpu子系统设置一些基本的cgroup子系统属性
+		//   2. 设置各个cgroup系统（cpu、memory、pid、hugepage在系统中开启的）的属性
 		if err := m.cgroupManager.Create(containerConfig); err != nil {
 			return fmt.Errorf("failed to create container for %v : %v", podContainerName, err)
 		}
@@ -97,6 +113,7 @@ func (m *podContainerManagerImpl) EnsureExists(pod *v1.Pod) error {
 	// Top level qos containers limits are not updated
 	// until we figure how to maintain the desired state in the kubelet.
 	// Because maintaining the desired state is difficult without checkpointing.
+	// 目前代码里不做任何事情
 	if err := m.applyLimits(pod); err != nil {
 		return fmt.Errorf("failed to apply resource limits on container for %v : %v", podContainerName, err)
 	}
@@ -104,7 +121,9 @@ func (m *podContainerManagerImpl) EnsureExists(pod *v1.Pod) error {
 }
 
 // GetPodContainerName returns the CgroupName identifier, and its literal cgroupfs form on the host.
+// 返回pod的cgroupName和cgroup路径
 func (m *podContainerManagerImpl) GetPodContainerName(pod *v1.Pod) (CgroupName, string) {
+	// 获取pod的qos class类别
 	podQOS := v1qos.GetPodQOS(pod)
 	// Get the parent QOS container name
 	var parentContainer CgroupName
@@ -116,6 +135,7 @@ func (m *podContainerManagerImpl) GetPodContainerName(pod *v1.Pod) (CgroupName, 
 	case v1.PodQOSBestEffort:
 		parentContainer = m.qosContainersInfo.BestEffort
 	}
+	// 返回字符串"pod"+{pod uid}
 	podContainer := GetPodCgroupNameSuffix(pod.UID)
 
 	// Get the absolute path of the cgroup

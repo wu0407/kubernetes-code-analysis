@@ -29,6 +29,10 @@ import (
 )
 
 // Stats provides basic information about max and current process count
+// 返回最大pid数量和当前的进程数量
+// MaxPID最大的pid数量是从/proc/sys/kernel/pid_max获取
+// NumOfRunningProcesses为系统运行的进程数
+// Time为现在时间
 func Stats() (*statsapi.RlimitStats, error) {
 	rlimit := &statsapi.RlimitStats{}
 

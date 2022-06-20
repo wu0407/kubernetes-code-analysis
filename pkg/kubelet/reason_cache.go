@@ -56,6 +56,7 @@ func NewReasonCache() *ReasonCache {
 	return &ReasonCache{cache: lru.New(maxReasonCacheEntries)}
 }
 
+// 返回"{uid}_{name}"
 func (c *ReasonCache) composeKey(uid types.UID, name string) string {
 	return fmt.Sprintf("%s_%s", uid, name)
 }
@@ -69,6 +70,7 @@ func (c *ReasonCache) add(uid types.UID, name string, reason error, message stri
 
 // Update updates the reason cache with the SyncPodResult. Only SyncResult with
 // StartContainer action will change the cache.
+// 只更新"StartContainer"的动作的事件，如果没有错误，则移除缓存中"{uid}_{target}"相关的错误，否则就增加"{uid}_{target}"的相关错误
 func (c *ReasonCache) Update(uid types.UID, result kubecontainer.PodSyncResult) {
 	for _, r := range result.SyncResults {
 		if r.Action != kubecontainer.StartContainer {

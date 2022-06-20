@@ -291,7 +291,7 @@ func makePodSourceConfig(kubeCfg *kubeletconfiginternal.KubeletConfiguration, ku
 	// 默认StaticPodPath为空，FileCheckFrequency为20s
 	if kubeCfg.StaticPodPath != "" {
 		klog.Infof("Adding pod path: %v", kubeCfg.StaticPodPath)
-		// 启动gorotine watch文件变化和周期性读取文件，生成PodUpdate（op为set，包含所有pod）消息发送给updates通道
+		// 启动goroutine watch文件变化和周期性读取文件，生成PodUpdate（op为set，包含所有pod）消息发送给updates通道
 		config.NewSourceFile(kubeCfg.StaticPodPath, nodeName, kubeCfg.FileCheckFrequency.Duration, cfg.Channel(kubetypes.FileSource))
 	}
 
@@ -530,6 +530,8 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		// Do not provide kubeCfg.EnforceNodeAllocatable to eviction threshold parsing if we are not enforcing Evictions
 		enforceNodeAllocatable = []string{}
 	}
+	// hardEviction与softEviction的区别是hardEviction的GracePeriod一定是0，而softEviction不为0
+	// 这也是softThresholds与hardThresholds和results都用slice的原因
 	thresholds, err := eviction.ParseThresholdConfig(enforceNodeAllocatable, kubeCfg.EvictionHard, kubeCfg.EvictionSoft, kubeCfg.EvictionSoftGracePeriod, kubeCfg.EvictionMinimumReclaim)
 	if err != nil {
 		return nil, err
@@ -717,6 +719,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 
 	klet.podCache = kubecontainer.NewCache()
 	var checkpointManager checkpointmanager.CheckpointManager
+	// bootstrapCheckpointPath默认为空
 	if bootstrapCheckpointPath != "" {
 		checkpointManager, err = checkpointmanager.NewCheckpointManager(bootstrapCheckpointPath)
 		if err != nil {
@@ -879,10 +882,17 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 
 	// If the experimentalMounterPathFlag is set, we do not want to
 	// check node capabilities since the mount path is not the default
+	// experimentalMounterPath默认为空
 	if len(experimentalMounterPath) != 0 {
 		experimentalCheckNodeCapabilitiesBeforeMount = false
 		// Replace the nameserver in containerized-mounter's rootfs/etc/resolve.conf with kubelet.ClusterDNS
 		// so that service name could be resolved
+		// 提取出dnsConfigurer.ResolverConfig(一般为宿主机的/etc/resolve.conf)的文件里"search"后面的search domain，和遍历clusterDNS输出"nameserver ip[0]\nnameserver ip[0]"
+		// 写入到{experimentalMounterPath}/rootfs/etc/resolv.conf
+		// 输出类似
+		// nameserver 192.168.1.1
+		// nameserver 192.168.1.2
+		// seaarch xxx.com xx.com
 		klet.dnsConfigurer.SetupDNSinContainerizedMounter(experimentalMounterPath)
 	}
 
@@ -938,11 +948,12 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	klet.AddPodSyncLoopHandler(activeDeadlineHandler)
 	klet.AddPodSyncHandler(activeDeadlineHandler)
 
-	// 增加containerManagerImpl.topologyManager或containerManagerImpl.resourceAllocator到admitHandlers
+	// 增加containerManagerImpl.topologyManager或containerManagerImpl.resourceAllocator（包括cm.cpuManager, cm.deviceManager）到admitHandlers
 	klet.admitHandlers.AddPodAdmitHandler(klet.containerManager.GetAllocateResourcesPodAdmitHandler())
 
 	criticalPodAdmissionHandler := preemption.NewCriticalPodAdmissionHandler(klet.GetActivePods, killPodNow(klet.podWorkers, kubeDeps.Recorder), kubeDeps.Recorder)
 	// klet.containerManager.UpdatePluginResources为cm.deviceManager.UpdatePluginResources
+	// klet.admitHandlers里面有evictionAdmitHandler、sysctlsWhitelist、containerManagerImpl.topologyManager或containerManagerImpl.resourceAllocator（包括cm.cpuManager, cm.deviceManager）、lifecycle.NewPredicateAdmitHandler
 	klet.admitHandlers.AddPodAdmitHandler(lifecycle.NewPredicateAdmitHandler(klet.getNodeAnyWay, criticalPodAdmissionHandler, klet.containerManager.UpdatePluginResources))
 	// apply functional Option's
 	// 默认没有Options
@@ -950,6 +961,7 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 		opt(klet)
 	}
 
+	// containerRuntime默认为docker
 	klet.appArmorValidator = apparmor.NewValidator(containerRuntime)
 	klet.softAdmitHandlers.AddPodAdmitHandler(lifecycle.NewAppArmorAdmitHandler(klet.appArmorValidator))
 	klet.softAdmitHandlers.AddPodAdmitHandler(lifecycle.NewNoNewPrivsAdmitHandler(klet.containerRuntime))
@@ -1433,6 +1445,7 @@ func (kl *Kubelet) initializeModules() error {
 
 	// Start the certificate manager if it was enabled.
 	if kl.serverCertificateManager != nil {
+		// todo read
 		kl.serverCertificateManager.Start()
 	}
 
@@ -1443,6 +1456,9 @@ func (kl *Kubelet) initializeModules() error {
 	}
 
 	// Start resource analyzer
+	// 启动一个goroutine，周期性更新ra.fsResourceAnalyzer.cachedVolumeStats
+	// ra.fsResourceAnalyzer.cachedVolumeStats保存了volumeStatCalculator集合，用于计算kubelet上所有pod的所有volume状态，volumeStatCalculator用于生成并保存pod的volume状态。
+	// 每个pod会启动一个goroutine，周期性获得pod各个volume的目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free，并将状态保存到volumeStatCalculator.latest
 	kl.resourceAnalyzer.Start()
 
 	return nil
@@ -1486,8 +1502,8 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 	//      设置各个cgroup系统（memory、pid、cpu share、hugepage）的属性值--这个值是根据cm.internalCapacity列表，各个资源类型的值减去SystemReserved和KubeReserved
 	//   4.启动qosmanager
 	//        确保Burstable和BestEffort的cgroup目录存在，Burstable目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/burstable，BestEffort目录为/sys/fs/cgroup/{cgroup system}/kubepods.slice/besteffort
-	//        启动一个gorutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性
-	//   5. 应用--enforce-node-allocatable的配置，设置各个（cpu、memeory、pid、hugepage）cgroup的限制值
+	//        启动一个goroutine 每一份钟更新Burstable和BestEffort的cgroup目录的cgroup资源属性
+	//   5. 应用--enforce-node-allocatable的配置，设置各个（cpu、memory、pid、hugepage）cgroup的限制值
 	//      为pods，则设置在/sys/fs/cgroup/{cgroup sub system}/kubepods.slice，限制值为各个类型capacity减去SystemReserved和KubeReserved
 	//      为system-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename system-reserved-cgroup}，限制值为各个类型system-reserved值
 	//      为kube-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename kube-reserved-cgroup}，限制值为各个类型kube-reserved
@@ -1507,11 +1523,18 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 		klog.Fatalf("Failed to start ContainerManager %v", err)
 	}
 	// eviction manager must start after cadvisor because it needs to know if the container runtime has a dedicated imagefs
+	// 1. 如果启用KernelMemcgNotification，则为"memory.available"或"allocatableMemory.available"阈值类型，各创建一个notifier，消费notifier.events里的消息，添加notifier到kl.evictionManager.thresholdNotifiers，执行第二个步骤
+	// 2. 启动一个goroutine，每隔10s时间
+	// 2.1. 执行检测是否达到驱逐阈值，执行pod的驱逐。完成驱逐后，等待30s，每1s执行检测所有pod资源是否回收完毕，如果都回收完毕则直接返回。
+	// 2.2. 如果启用KernelMemcgNotification，每个notifier，停止老的goroutine并启动一个goroutine，利用epoll和cgroup目录（/sys/fs/cgroup/memory或/sys/fs/cgroup/memory/kubepods.slice）下cgroup.event_control，循环每次等待10s时间，如果有期望事件发生，则发送消息给kl.evictionManager.thresholdNotifiers[*].events
+	// 2.3. memory阈值类型是"allocatableMemory.available"，监听"/sys/fs/cgroup/memory/kubepods.slice"下"memory.usage_in_bytes"文件
+	// 2.4. memory阈值类型是"memory.available"，监听"/sys/fs/cgroup/memory"下"memory.usage_in_bytes"文件
 	kl.evictionManager.Start(kl.StatsProvider, kl.GetActivePods, kl.podResourcesAreReclaimed, evictionMonitoringPeriod)
 
 	// container log manager must start after container runtime is up to retrieve information from container runtime
 	// and inform container to reopen log file after log rotation.
 	// runtime是dockershim不做任何事情
+	// TODORead
 	kl.containerLogManager.Start()
 	// Adding Registration Callback function for CSI Driver
 	kl.pluginManager.AddHandler(pluginwatcherapi.CSIPlugin, plugincache.PluginHandler(csi.PluginHandler))
@@ -1519,6 +1542,7 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 	kl.pluginManager.AddHandler(pluginwatcherapi.DevicePlugin, kl.containerManager.GetPluginRegistrationHandler())
 	// Start the plugin manager
 	klog.V(4).Infof("starting plugin manager")
+	// TODORead
 	go kl.pluginManager.Run(kl.sourcesReady, wait.NeverStop)
 }
 
@@ -1551,6 +1575,7 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 	}
 
 	// Start volume manager
+	// todo read
 	go kl.volumeManager.Run(kl.sourcesReady, wait.NeverStop)
 
 	if kl.kubeClient != nil {
@@ -1584,6 +1609,7 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 
 	// Start component sync loops.
 	kl.statusManager.Start()
+	// todo read
 	kl.probeManager.Start()
 
 	// Start syncing RuntimeClasses if enabled.
@@ -1637,9 +1663,15 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		if killPodOptions == nil || killPodOptions.PodStatusFunc == nil {
 			return fmt.Errorf("kill pod options are required if update type is kill")
 		}
+		// 在pkg\kubelet\pod_workers.go里killPodNow里调用到这里，返回是pod的status（v1.PodStatus类型）
 		apiPodStatus := killPodOptions.PodStatusFunc(pod, podStatus)
+		// 将apiPodStatus规整化后，与内部的m.podStatuses进行比较，发生变化，则发送到m.podStatusChannel进行更新或等待批量更新
 		kl.statusManager.SetPodStatus(pod, apiPodStatus)
 		// we kill the pod with the specified grace period since this is a termination
+		// 从kl.Podkiller()调用这个，则gracePeriodOverride为nil
+		// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container）
+		// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container
+		// 3. 更新Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup目录属性值
 		if err := kl.killPod(pod, nil, podStatus, killPodOptions.PodTerminationGracePeriodSecondsOverride); err != nil {
 			kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedToKillPod, "error killing pod: %v", err)
 			// there was an error killing the pod, so we return that error directly
@@ -1669,6 +1701,7 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Generate final API pod status with pod and status manager status
+	// 根据runtime的status生成pod status
 	apiPodStatus := kl.generateAPIPodStatus(pod, podStatus)
 	// The pod IP may be changed in generateAPIPodStatus if the pod is using host network. (See #24576)
 	// TODO(random-liu): After writing pod spec into container labels, check whether pod is using host network, and
@@ -1683,24 +1716,31 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Record the time it takes for the pod to become running.
+	// 从m.podStatuses缓存中获取uid的相关的pod的status，（如果是mirror pod uid则通过static pod uid来查找）
 	existingStatus, ok := kl.statusManager.GetPodStatus(pod.UID)
+	// status manager中没有pod状态，或status manager中pod状态为"Pending"且现在的状态为"Running"且pod的annotation中"kubernetes.io/config.seen"不为0，则记录pod变成running的时间
 	if !ok || existingStatus.Phase == v1.PodPending && apiPodStatus.Phase == v1.PodRunning &&
 		!firstSeenTime.IsZero() {
 		metrics.PodStartDuration.Observe(metrics.SinceInSeconds(firstSeenTime))
 	}
 
+	// kl.softAdmitHandlers里的handler是否都admit通过（appArmor和NoNewPrivs和ProcMount）
 	runnable := kl.canRunPod(pod)
+	// admit不通过
 	if !runnable.Admit {
 		// Pod is not runnable; update the Pod and Container statuses to why.
+		// 设置pod的Reason和Message
 		apiPodStatus.Reason = runnable.Reason
 		apiPodStatus.Message = runnable.Message
 		// Waiting containers are not creating.
 		const waitingReason = "Blocked"
+		// 当initcontainer处于Waiting状态，设置container的status的Reason为"Blocked"
 		for _, cs := range apiPodStatus.InitContainerStatuses {
 			if cs.State.Waiting != nil {
 				cs.State.Waiting.Reason = waitingReason
 			}
 		}
+		// 当普通Container处于Waiting状态，设置container的status的Reason为"Blocked"
 		for _, cs := range apiPodStatus.ContainerStatuses {
 			if cs.State.Waiting != nil {
 				cs.State.Waiting.Reason = waitingReason
@@ -1709,11 +1749,16 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Update status in the status manager
+	// 将status规整化后，与内部的m.podStatuses进行比较，发生变化，则发送到m.podStatusChannel进行更新或等待批量更新
 	kl.statusManager.SetPodStatus(pod, apiPodStatus)
 
 	// Kill pod if it should not be running
+	// admit不通过或pod被删除或pod的phase为"Failed"，则执行pod的停止操作，然后返回syncErr错误
 	if !runnable.Admit || pod.DeletionTimestamp != nil || apiPodStatus.Phase == v1.PodFailed {
 		var syncErr error
+		// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container）
+		// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container
+		// 3. 更新Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup目录属性值
 		if err := kl.killPod(pod, nil, podStatus, nil); err != nil {
 			kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedToKillPod, "error killing pod: %v", err)
 			syncErr = fmt.Errorf("error killing pod: %v", err)
@@ -1729,6 +1774,7 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// If the network plugin is not ready, only start the pod if it uses the host network
+	// 如果网络插件unready，则只运行host网络模式的pod。这个解决了鸡生蛋蛋生鸡问题（网络插件是daemonset运行）
 	if err := kl.runtimeState.networkErrors(); err != nil && !kubecontainer.IsHostNetworkPod(pod) {
 		kl.recorder.Eventf(pod, v1.EventTypeWarning, events.NetworkNotReady, "%s: %v", NetworkNotReadyErrorMsg, err)
 		return fmt.Errorf("%s: %v", NetworkNotReadyErrorMsg, err)
@@ -1739,14 +1785,17 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	pcm := kl.containerManager.NewPodContainerManager()
 	// If pod has already been terminated then we need not create
 	// or update the pod's cgroup
+	// pod的Phase不为"Failed"和"Succeeded"，或pod没有被删除，或pod被删除但是还有container处于running
 	if !kl.podIsTerminated(pod) {
 		// When the kubelet is restarted with the cgroups-per-qos
 		// flag enabled, all the pod's running containers
 		// should be killed intermittently and brought back up
 		// under the qos cgroup hierarchy.
 		// Check if this is the pod's first sync
+		// 是否第一次执行
 		firstSync := true
 		for _, containerStatus := range apiPodStatus.ContainerStatuses {
+			// 有容器在运行，则不是第一次执行
 			if containerStatus.State.Running != nil {
 				firstSync = false
 				break
@@ -1755,7 +1804,11 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		// Don't kill containers in pod if pod's cgroups already
 		// exists or the pod is running for the first time
 		podKilled := false
+		// 至少有一个cgroup子系统中，pod的cgroup路径不存在，且不是第一次执行，则执行pod停止操作
 		if !pcm.Exists(pod) && !firstSync {
+			// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container）
+			// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container
+			// 3. 更新Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup目录属性值
 			if err := kl.killPod(pod, nil, podStatus, nil); err == nil {
 				podKilled = true
 			}
@@ -1767,11 +1820,17 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		// expected to run only once and if the kubelet is restarted then
 		// they are not expected to run again.
 		// We don't create and apply updates to cgroup if its a run once pod and was killed above
+		// pod没有被停止（说明是第一次执行），或pod的RestartPolicy不为"Never"，则创建cgroup目录和设置cgroup属性
 		if !(podKilled && pod.Spec.RestartPolicy == v1.RestartPolicyNever) {
+			// 至少有一个cgroup子系统中，pod的cgroup路径不存在
 			if !pcm.Exists(pod) {
+				// active pod是所有pods中（普通pod和static pod），pod的Phase不是"Failed"和"Succeeded"，或pod没有被删除或至少一个container为running
+				// 根据所有active pod来统计Burstable和BestEffort的cgroup属性
+				// 设置Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup属性值
 				if err := kl.containerManager.UpdateQOSCgroups(); err != nil {
 					klog.V(2).Infof("Failed to update QoS cgroups while syncing pod: %v", err)
 				}
+				// 在所有cgroup子系统，创建pod的cgroup路径，并设置相应cgroup（cpu、memory、pid、hugepage在系统中开启的）资源属性的限制
 				if err := pcm.EnsureExists(pod); err != nil {
 					kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedToCreatePodContainer, "unable to ensure pod container exists: %v", err)
 					return fmt.Errorf("failed to ensure that the pod: %v cgroups exist and are correctly applied: %v", pod.UID, err)
@@ -1781,15 +1840,19 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Create Mirror Pod for Static Pod if it doesn't already exist
+	// 如果是static pod，则检查是否存在mirror pod，当mirror pod不存在时候进行创建
 	if kubetypes.IsStaticPod(pod) {
+		// pod.Name + "_" + pod.Namespace
 		podFullName := kubecontainer.GetPodFullName(pod)
 		deleted := false
 		if mirrorPod != nil {
+			// mirrorPod被删除或mirrorPod不是pod的mirror pod
 			if mirrorPod.DeletionTimestamp != nil || !kl.podManager.IsMirrorPodOf(mirrorPod, pod) {
 				// The mirror pod is semantically different from the static pod. Remove
 				// it. The mirror pod will get recreated later.
 				klog.Infof("Trying to delete pod %s %v", podFullName, mirrorPod.ObjectMeta.UID)
 				var err error
+				// 调用api删除mirror pod（从podFullName解析出name和namespace）
 				deleted, err = kl.podManager.DeleteMirrorPod(podFullName, &mirrorPod.ObjectMeta.UID)
 				if deleted {
 					klog.Warningf("Deleted mirror pod %q because it is outdated", format.Pod(mirrorPod))
@@ -1798,12 +1861,16 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 				}
 			}
 		}
+		// static pod没有mirror pod或mirror pod被删除，则在获取node未发生错误且node未被删除条件下，创建mirror pod
 		if mirrorPod == nil || deleted {
+			// 当kl.kubeClient为nil，从kl.initialNode手动生成的初始的node对象，否则从informer中获取本机的node对象
 			node, err := kl.GetNode()
+			// 当获取node发生错误或node被删除，则无需创建mirror pod
 			if err != nil || node.DeletionTimestamp != nil {
 				klog.V(4).Infof("No need to create a mirror pod, since node %q has been removed from the cluster", kl.nodeName)
 			} else {
 				klog.V(4).Infof("Creating a mirror pod for static pod %q", format.Pod(pod))
+				// node没有被删除，则创建static pod的mirror pod
 				if err := kl.podManager.CreateMirrorPod(pod); err != nil {
 					klog.Errorf("Failed creating a mirror pod for %q: %v", format.Pod(pod), err)
 				}
@@ -1812,6 +1879,7 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Make data directories for the pod
+	// 创建这个pod相关的目录（volumes和plugins）
 	if err := kl.makePodDataDirs(pod); err != nil {
 		kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedToMakePodDataDirectories, "error making pod data directories: %v", err)
 		klog.Errorf("Unable to make pod data directories for pod %q: %v", format.Pod(pod), err)
@@ -1819,8 +1887,10 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Volume manager will not mount volumes for terminated pods
+	// pod的Phase不为"Failed"和"Succeeded"，或pod没有被删除，或pod被删除但是还有container处于running
 	if !kl.podIsTerminated(pod) {
 		// Wait for volumes to attach/mount
+		// 在2m3s内等待pod的所有volume进行挂载
 		if err := kl.volumeManager.WaitForAttachAndMount(pod); err != nil {
 			kl.recorder.Eventf(pod, v1.EventTypeWarning, events.FailedMountVolume, "Unable to attach or mount volumes: %v", err)
 			klog.Errorf("Unable to attach or mount volumes for pod %q: %v; skipping pod", format.Pod(pod), err)
@@ -1829,13 +1899,19 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	}
 
 	// Fetch the pull secrets for the pod
+	// 获取pod相关的所有ImagePullSecrets
 	pullSecrets := kl.getPullSecretsForPod(pod)
 
 	// Call the container runtime's SyncPod callback
+	// 1. 根据runtime种container和sandbox的状态，计算出需要采取的动作
+	// 2. 执行相关的动作，Kill pod sandbox、Kill any containers、 Create sandbox、Create ephemeral containers、Create init containers、Create normal containers
 	result := kl.containerRuntime.SyncPod(pod, podStatus, pullSecrets, kl.backOff)
+	// 只更新"StartContainer"的动作的事件，如果result没有错误，则移除缓存中"{uid}_{target}"相关的错误，否则就增加"{uid}_{target}"的相关错误
 	kl.reasonCache.Update(pod.UID, result)
 	if err := result.Error(); err != nil {
 		// Do not return error if the only failures were pods in backoff
+		// 包含kubecontainer.ErrCrashLoopBackOff或images.ErrImagePullBackOff错误（这两个错误会在最前面），就返回nil
+		// 其他错误，就返回错误
 		for _, r := range result.SyncResults {
 			if r.Error != kubecontainer.ErrCrashLoopBackOff && r.Error != images.ErrImagePullBackOff {
 				// Do not record an event here, as we keep all event logging for sync pod failures
@@ -1862,6 +1938,7 @@ func (kl *Kubelet) getPodsToSync() []*v1.Pod {
 	}
 	var podsToSync []*v1.Pod
 	for _, pod := range allPods {
+		// 这个pod uid是在pod worker中处理过的uid
 		if podUIDSet.Has(string(pod.UID)) {
 			// The work of the pod is ready
 			podsToSync = append(podsToSync, pod)
@@ -1934,6 +2011,35 @@ func (kl *Kubelet) canAdmitPod(pods []*v1.Pod, pod *v1.Pod) (bool, string, strin
 	// TODO: move out of disk check into a pod admitter
 	// TODO: out of resource eviction should have a pod admitter call-out
 	attrs := &lifecycle.PodAdmitAttributes{Pod: pod, OtherPods: pods}
+	// 通过evictionAdmitHandler admit条件（下列条件满足一个）
+	//
+	// 1. 所有资源没有达到evict阈值，则直接通过admit
+	// 2. pod是static pod或mirror pod，或pod设置了优先级且优先级大于2000000000，则直接通过admit
+	// 3. 只有一个"MemoryPressure" condition，qos不为"BestEffort"的pod，则直接通过admit
+	// 4. 只有一个"MemoryPressure" condition，如果"BestEffort"的pod能够容忍taint "node.kubernetes.io/memory-pressure"、effect为"NoSchedule"，则直接通过admit
+	//
+	// 通过sysctlsWhitelist admit条件
+	// 不是这三种情况
+	// 1. sysctl的namespace group为"ipc"且设置了hostIPC共享
+	// 2. sysctl的namespace group为"net"且设置了hostNet共享
+	// 3. sysctl不在白名单里
+	//
+	// 通过AllocateResourcesPodAdmitHandler admit条件
+	// 实现为containerManagerImpl.resourceAllocator
+	// 1. 成功为pod里所有普通container和init container，分配container的limit中所有需要device plugins的资源，且成功分配cpu（如果policy为static policy，成功为Guaranteed的pod且container request的cpu为整数的container，分配cpu）
+	// 实现为containerManagerImpl.topologyManager
+	// 1. policy为"none"，行为跟pkg\kubelet\cm\container_manager_linux.go里的resourceAllocator一样
+	//   成功为pod里所有普通container和init container，分配container的limit中所有需要device plugins的资源，且成功分配cpu（如果policy为static policy，成功为Guaranteed的pod且container request的cpu为整数的container，分配cpu），则admit通过
+	// 2. policy为"best-effort"、"restricted"、"single-numa-node"
+	//   遍历所有的hintProviders（cpu manager和device manager）生成container的各个资源的TopologyHint列表
+	//   从各个资源的TopologyHint列表中挑出一个TopologyHint，进行组合成[]TopologyHint，然后跟default Affinity（亲和所有numaNode）进行与计算。
+	//   在所有组合中，根据各个policy类型，挑选出最合适的TopologyHint。
+	//   admit结果：
+	//   policy为"best-effort"，则admit通过
+	//   policy为"restricted"、"single-numa-node"，则为最合适TopologyHint的Preferred的值
+	//
+	// 通过lifecycle.NewPredicateAdmitHandler admit条件
+	
 	for _, podAdmitHandler := range kl.admitHandlers {
 		if result := podAdmitHandler.Admit(attrs); !result.Admit {
 			return false, result.Reason, result.Message
@@ -1943,11 +2049,27 @@ func (kl *Kubelet) canAdmitPod(pods []*v1.Pod, pod *v1.Pod) (bool, string, strin
 	return true, "", ""
 }
 
+// kl.softAdmitHandlers里的handler是否都admit通过
 func (kl *Kubelet) canRunPod(pod *v1.Pod) lifecycle.PodAdmitResult {
 	attrs := &lifecycle.PodAdmitAttributes{Pod: pod}
 	// Get "OtherPods". Rejected pods are failed, so only include admitted pods that are alive.
+	// node上的普通pod和static pod中，过滤出还在运行的pod
 	attrs.OtherPods = kl.filterOutTerminatedPods(kl.podManager.GetPods())
 
+	// softAdmitHandlers有：
+	// lifecycle.NewAppArmorAdmitHandler(klet.appArmorValidator)  appArmorAdmitHandler 验证pod的所有container的profile是合法且已加载
+	// lifecycle.NewNoNewPrivsAdmitHandler(klet.containerRuntime) noNewPrivsAdmitHandler
+	//   admit不通过，下面条件都要满足：
+	//     1. pod处于"Pending"状态
+	//     2. pod.Spec.Containers有一个container定义了SecurityContext且配置了SecurityContext.AllowPrivilegeEscalation且值为false
+	//     3. runtime为docker
+	//     4. docker的apiserver版本小于1.23.0
+	// lifecycle.NewProcMountAdmitHandler(klet.containerRuntime)
+	//    admit不通过，下面条件都要满足：
+	//      1. pod处于"Pending"状态
+	//      2. pod.Spec.Containers有一个container定义了SecurityContext且配置了SecurityContext.ProcMount的值不是"Default"
+	//      3. runtime为docker
+	//      4. docker的apiserver版本小于1.38.0 
 	for _, handler := range kl.softAdmitHandlers {
 		if result := handler.Admit(attrs); !result.Admit {
 			return result
@@ -1981,11 +2103,17 @@ func (kl *Kubelet) syncLoop(updates <-chan kubetypes.PodUpdate, handler SyncHand
 	// Responsible for checking limits in resolv.conf
 	// The limits do not have anything to do with individual pods
 	// Since this is called in syncLoop, we don't need to call it anywhere else
+	// kl.dnsConfigurer默认不为空，kl.dnsConfigurer.ResolverConfig默认为"/etc/resolv.conf"
 	if kl.dnsConfigurer != nil && kl.dnsConfigurer.ResolverConfig != "" {
+		// 检查宿主机的/etc/resolv.conf的search domain个数是否超出限制
+		// 1. c.ClusterDomain不为空，则search domain个数最多为3个
+		// 2. c.ClusterDomain为空，则search domain个数最多为6个
+		// 检查主机的/etc/resolv.conf的search domain长度不能超过256个字符
 		kl.dnsConfigurer.CheckLimitsForResolvConf()
 	}
 
 	for {
+		// 如果runtime有错误，则进行指数回退，再次判断runtime是否有错误，直到runtime没有错误
 		if err := kl.runtimeState.runtimeErrors(); err != nil {
 			klog.Errorf("skipping pod synchronization - %v", err)
 			// exponential backoff
@@ -1994,9 +2122,12 @@ func (kl *Kubelet) syncLoop(updates <-chan kubetypes.PodUpdate, handler SyncHand
 			continue
 		}
 		// reset backoff if we have a success
+		// runtime没有错误，则重置周期时间为初始时间周期
 		duration = base
 
+		// 保存syncloop操作的时间
 		kl.syncLoopMonitor.Store(kl.clock.Now())
+		// 这里的handler是kubelet
 		if !kl.syncLoopIteration(updates, handler, syncTicker.C, housekeepingTicker.C, plegCh) {
 			break
 		}
@@ -2137,6 +2268,9 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 			klog.V(4).Infof("SyncLoop (housekeeping, skipped): sources aren't ready yet.")
 		} else {
 			klog.V(4).Infof("SyncLoop (housekeeping)")
+			// 停止不存在的pod的pod worker
+			// 移除不存在pod的容器
+			// 移除不存在pod的volume和pod目录
 			if err := handler.HandlePodCleanups(); err != nil {
 				klog.Errorf("Failed cleaning pods: %v", err)
 			}
@@ -2147,26 +2281,45 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 
 // dispatchWork starts the asynchronous sync of the pod in a pod worker.
 // If the pod has completed termination, dispatchWork will perform no action.
+// 根据pod.Status状态，判断需要执行的动作
+// 如果pod被删除且pod里的所有container的state都处于Terminated或Waiting，则更新pod status，并在apiserver中再次删除pod
+// 如果pod的Phase不为"Failed"和"Succeeded"，且pod未被删除或pod被删除且不是所有container都处于Terminated和Waiting状态，则让podworke里启动goroutine的r进行处理
+// 确保每个pod uid有一个goroutine来处理UpdatePodOptions
+// 根据goroutine的工作状态，来处理UpdatePodOptions。如果goroutine不在工作中，则UpdatePodOptions投递到chan中（让goroutine处理，最终会调用kl.syncPod）。如果goroutine在工作中则，将UpdatePodOption放到暂存器中（等待goroutine处理完当前消息后，再来处理）。
 func (kl *Kubelet) dispatchWork(pod *v1.Pod, syncType kubetypes.SyncPodType, mirrorPod *v1.Pod, start time.Time) {
 	// check whether we are ready to delete the pod from the API server (all status up to date)
+	// 是否 所有container的state都处于Terminated或Waiting
+	// 是否 pod的Phase为"Failed"或"Succeeded"，或pod被删除且所有container都处于Terminated或Waiting
 	containersTerminal, podWorkerTerminal := kl.podAndContainersAreTerminal(pod)
+	// pod处于被删除状态且所有container的state都处于Terminated或Waiting，则执行最后在api server中删除pod（设置GracePeriodSeconds为0进行删除）
 	if pod.DeletionTimestamp != nil && containersTerminal {
 		klog.V(4).Infof("Pod %q has completed execution and should be deleted from the API server: %s", format.Pod(pod), syncType)
+		// 设置所有非Terminated或非Waiting的container status为Terminated状态
+		// 如果pod status发生变化，则更新kl.statusManager.podStatuses字段中的pod状态，并添加需要更新的status到kl.statusManager.podStatusChannel
+		// 如果kl.statusManager.podStatusChannel满了，则直接放弃，等待周期性kl.statusManager.syncBatch进行同步
+		// 
+		// 在kl.statusManager.Start()会启动一个go routine来消费kl.statusManager.podStatusChannel，更新pod的status和还处理了pod已经可以被删除情况，在api server中删除pod（设置GracePeriodSeconds为0进行删除）。
+		// 和每10s进行批量执行更新pod的status和处理pod已经可以被删除情况，在api server中删除pod（设置GracePeriodSeconds为0进行删除）
 		kl.statusManager.TerminatePod(pod)
 		return
 	}
 
 	// optimization: avoid invoking the pod worker if no further changes are possible to the pod definition
+	// pod的Phase为"Failed"或"Succeeded"，或pod被删除且所有container都处于Terminated或Waiting，直接返回
 	if podWorkerTerminal {
 		klog.V(4).Infof("Pod %q has completed, ignoring remaining sync work: %s", format.Pod(pod), syncType)
 		return
 	}
 
 	// Run the sync in an async worker.
+	// 确保每个pod uid有一个goroutine来处理UpdatePodOptions
+	// 根据goroutine的工作状态，来处理UpdatePodOptions。如果goroutine不在工作中，则UpdatePodOptions投递到chan中（让goroutine处理，最终会调用kl.syncPod）。如果goroutine在工作中则，将UpdatePodOption放到暂存器中（等待goroutine处理完当前消息后，再来处理）。
 	kl.podWorkers.UpdatePod(&UpdatePodOptions{
 		Pod:        pod,
 		MirrorPod:  mirrorPod,
+		// 如果handleMirrorPod调用dispatchWork，则UpdateType为kubetypes.SyncPodUpdate
 		UpdateType: syncType,
+		// metric里记录的podWorkers耗时
 		OnCompleteFunc: func(err error) {
 			if err != nil {
 				metrics.PodWorkerDuration.WithLabelValues(syncType.String()).Observe(metrics.SinceInSeconds(start))
@@ -2180,42 +2333,67 @@ func (kl *Kubelet) dispatchWork(pod *v1.Pod, syncType kubetypes.SyncPodType, mir
 }
 
 // TODO: handle mirror pods in a separate component (issue #17251)
+// 让podworker启动一个goroutine，调用kl.syncPod来
+// 创建mirror pod，更新pod.Status状态，创建podsandbox和有init container则启动第一个init container，没有init container，则启动所有container
+// 删除mirror pod，并创建一个新的mirror pod
+// 更新mirror pod status
 func (kl *Kubelet) handleMirrorPod(mirrorPod *v1.Pod, start time.Time) {
 	// Mirror pod ADD/UPDATE/DELETE operations are considered an UPDATE to the
 	// corresponding static pod. Send update to the pod worker if the static
 	// pod exists.
+	// 根据mirror pod获取static pod
 	if pod, ok := kl.podManager.GetPodByMirrorPod(mirrorPod); ok {
+		// 让podworker启动一个goroutine，调用kl.syncPod来创建mirror pod、
 		kl.dispatchWork(pod, kubetypes.SyncPodUpdate, mirrorPod, start)
 	}
 }
 
 // HandlePodAdditions is the callback in SyncHandler for pods being added from
 // a config source.
+// 
 func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 	start := kl.clock.Now()
+	// 跟据pod的创建时间进行排序
 	sort.Sort(sliceutils.PodsByCreationTime(pods))
 	for _, pod := range pods {
+		// 获取所有普通pod和static pod
 		existingPods := kl.podManager.GetPods()
 		// Always add the pod to the pod manager. Kubelet relies on the pod
 		// manager as the source of truth for the desired state. If a pod does
 		// not exist in the pod manager, it means that it has been deleted in
 		// the apiserver and no action (other than cleanup) is required.
+		// 让kubelet更新secret和configmap的reflector，将pod添加到kl.podManager对应的字段
+		// pod是普通pod，则添加到kl.podManager的podByUID、podByFullName、mirrorPodByFullName字段
+		// pod是mirror pod，则添加到kl.podManager的mirrorPodByUID、mirrorPodByFullName、mirrorPodByFullName字段
+		// 如果设置了bootstrapCheckpointPath，则将pod信息保存到pod的checkpoint文件中
 		kl.podManager.AddPod(pod)
 
 		if kubetypes.IsMirrorPod(pod) {
+			// 让podworker启动一个goroutine，调用kl.syncPod来
+			// 创建mirror pod，更新pod.Status状态，创建podsandbox和有init container则启动第一个init container，没有init container，则启动所有container
+			// 删除mirror pod，并创建一个新的mirror pod
+			// 更新mirror pod status
 			kl.handleMirrorPod(pod, start)
 			continue
 		}
 
+		// pod的Phase不为"Failed"和"Succeeded"，且（pod未被删除或pod被删除且不是所有container都处于Terminated或Waiting）
 		if !kl.podIsTerminated(pod) {
 			// Only go through the admission process if the pod is not
 			// terminated.
 
 			// We failed pods that we rejected, so activePods include all admitted
 			// pods that are alive.
+			// 返回所有pods中，pod的Phase不是"Failed"和"Succeeded"，或pod没有被删除或pod被删除且至少一个container为running
 			activePods := kl.filterOutTerminatedPods(existingPods)
 
 			// Check if we can admit the pod; if not, reject it.
+			//  通过evictionAdmitHandler admit条件（下列条件满足一个）
+			//
+			// 1. 所有资源没有达到evict阈值，则直接通过admit
+			// 2. pod是static pod或mirror pod，或pod设置了优先级且优先级大于2000000000，则直接通过admit
+			// 3. 只有一个"MemoryPressure" condition，qos不为"BestEffort"的pod，则直接通过admit
+			// 4. 只有一个"MemoryPressure" condition，如果"BestEffort"的pod能够容忍taint "node.kubernetes.io/memory-pressure"、effect为"NoSchedule"，则直接通过admit
 			if ok, reason, message := kl.canAdmitPod(activePods, pod); !ok {
 				kl.rejectPod(pod, reason, message)
 				continue

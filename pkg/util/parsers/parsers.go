@@ -33,25 +33,36 @@ const (
 
 // ParseImageName parses a docker image string into three parts: repo, tag and digest.
 // If both tag and digest are empty, a default image tag will be returned.
+// 从镜像地址解析出仓库地址、镜像tag、镜像digest
 func ParseImageName(image string) (string, string, string, error) {
+	// 解析镜像地址返回相应的Reference对象
 	named, err := dockerref.ParseNormalizedNamed(image)
 	if err != nil {
 		return "", "", "", fmt.Errorf("couldn't parse image name: %v", err)
 	}
 
+	// 当named.domain为空，则返回named.path
+	// 否则返回named.domain + "/" + named.path
+	// 即返回仓库地址
 	repoToPull := named.Name()
 	var tag, digest string
 
+	// 镜像地址是否包含tag
 	tagged, ok := named.(dockerref.Tagged)
+	// 镜像地址包含tag
 	if ok {
 		tag = tagged.Tag()
 	}
 
+	// 镜像地址是否包含digest
 	digested, ok := named.(dockerref.Digested)
+	// 镜像地址包含digest
 	if ok {
 		digest = digested.Digest().String()
 	}
 	// If no tag was specified, use the default "latest".
+	// 处理tag为空且digest为空的情况
+	// 如果都为空，则tag为"latest"
 	if len(tag) == 0 && len(digest) == 0 {
 		tag = DefaultImageTag
 	}

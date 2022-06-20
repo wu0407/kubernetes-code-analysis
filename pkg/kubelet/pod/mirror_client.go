@@ -66,6 +66,7 @@ func NewBasicMirrorClient(apiserverClient clientset.Interface, nodeName string, 
 	}
 }
 
+// 创建pod的mirror pod
 func (mc *basicMirrorClient) CreateMirrorPod(pod *v1.Pod) error {
 	if mc.apiserverClient == nil {
 		return nil
@@ -77,12 +78,15 @@ func (mc *basicMirrorClient) CreateMirrorPod(pod *v1.Pod) error {
 	for k, v := range pod.Annotations {
 		copyPod.Annotations[k] = v
 	}
+	// 返回pod的annotations["kubernetes.io/config.hash"]值
 	hash := getPodHash(pod)
+	// 设置mirror pod的annotation["kubernetes.io/config.mirror"]值为hash
 	copyPod.Annotations[kubetypes.ConfigMirrorAnnotationKey] = hash
 
 	// With the MirrorPodNodeRestriction feature, mirror pods are required to have an owner reference
 	// to the owning node.
 	// See http://git.k8s.io/enhancements/keps/sig-auth/20190916-noderestriction-pods.md
+	// 获取本机node的UID
 	nodeUID, err := mc.getNodeUID()
 	if err != nil {
 		return fmt.Errorf("failed to get node UID: %v", err)
@@ -96,6 +100,7 @@ func (mc *basicMirrorClient) CreateMirrorPod(pod *v1.Pod) error {
 		Controller: &controller,
 	}}
 
+	// 创建mirror pod
 	apiPod, err := mc.apiserverClient.CoreV1().Pods(copyPod.Namespace).Create(context.TODO(), &copyPod, metav1.CreateOptions{})
 	if err != nil && apierrors.IsAlreadyExists(err) {
 		// Check if the existing pod is the same as the pod we want to create.
@@ -113,10 +118,12 @@ func (mc *basicMirrorClient) CreateMirrorPod(pod *v1.Pod) error {
 // while parsing the name of the pod.
 // Non-existence of the pod or UID mismatch is not treated as an error; the
 // routine simply returns false in that case.
+// 调用api删除mirror pod（从podFullName解析出name和namespace）
 func (mc *basicMirrorClient) DeleteMirrorPod(podFullName string, uid *types.UID) (bool, error) {
 	if mc.apiserverClient == nil {
 		return false, nil
 	}
+	// 从podFullName（格式pod.Name + "_" + pod.Namespace）解析出pod的name和namespace
 	name, namespace, err := kubecontainer.ParsePodFullName(podFullName)
 	if err != nil {
 		klog.Errorf("Failed to parse a pod full name %q", podFullName)
@@ -124,6 +131,7 @@ func (mc *basicMirrorClient) DeleteMirrorPod(podFullName string, uid *types.UID)
 	}
 	klog.V(2).Infof("Deleting a mirror pod %q (uid %#v)", podFullName, uid)
 	var GracePeriodSeconds int64
+	// 调用api进行pod删除
 	if err := mc.apiserverClient.CoreV1().Pods(namespace).Delete(context.TODO(), name, metav1.DeleteOptions{GracePeriodSeconds: &GracePeriodSeconds, Preconditions: &metav1.Preconditions{UID: uid}}); err != nil {
 		// Unfortunately, there's no generic error for failing a precondition
 		if !(apierrors.IsNotFound(err) || apierrors.IsConflict(err)) {
@@ -136,6 +144,7 @@ func (mc *basicMirrorClient) DeleteMirrorPod(podFullName string, uid *types.UID)
 	return true, nil
 }
 
+// 获取本机node的UID
 func (mc *basicMirrorClient) getNodeUID() (types.UID, error) {
 	node, err := mc.nodeGetter.Get(mc.nodeName)
 	if err != nil {
@@ -153,11 +162,13 @@ func IsStaticPod(pod *v1.Pod) bool {
 	return err == nil && source != kubetypes.ApiserverSource
 }
 
+// 返回pod的annotations["kubernetes.io/config.mirror"]值
 func getHashFromMirrorPod(pod *v1.Pod) (string, bool) {
 	hash, ok := pod.Annotations[kubetypes.ConfigMirrorAnnotationKey]
 	return hash, ok
 }
 
+// 返回pod的annotations["kubernetes.io/config.hash"]值
 func getPodHash(pod *v1.Pod) string {
 	// The annotation exists for all static pods.
 	return pod.Annotations[kubetypes.ConfigHashAnnotationKey]

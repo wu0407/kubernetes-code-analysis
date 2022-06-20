@@ -57,6 +57,7 @@ type endpointImpl struct {
 // newEndpointImpl creates a new endpoint for the given resourceName.
 // This is to be used during normal device plugin registration.
 func newEndpointImpl(socketPath, resourceName string, callback monitorCallback) (*endpointImpl, error) {
+	// 创建一个grpc连接客户端
 	client, c, err := dial(socketPath)
 	if err != nil {
 		klog.Errorf("Can't create new endpoint with path %s err %v", socketPath, err)
@@ -92,7 +93,10 @@ func (e *endpointImpl) callback(resourceName string, devices []pluginapi.Device)
 // stream update contains a new list of device states.
 // It then issues a callback to pass this information to the device manager which
 // will adjust the resource available information accordingly.
+// 与device plugin建立stream流，发送ListAndWatch请求给device plugin，device plugin会返回所有device，并进行类似watch操作。当device plugin的device发生变化时候，device plugin会返回新的device列表。
+// 当发生任何变化，则执行callback（更新resource在ManagerImpl的相关字段里状态，然后将resource分配状态和健康的resource资源写道checkpoints文件）
 func (e *endpointImpl) run() {
+	// 建立一个grpc流，并发送ListAndWatch请求给device plugin，device plugin会返回device列表（id、健康状态、topology），当device发生变化时候，device plugin会返回新的device列表
 	stream, err := e.client.ListAndWatch(context.Background(), &pluginapi.Empty{})
 	if err != nil {
 		klog.Errorf(errListAndWatch, e.resourceName, err)
@@ -100,7 +104,10 @@ func (e *endpointImpl) run() {
 		return
 	}
 
+	// 一直循环的接收device plugin返回的消息
 	for {
+		// 一直阻塞，直到接受到消息
+		// 说明device plugin的device发生变化
 		response, err := stream.Recv()
 		if err != nil {
 			klog.Errorf(errListAndWatch, e.resourceName, err)
@@ -115,6 +122,8 @@ func (e *endpointImpl) run() {
 			newDevs = append(newDevs, *d)
 		}
 
+		// 调用callback，这里callback是*ManagerImpl.genericDeviceUpdateCallback
+		// 更新resource在ManagerImpl的相关字段里状态，然后将resource分配状态和健康的resource资源写道checkpoints文件
 		e.callback(e.resourceName, newDevs)
 	}
 }
@@ -125,6 +134,7 @@ func (e *endpointImpl) isStopped() bool {
 	return !e.stopTime.IsZero()
 }
 
+// device plugin是否 是已经停止且停止时间超过5分钟
 func (e *endpointImpl) stopGracePeriodExpired() bool {
 	e.mutex.Lock()
 	defer e.mutex.Unlock()
@@ -139,6 +149,7 @@ func (e *endpointImpl) setStopTime(t time.Time) {
 }
 
 // allocate issues Allocate gRPC call to the device plugin.
+// 调用grpc客户端，让device plugin分配device id
 func (e *endpointImpl) allocate(devs []string) (*pluginapi.AllocateResponse, error) {
 	if e.isStopped() {
 		return nil, fmt.Errorf(errEndpointStopped, e)
@@ -151,12 +162,15 @@ func (e *endpointImpl) allocate(devs []string) (*pluginapi.AllocateResponse, err
 }
 
 // preStartContainer issues PreStartContainer gRPC call to the device plugin.
+// 让device plugin执行PreStartContainer
 func (e *endpointImpl) preStartContainer(devs []string) (*pluginapi.PreStartContainerResponse, error) {
 	if e.isStopped() {
 		return nil, fmt.Errorf(errEndpointStopped, e)
 	}
+	// KubeletPreStartContainerRPCTimeoutInSecs为30
 	ctx, cancel := context.WithTimeout(context.Background(), pluginapi.KubeletPreStartContainerRPCTimeoutInSecs*time.Second)
 	defer cancel()
+	// 调用插件执行PreStartContainer
 	return e.client.PreStartContainer(ctx, &pluginapi.PreStartContainerRequest{
 		DevicesIDs: devs,
 	})

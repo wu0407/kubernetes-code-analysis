@@ -49,6 +49,8 @@ var _ ThresholdNotifier = &memoryThresholdNotifier{}
 // NewMemoryThresholdNotifier creates a ThresholdNotifier which is designed to respond to the given threshold.
 // UpdateThreshold must be called once before the threshold will be active.
 func NewMemoryThresholdNotifier(threshold evictionapi.Threshold, cgroupRoot string, factory NotifierFactory, handler func(string)) (ThresholdNotifier, error) {
+	// Mounts：获得所有cgroup子系统的Mountpoint、Root、对应的Subsystems列表
+	// MountPoints：子系统和挂载点信息
 	cgroups, err := cm.GetCgroupSubsystems()
 	if err != nil {
 		return nil, err
@@ -57,6 +59,7 @@ func NewMemoryThresholdNotifier(threshold evictionapi.Threshold, cgroupRoot stri
 	if !found || len(cgpath) == 0 {
 		return nil, fmt.Errorf("memory cgroup mount point not found")
 	}
+	// 阈值类型是"allocatableMemory.available"
 	if isAllocatableEvictionThreshold(threshold) {
 		// for allocatable thresholds, point the cgroup notifier at the allocatable cgroup
 		cgpath += cgroupRoot
@@ -70,6 +73,7 @@ func NewMemoryThresholdNotifier(threshold evictionapi.Threshold, cgroupRoot stri
 	}, nil
 }
 
+// 消费m.events里的消息，执行m.handler
 func (m *memoryThresholdNotifier) Start() {
 	klog.Infof("eviction manager: created %s", m.Description())
 	for range m.events {
@@ -77,9 +81,16 @@ func (m *memoryThresholdNotifier) Start() {
 	}
 }
 
+// memory阈值类型是"allocatableMemory.available"，监听"/sys/fs/cgroup/memory/kubepods.slice"下"memory.usage_in_bytes"文件
+// memory阈值类型是"memory.available"，监听"/sys/fs/cgroup/memory"下"memory.usage_in_bytes"文件
+// 启动一个goroutine，利用epoll和cgroup目录（/sys/fs/cgroup/memory或/sys/fs/cgroup/memory/kubepods.slice）下cgroup.event_control，循环每次等待10s时间，如果有期望事件发生，则发送消息给m.events
+// "memory.usage_in_bytes"文件内容的值，在达到capacity - eviction_hard + inactive_file值时候，会生成事件。
+// capacity和inactive_file是实时值，所以这里会停止老的goroutine，创建新的goroutine使用新计算出阈值
 func (m *memoryThresholdNotifier) UpdateThreshold(summary *statsapi.Summary) error {
 	memoryStats := summary.Node.Memory
+	// 阈值类型是"allocatableMemory.available"，则memoryStats为cgroup "/kubepods.slice"的监控数据
 	if isAllocatableEvictionThreshold(m.threshold) {
+		// 从summary.Node.SystemContainers获得name为"pods"的statsapi.ContainerStats（默认为"/kubepods.slice"容器的监控数据）
 		allocatableContainer, err := getSysContainer(summary.Node.SystemContainers, statsapi.SystemContainerPods)
 		if err != nil {
 			return err
@@ -91,8 +102,13 @@ func (m *memoryThresholdNotifier) UpdateThreshold(summary *statsapi.Summary) err
 	}
 	// Set threshold on usage to capacity - eviction_hard + inactive_file,
 	// since we want to be notified when working_set = capacity - eviction_hard
+	// 使用working_set来衡量是否达到阈值，working_set =（UsageBytes - inactive_file）= capacity - eviction_hard，但是系统是使用UsageBytes，所以当UsageBytes= capacity - eviction_hard + inactive_file
+	// 
+	// inactiveFile为UsageBytes减去WorkingSetBytes，因为在vendor\github.com\google\cadvisor\container\libcontainer\handler.go里WorkingSet就等于UsageBytes减去inactiveFile
 	inactiveFile := resource.NewQuantity(int64(*memoryStats.UsageBytes-*memoryStats.WorkingSetBytes), resource.BinarySI)
+	// AvailableBytes为limit减去workingSetBytes，所以limit（capacity）为AvailableBytes加WorkingSetBytes
 	capacity := resource.NewQuantity(int64(*memoryStats.AvailableBytes+*memoryStats.WorkingSetBytes), resource.BinarySI)
+	// 保留多少memory
 	evictionThresholdQuantity := evictionapi.GetThresholdQuantity(m.threshold.Value, capacity)
 	memcgThreshold := capacity.DeepCopy()
 	memcgThreshold.Sub(*evictionThresholdQuantity)
@@ -102,22 +118,26 @@ func (m *memoryThresholdNotifier) UpdateThreshold(summary *statsapi.Summary) err
 	if m.notifier != nil {
 		m.notifier.Stop()
 	}
+	// 监听"/sys/fs/cgroup/memory/kubepods.slice"下"memory.usage_in_bytes"文件内容的值大小，超过了memcgThreshold.Value()事件
 	newNotifier, err := m.factory.NewCgroupNotifier(m.cgroupPath, memoryUsageAttribute, memcgThreshold.Value())
 	if err != nil {
 		return err
 	}
 	m.notifier = newNotifier
+	// 启动一个goroutine，利用epoll，循环每次等待10s时间，如果有期望事件发生，则发送消息给m.events
 	go m.notifier.Start(m.events)
 	return nil
 }
 
 func (m *memoryThresholdNotifier) Description() string {
 	var hard, allocatable string
+	// m.threshold的GracePeriod为0
 	if isHardEvictionThreshold(m.threshold) {
 		hard = "hard "
 	} else {
 		hard = "soft "
 	}
+	// 阈值类型是不是"allocatableMemory.available"
 	if isAllocatableEvictionThreshold(m.threshold) {
 		allocatable = "allocatable "
 	}

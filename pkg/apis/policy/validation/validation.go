@@ -354,6 +354,7 @@ const SysctlPatternFmt string = "(" + apivalidation.SysctlSegmentFmt + "\\.)*" +
 var sysctlPatternRegexp = regexp.MustCompile("^" + SysctlPatternFmt + "$")
 
 // IsValidSysctlPattern checks if name is a valid sysctl pattern.
+// 长度不超过253且匹配"^([a-z0-9]([-_a-z0-9]*[a-z0-9])?\\.)*([a-z0-9][-_a-z0-9]*)?[a-z0-9*]$"
 func IsValidSysctlPattern(name string) bool {
 	if len(name) > apivalidation.SysctlMaxLength {
 		return false

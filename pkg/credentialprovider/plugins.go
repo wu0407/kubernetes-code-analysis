@@ -52,11 +52,13 @@ func RegisterCredentialProvider(name string, provider DockerConfigProvider) {
 
 // NewDockerKeyring creates a DockerKeyring to use for resolving credentials,
 // which draws from the set of registered credential providers.
+// 返回注册且启用的dockerConfigProvider，defaultDockerConfigProvider一直启用
 func NewDockerKeyring() DockerKeyring {
 	keyring := &providersDockerKeyring{
 		Providers: make([]DockerConfigProvider, 0),
 	}
 
+	// 返回所有provider名字
 	keys := reflect.ValueOf(providers).MapKeys()
 	stringKeys := make([]string, len(keys))
 	for ix := range keys {
@@ -64,8 +66,10 @@ func NewDockerKeyring() DockerKeyring {
 	}
 	sort.Strings(stringKeys)
 
+	// 遍历所有provider名字
 	for _, key := range stringKeys {
 		provider := providers[key]
+		// ".dockercfg"固定为true
 		if provider.Enabled() {
 			klog.V(4).Infof("Registering credential provider: %v", key)
 			keyring.Providers = append(keyring.Providers, provider)

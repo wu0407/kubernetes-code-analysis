@@ -15,6 +15,7 @@ var (
 	// nameComponentRegexp restricts registry path component names to start
 	// with at least one letter or number, with following parts able to be
 	// separated by one period, one or two underscore and multiple dashes.
+	// `[a-z0-9]+(?:(?:(?:[._]|__|[-]*)[a-z0-9]+)+)?`
 	nameComponentRegexp = expression(
 		alphaNumericRegexp,
 		optional(repeated(separatorRegexp, alphaNumericRegexp)))
@@ -28,6 +29,7 @@ var (
 	// that may be part of image names. This is purposely a subset of what is
 	// allowed by DNS to ensure backwards compatibility with Docker image
 	// names.
+	// `(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])(?:\.+(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]))?(?::[0-9]+)?`
 	DomainRegexp = expression(
 		domainComponentRegexp,
 		optional(repeated(literal(`.`), domainComponentRegexp)),
@@ -50,6 +52,9 @@ var (
 	// NameRegexp is the format for the name component of references. The
 	// regexp has capturing groups for the domain and name part omitting
 	// the separating forward slash from either.
+	// `(?:(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9])(?:\.+(?:[a-zA-Z0-9]|[a-zA-Z0-9][a-zA-Z0-9-]*[a-zA-Z0-9]))?(:[0-9]+)?/)?
+	// [a-z0-9]+(?:(?:(?:[._]|__|[-]*)[a-z0-9]+)+)?
+	// (?:/+[a-z0-9]+(?:(?:(?:[._]|__|[-]*)[a-z0-9]+)+)?)?`
 	NameRegexp = expression(
 		optional(DomainRegexp, literal(`/`)),
 		nameComponentRegexp,

@@ -47,6 +47,7 @@ func GetPodQOS(pod *v1.Pod) v1.PodQOSClass {
 	for _, container := range allContainers {
 		// process requests
 		for name, quantity := range container.Resources.Requests {
+			// 不是cpu或memory资源
 			if !isSupportedQoSComputeResource(name) {
 				continue
 			}

@@ -16,7 +16,11 @@ func (s *DevicesGroup) Name() string {
 	return "devices"
 }
 
+// 创建subsystem cgroup子系统路径
+// 将d.pid（不为-1时）加入到subsystem cgroup下的"cgroup.procs"文件
 func (s *DevicesGroup) Apply(d *cgroupData) error {
+	// 创建subsystem cgroup子系统路径
+	// 将d.pid（不为-1时）加入到subsystem cgroup下的"cgroup.procs"文件
 	_, err := d.join("devices")
 	if err != nil {
 		// We will return error even it's `not found` error, devices

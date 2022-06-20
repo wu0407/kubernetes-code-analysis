@@ -69,6 +69,7 @@ func CurrentUnitName() (string, error) {
 // system. This functions similarly to systemd's `sd_booted(3)`: internally, it
 // checks whether /run/systemd/system/ exists and is a directory.
 // http://www.freedesktop.org/software/systemd/man/sd_booted.html
+// 判断"/run/systemd/system"是否存在且是一个目录
 func IsRunningSystemd() bool {
 	fi, err := os.Lstat("/run/systemd/system")
 	if err != nil {

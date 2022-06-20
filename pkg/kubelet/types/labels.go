@@ -23,18 +23,22 @@ const (
 	KubernetesContainerNameLabel = "io.kubernetes.container.name"
 )
 
+// 获得labels["io.kubernetes.container.name"]值
 func GetContainerName(labels map[string]string) string {
 	return labels[KubernetesContainerNameLabel]
 }
 
+// 获得labels["io.kubernetes.pod.name"]值
 func GetPodName(labels map[string]string) string {
 	return labels[KubernetesPodNameLabel]
 }
 
+// 获得labels["io.kubernetes.pod.uid"]值
 func GetPodUID(labels map[string]string) string {
 	return labels[KubernetesPodUIDLabel]
 }
 
+// 获得labels["io.kubernetes.pod.namespace"]值
 func GetPodNamespace(labels map[string]string) string {
 	return labels[KubernetesPodNamespaceLabel]
 }

@@ -51,6 +51,7 @@ func (s *stateMemory) GetCPUSet(podUID string, containerName string) (cpuset.CPU
 	return res.Clone(), ok
 }
 
+// 所有非整数cpu的guaranteed类型pod，共享的cpu集合
 func (s *stateMemory) GetDefaultCPUSet() cpuset.CPUSet {
 	s.RLock()
 	defer s.RUnlock()

@@ -290,6 +290,7 @@ func NewDockerService(config *ClientConfig, podSandboxImage string, streamingCon
 		func() (interface{}, error) {
 			return ds.getDockerVersion()
 		},
+		// 1分钟
 		versionCacheTTL,
 	)
 
@@ -348,7 +349,9 @@ func (ds *dockerService) Version(_ context.Context, r *runtimeapi.VersionRequest
 }
 
 // getDockerVersion gets the version information from docker.
+// 返回docker的版本信息
 func (ds *dockerService) getDockerVersion() (*dockertypes.Version, error) {
+	// 调用docker客户端的ServerVersion接口，返回docker版本和api版本等信息
 	v, err := ds.client.Version()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get docker version: %v", err)
@@ -483,6 +486,7 @@ func (ds *dockerService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // GenerateExpectedCgroupParent returns cgroup parent in syntax expected by cgroup driver
+// cgroup driver为systemd，则返回最后一个路径。cgroup driver为cgroupfs，则返回原始值
 func (ds *dockerService) GenerateExpectedCgroupParent(cgroupParent string) (string, error) {
 	if cgroupParent != "" {
 		// if docker uses the systemd cgroup driver, it expects *.slice style names for cgroup parent.
@@ -491,6 +495,8 @@ func (ds *dockerService) GenerateExpectedCgroupParent(cgroupParent string) (stri
 		// this is a very good thing.
 		if ds.cgroupDriver == "systemd" {
 			// Pass only the last component of the cgroup path to systemd.
+			// 因为systemd的cgroup的最后一个路径，就能表示cgroup全路径，所以只要最后一个路径
+			// 比如"kubepods-burstable-podec7bb47a_07ef_48ff_9201_687474994eab.slice"代表"/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podec7bb47a_07ef_48ff_9201_687474994eab.slice"
 			cgroupParent = path.Base(cgroupParent)
 		}
 	}
@@ -520,10 +526,13 @@ func (ds *dockerService) checkVersionCompatibility() error {
 }
 
 // getDockerAPIVersion gets the semver-compatible docker api version.
+// 返回docker的apiversion
 func (ds *dockerService) getDockerAPIVersion() (*semver.Version, error) {
 	var dv *dockertypes.Version
 	var err error
+	// ds.versionCache初始化了，则尝试从缓存中获取docker版本信息
 	if ds.versionCache != nil {
+		// 先从ds.versionCache.cache中获取，取到就返回，没有取到则执行ds.getDockerVersion()获取docker的版本信息，然后放入cache中
 		dv, err = ds.getDockerVersionFromCache()
 	} else {
 		dv, err = ds.getDockerVersion()
@@ -539,6 +548,7 @@ func (ds *dockerService) getDockerAPIVersion() (*semver.Version, error) {
 	return &apiVersion, nil
 }
 
+// 先从ds.versionCache.cache中获取，取到就返回，没有取到则执行ds.getDockerVersion()获取docker的版本信息，然后放入cache中
 func (ds *dockerService) getDockerVersionFromCache() (*dockertypes.Version, error) {
 	// We only store on key in the cache.
 	const dummyKey = "version"

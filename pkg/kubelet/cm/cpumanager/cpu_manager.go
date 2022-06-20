@@ -144,6 +144,7 @@ func NewManager(cpuPolicyName string, reconcilePeriod time.Duration, machineInfo
 		if err != nil {
 			return nil, err
 		}
+		// 比如&{2 2 1 map[0:{0 0 0} 1:{0 0 1}]}
 		klog.Infof("[cpumanager] detected CPU topology: %v", topo)
 		reservedCPUs, ok := nodeAllocatableReservation[v1.ResourceCPU]
 		if !ok {
@@ -235,12 +236,16 @@ func (m *manager) Start(activePods ActivePodsFunc, sourcesReady config.SourcesRe
 
 func (m *manager) Allocate(p *v1.Pod, c *v1.Container) error {
 	// Garbage collect any stranded resources before allocating CPUs.
+	// 从m.state.cache.assignments(已分配cpu的集合)中找到container，这个container不在activePods（pod manager中维护pod列表）中（container的pod不存在或pod下面没有这个container）
+	// 从m.state.cache.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+	// 在m.containerMap（运行时中获得）中移除这个container
 	m.removeStaleState()
 
 	m.Lock()
 	defer m.Unlock()
 
 	// Call down into the policy to assign this container CPUs if required.
+	// policy为static policy，为Guaranteed的pod且container request的cpu为整数的container，分配cpu
 	err := m.policy.Allocate(m.state, p, c)
 	if err != nil {
 		klog.Errorf("[cpumanager] Allocate error: %v", err)
@@ -280,13 +285,13 @@ func (m *manager) AddContainer(p *v1.Pod, c *v1.Container, containerID string) e
 	return nil
 }
 
-// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+// 从m.state.cache.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
 // m.containerMap中移除这个container
 func (m *manager) RemoveContainer(containerID string) error {
 	m.Lock()
 	defer m.Unlock()
 
-	// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+	// 从m.state.cache.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
 	// m.containerMap中移除这个container
 	err := m.policyRemoveContainerByID(containerID)
 	if err != nil {
@@ -297,7 +302,7 @@ func (m *manager) RemoveContainer(containerID string) error {
 	return nil
 }
 
-// 从s.assignments移除container所占有的cpu，并在stateMemory中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+// 从m.state.cache.assignments移除container所占有的cpu，并在stateMemory中defaultCPUSet添加这个cpu集合（共享的cpu集合）
 // containerMap中移除这个container
 func (m *manager) policyRemoveContainerByID(containerID string) error {
 	// 从containerMap中获得这个容器的podUID、containerName
@@ -306,7 +311,7 @@ func (m *manager) policyRemoveContainerByID(containerID string) error {
 		return nil
 	}
 
-	// 从s.assignments移除container所占有的cpu，并在stateMemory中defaultCPUSet添加这个cpu集合（共享的cpu集合） 
+	// 从m.state.cache.assignments移除container所占有的cpu，并在stateMemory中defaultCPUSet添加这个cpu集合（共享的cpu集合） 
 	err = m.policy.RemoveContainer(m.state, podUID, containerName)
 	if err == nil {
 		m.containerMap.RemoveByContainerID(containerID)
@@ -315,7 +320,7 @@ func (m *manager) policyRemoveContainerByID(containerID string) error {
 	return err
 }
 
-// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+// 从m.state.cache.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
 // m.containerMap中移除这个container
 func (m *manager) policyRemoveContainerByRef(podUID string, containerName string) error {
 	// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
@@ -335,8 +340,12 @@ func (m *manager) State() state.Reader {
 
 func (m *manager) GetTopologyHints(pod *v1.Pod, container *v1.Container) map[string][]topologymanager.TopologyHint {
 	// Garbage collect any stranded resources before providing TopologyHints
+	// 从m.state.cache.assignments(已分配cpu的集合)中找到container，这个container为不在activePods（pod manager中维护pod列表）中（container的pod不存在或pod下面没有这个container）
+	// 从m.state.cache.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+	// 在m.containerMap（运行时runtime中获得container）中移除这个container
 	m.removeStaleState()
 	// Delegate to active policy
+	// policy为static，则为Guaranteed的pod且container request的cpu为整数的container，分配cpu
 	return m.policy.GetTopologyHints(m.state, pod, container)
 }
 
@@ -346,9 +355,9 @@ type reconciledContainer struct {
 	containerID   string
 }
 
-// 从m.state.assignments(已分配cpu的集合)中找到container，这个container不在activePods（pod manager中维护pod列表）中（container的pod不存在或pod下面没有这个container）
-// 从m.state.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
-// 在m.containerMap（运行时中获得）中移除这个container
+// 从m.state.cache.assignments(已分配cpu的集合)中找到container，这个container为不在activePods（pod manager中维护pod列表）中（container的pod不存在或pod下面没有这个container）
+// 从m.state.cache.assignments移除container所占有的cpu，并在m.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合）
+// 在m.containerMap（运行时runtime中获得container）中移除这个container
 func (m *manager) removeStaleState() {
 	// Only once all sources are ready do we attempt to remove any stale state.
 	// This ensures that the call to `m.activePods()` below will succeed with
@@ -367,6 +376,7 @@ func (m *manager) removeStaleState() {
 	defer m.Unlock()
 
 	// Get the list of active pods.
+	// 返回所有pods中（普通pod和static pod），pod的Phase不是"Failed"和"Succeeded"，或pod没有被删除，或pod被删除且至少一个container为running
 	activePods := m.activePods()
 
 	// Build a list of (podUID, containerName) pairs for all containers in all active Pods.
@@ -397,16 +407,16 @@ func (m *manager) removeStaleState() {
 	}
 }
 
-// 
+// 启动goroutine，周期同步m.state中容器的cpuset到容器的cgroup设置（调用cri更新容器的cpuset cgroup），移除不存在的container，让container列表（m.state.cache.assignments和m.containerMap）与m.activePods()一致
 func (m *manager) reconcileState() (success []reconciledContainer, failure []reconciledContainer) {
 	success = []reconciledContainer{}
 	failure = []reconciledContainer{}
 
 	// 移除不存在的container，让container列表与m.activePods()一致
-	// m.state.assignments移除container所分配的cpu，并把这个cpu添加到共享cpu集合（m.state（stateMemory）中defaultCPUSet）
+	// m.state.cache.assignments移除container所分配的cpu，并把这个cpu添加到共享cpu集合（m.state（stateMemory）中defaultCPUSet）
 	// m.containerMap中移除这个container
 	m.removeStaleState()
-	// 调用cri更新所有容器的cpuset，container在m.state.assignments中cpuset就是分配的cpu，否则就是m.state.defaultCPUSet(共享cpu)
+	// 调用cri更新所有容器的cpuset，container在m.state.cache.assignments中cpuset就是分配的cpu，否则就是m.state.defaultCPUSet(共享cpu)
 	for _, pod := range m.activePods() {
 		pstatus, ok := m.podStatusProvider.GetPodStatus(pod.UID)
 		if !ok {
@@ -452,6 +462,7 @@ func (m *manager) reconcileState() (success []reconciledContainer, failure []rec
 				// containerMap中是否存在这个容器
 				_, _, err := m.containerMap.GetContainerRef(containerID)
 				if err == nil {
+					// containerMap中存在这个容器，则记录这个日志
 					klog.Warningf("[cpumanager] reconcileState: ignoring terminated container (pod: %s, container id: %s)", pod.Name, containerID)
 				}
 				continue

@@ -224,6 +224,7 @@ func visitContainerConfigmapNames(container *v1.Container, visitor Visitor) bool
 
 // GetContainerStatus extracts the status of container "name" from "statuses".
 // It also returns if "name" exists.
+// 返回name的container的container status，返回true代表找到，false代表未找到
 func GetContainerStatus(statuses []v1.ContainerStatus, name string) (v1.ContainerStatus, bool) {
 	for i := range statuses {
 		if statuses[i].Name == name {
@@ -287,6 +288,7 @@ func GetPodCondition(status *v1.PodStatus, conditionType v1.PodConditionType) (i
 
 // GetPodConditionFromList extracts the provided condition from the given list of condition and
 // returns the index of the condition and the condition. Returns -1 and nil if the condition is not present.
+// 从conditions中获取conditionType的condition，返回在conditions的索引值（-1代表未找到）和condition
 func GetPodConditionFromList(conditions []v1.PodCondition, conditionType v1.PodConditionType) (int, *v1.PodCondition) {
 	if conditions == nil {
 		return -1, nil
@@ -329,6 +331,7 @@ func UpdatePodCondition(status *v1.PodStatus, condition *v1.PodCondition) bool {
 }
 
 // GetPodPriority returns priority of the given pod.
+// 返回pod的优先级
 func GetPodPriority(pod *v1.Pod) int32 {
 	if pod.Spec.Priority != nil {
 		return *pod.Spec.Priority

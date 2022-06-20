@@ -985,12 +985,15 @@ func RegisterRegistrationServer(s *grpc.Server, srv RegistrationServer) {
 	s.RegisterService(&_Registration_serviceDesc, srv)
 }
 
+// 在pkg\kubelet\cm\devicemanager\manager.go *ManagerImpl里Start，并没有传入UnaryInterceptor设置unaryInt（即interceptor为nil）
 func _Registration_Register_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(RegisterRequest)
+	// 解析请求内容到in里
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
+		// device manager里调用这个来处理注册
 		return srv.(RegistrationServer).Register(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
@@ -1054,6 +1057,8 @@ func (c *devicePluginClient) GetDevicePluginOptions(ctx context.Context, in *Emp
 	return out, nil
 }
 
+// 建立一个grpc流，并发送ListAndWatch请求给device plugin，device plugin会返回device列表（id、健康状态、topology），当device发生变化时候，device plugin会返回新的device列表
+// 这个方法返回接受消息客户端
 func (c *devicePluginClient) ListAndWatch(ctx context.Context, in *Empty, opts ...grpc.CallOption) (DevicePlugin_ListAndWatchClient, error) {
 	stream, err := c.cc.NewStream(ctx, &_DevicePlugin_serviceDesc.Streams[0], "/v1beta1.DevicePlugin/ListAndWatch", opts...)
 	if err != nil {

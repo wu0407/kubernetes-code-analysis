@@ -86,6 +86,7 @@ func NewCgroupNotifier(path, attribute string, threshold int64) (CgroupNotifier,
 			unix.Close(epfd)
 		}
 	}()
+	// eventfd和watchfd（监听cgroup属性路径）和阈值，写入到cgroup路径下的"cgroup.event_control"
 	config := fmt.Sprintf("%d %d %d", eventfd, watchfd, threshold)
 	_, err = unix.Write(controlfd, []byte(config))
 	if err != nil {
@@ -98,7 +99,9 @@ func NewCgroupNotifier(path, attribute string, threshold int64) (CgroupNotifier,
 	}, nil
 }
 
+// 利用epoll，循环每次等待10s时间，如果有期望事件发生，则发送消息给eventCh
 func (n *linuxCgroupNotifier) Start(eventCh chan<- struct{}) {
+	// n.eventfd的事件加入epoll监听
 	err := unix.EpollCtl(n.epfd, unix.EPOLL_CTL_ADD, n.eventfd, &unix.EpollEvent{
 		Fd:     int32(n.eventfd),
 		Events: unix.EPOLLIN,
@@ -113,6 +116,7 @@ func (n *linuxCgroupNotifier) Start(eventCh chan<- struct{}) {
 			return
 		default:
 		}
+		// 等待10s时间，期望返回6个事件，如果其中有一个事件的fd为epfd，且事件类型EPOLLHUP或EPOLLERR、EPOLLIN，则返回true
 		event, err := wait(n.epfd, n.eventfd, notifierRefreshInterval)
 		if err != nil {
 			klog.Warningf("eviction manager: error while waiting for memcg events: %v", err)
@@ -122,6 +126,7 @@ func (n *linuxCgroupNotifier) Start(eventCh chan<- struct{}) {
 			continue
 		}
 		// Consume the event from the eventfd
+		// 消费事件
 		buf := make([]byte, eventSize)
 		_, err = unix.Read(n.eventfd, buf)
 		if err != nil {
@@ -135,6 +140,7 @@ func (n *linuxCgroupNotifier) Start(eventCh chan<- struct{}) {
 // wait waits up to notifierRefreshInterval for an event on the Epoll FD for the
 // eventfd we are concerned about.  It returns an error if one occurs, and true
 // if the consumer should read from the eventfd.
+// 等待timeout时间，期望返回6个事件，如果其中有一个事件的fd为epfd，且事件类型EPOLLHUP或EPOLLERR、EPOLLIN，则返回true
 func wait(epfd, eventfd int, timeout time.Duration) (bool, error) {
 	events := make([]unix.EpollEvent, numFdEvents+1)
 	timeoutMS := int(timeout / time.Millisecond)

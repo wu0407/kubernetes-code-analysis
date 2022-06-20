@@ -47,6 +47,7 @@ type DockerConfigJson struct {
 // DockerConfig represents the config file used by the docker CLI.
 // This config that represents the credentials that should be used
 // when pulling images from specific image repositories.
+// 仓库地址和对应凭证
 type DockerConfig map[string]DockerConfigEntry
 
 type DockerConfigEntry struct {
@@ -76,6 +77,7 @@ func SetPreferredDockercfgPath(path string) {
 	preferredPath = path
 }
 
+// 默认返回为kubelet的RootDirectory，默认为/var/lib/kubelet
 func GetPreferredDockercfgPath() string {
 	preferredPathLock.Lock()
 	defer preferredPathLock.Unlock()
@@ -83,23 +85,30 @@ func GetPreferredDockercfgPath() string {
 }
 
 //DefaultDockercfgPaths returns default search paths of .dockercfg
+// 返回["/var/lib/kubelet", "", "~", "/"]
 func DefaultDockercfgPaths() []string {
 	return []string{GetPreferredDockercfgPath(), workingDirPath, homeDirPath, rootDirPath}
 }
 
 //DefaultDockerConfigJSONPaths returns default search paths of .docker/config.json
+// 返回["/var/lib/kubelet", "", "~/.docker", "/.docker"]
 func DefaultDockerConfigJSONPaths() []string {
 	return []string{GetPreferredDockercfgPath(), workingDirPath, homeJsonDirPath, rootJsonDirPath}
 }
 
 // ReadDockercfgFile attempts to read a legacy dockercfg file from the given paths.
 // if searchPaths is empty, the default paths are used.
+// 当searchPaths为空的时候，从["/var/lib/kubelet/.dockercfg", "当前目录/.dockercfg", "~/.dockercfg", "/.dockercfg"]，返回第一个存在且正确配置文件里的内容
+// 否则遍历searchPaths下".dockercfg"文件，返回第一个存在且正确配置文件里的内容
 func ReadDockercfgFile(searchPaths []string) (cfg DockerConfig, err error) {
+	// 没有指定searchPaths，则使用默认的搜索路径
 	if len(searchPaths) == 0 {
+		// 返回["/var/lib/kubelet", "", "~", "/"]
 		searchPaths = DefaultDockercfgPaths()
 	}
 
 	for _, configPath := range searchPaths {
+		// 组装路径 configPath+".dockercfg"
 		absDockerConfigFileLocation, err := filepath.Abs(filepath.Join(configPath, configFileName))
 		if err != nil {
 			klog.Errorf("while trying to canonicalize %s: %v", configPath, err)
@@ -114,6 +123,8 @@ func ReadDockercfgFile(searchPaths []string) (cfg DockerConfig, err error) {
 			klog.V(4).Infof("while trying to read %s: %v", absDockerConfigFileLocation, err)
 			continue
 		}
+
+		// 将json内容解析成DockerConfig
 		cfg, err := readDockerConfigFileFromBytes(contents)
 		if err == nil {
 			klog.V(4).Infof("found .dockercfg at %s", absDockerConfigFileLocation)
@@ -125,22 +136,30 @@ func ReadDockercfgFile(searchPaths []string) (cfg DockerConfig, err error) {
 
 // ReadDockerConfigJSONFile attempts to read a docker config.json file from the given paths.
 // if searchPaths is empty, the default paths are used.
+// 当searchPaths为空时，从["/var/lib/kubelet/config.json", "当前目录下的config.json", "~/.docker/config.json", "/.docker/config.json"]返回第一个存在且正确配置文件里的内容
+// 否则遍历searchPaths下的config.json文件，返回第一个存在且正确配置文件里的内容
 func ReadDockerConfigJSONFile(searchPaths []string) (cfg DockerConfig, err error) {
+	// 没有指定searchPaths，则使用默认的搜索路径
 	if len(searchPaths) == 0 {
+		// 返回["/var/lib/kubelet", "", "~/.docker", "/.docker"]
 		searchPaths = DefaultDockerConfigJSONPaths()
 	}
 	for _, configPath := range searchPaths {
+		// 组装路径configPath+"/config.json"
 		absDockerConfigFileLocation, err := filepath.Abs(filepath.Join(configPath, configJsonFileName))
 		if err != nil {
 			klog.Errorf("while trying to canonicalize %s: %v", configPath, err)
 			continue
 		}
 		klog.V(4).Infof("looking for %s at %s", configJsonFileName, absDockerConfigFileLocation)
+		// 读取absDockerConfigFileLocation文件并解析出DockerConfig
 		cfg, err = ReadSpecificDockerConfigJsonFile(absDockerConfigFileLocation)
 		if err != nil {
+			// 非文件不存在的错误，记录日志
 			if !os.IsNotExist(err) {
 				klog.V(4).Infof("while trying to read %s: %v", absDockerConfigFileLocation, err)
 			}
+			// 忽略任何错误，继续下一个路径
 			continue
 		}
 		klog.V(4).Infof("found valid %s at %s", configJsonFileName, absDockerConfigFileLocation)
@@ -157,14 +176,20 @@ func ReadSpecificDockerConfigJsonFile(filePath string) (cfg DockerConfig, err er
 	if contents, err = ioutil.ReadFile(filePath); err != nil {
 		return nil, err
 	}
+	// 将json解析成DockerConfigJson类型，然后提取出DockerConfig
 	return readDockerConfigJsonFileFromBytes(contents)
 }
 
+// 先从["/var/lib/kubelet/config.json", "当前目录下的config.json", "~/.docker/config.json", "/.docker/config.json"]返回第一个存在且正确配置文件里的内容
+// 没有读取到，则从["/var/lib/kubelet/.dockercfg", "当前目录/.dockercfg", "~/.dockercfg", "/.dockercfg"]，返回第一个存在且正确配置文件里的内容
 func ReadDockerConfigFile() (cfg DockerConfig, err error) {
+	// 从["/var/lib/kubelet/config.json", "当前目录下的config.json", "~/.docker/config.json", "/.docker/config.json"]返回第一个存在且正确配置文件里的内容
 	if cfg, err := ReadDockerConfigJSONFile(nil); err == nil {
 		return cfg, nil
 	}
 	// Can't find latest config file so check for the old one
+	// 不能读取到"config.json"文件，则fallback读取".dockercfg"文件
+	// 从["/var/lib/kubelet/.dockercfg", "当前目录/.dockercfg", "~/.dockercfg", "/.dockercfg"]，返回第一个存在且正确配置文件里的内容
 	return ReadDockercfgFile(nil)
 }
 
@@ -223,6 +248,7 @@ func ReadDockerConfigFileFromUrl(url string, client *http.Client, header *http.H
 	}
 }
 
+// 将json内容解析成DockerConfig
 func readDockerConfigFileFromBytes(contents []byte) (cfg DockerConfig, err error) {
 	if err = json.Unmarshal(contents, &cfg); err != nil {
 		klog.Errorf("while trying to parse blob %q: %v", contents, err)
@@ -231,6 +257,7 @@ func readDockerConfigFileFromBytes(contents []byte) (cfg DockerConfig, err error
 	return
 }
 
+// 将json解析成DockerConfigJson类型，然后提取出DockerConfig
 func readDockerConfigJsonFileFromBytes(contents []byte) (cfg DockerConfig, err error) {
 	var cfgJson DockerConfigJson
 	if err = json.Unmarshal(contents, &cfgJson); err != nil {
@@ -269,6 +296,7 @@ func (ident *DockerConfigEntry) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	// 对docker config.json中的auth字段进行base64解码，解析出username和password
 	ident.Username, ident.Password, err = decodeDockerConfigFieldAuth(tmp.Auth)
 	return err
 }
@@ -282,12 +310,15 @@ func (ident DockerConfigEntry) MarshalJSON() ([]byte, error) {
 
 // decodeDockerConfigFieldAuth deserializes the "auth" field from dockercfg into a
 // username and a password. The format of the auth field is base64(<username>:<password>).
+// 对docker config.json中的auth字段进行base64解码，解析出username和password
 func decodeDockerConfigFieldAuth(field string) (username, password string, err error) {
 
 	var decoded []byte
 
 	// StdEncoding can only decode padded string
 	// RawStdEncoding can only decode unpadded string
+	// 后缀包含"="，说明被填充过使用StdEncoding进行解码
+	// 否则，使用RawStdEncoding
 	if strings.HasSuffix(strings.TrimSpace(field), "=") {
 		// decode padded data
 		decoded, err = base64.StdEncoding.DecodeString(field)
@@ -300,6 +331,7 @@ func decodeDockerConfigFieldAuth(field string) (username, password string, err e
 		return
 	}
 
+	// 对base64解码后的字符串用":"进行切割，第一个字段为用户名，第二个字段为密码
 	parts := strings.SplitN(string(decoded), ":", 2)
 	if len(parts) != 2 {
 		err = fmt.Errorf("unable to parse auth field")

@@ -37,14 +37,19 @@ type internalContainerLifecycleImpl struct {
 	topologyManager topologymanager.Manager
 }
 
+// 调用cri更新容器的cpuset cgroup
+// 添加container id到i.topologyManager.podMap
 func (i *internalContainerLifecycleImpl) PreStartContainer(pod *v1.Pod, container *v1.Container, containerID string) error {
 	if i.cpuManager != nil {
+		// 调用cri更新容器的cpuset cgroup，如果发生错误则移除分配的container（从i.cpuManager.state.assignments移除container所占有的cpu，并在i.cpuManager.state（stateMemory）中defaultCPUSet添加这个cpu集合（共享的cpu集合），i.cpuManager.containerMap中移除这个container）
+		// 之前在pod admit时候已经，分配了cpu，所以这里是只是更新容器的cpuset
 		err := i.cpuManager.AddContainer(pod, container, containerID)
 		if err != nil {
 			return err
 		}
 	}
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.TopologyManager) {
+		// 添加container id到i.topologyManager.podMap
 		err := i.topologyManager.AddContainer(pod, containerID)
 		if err != nil {
 			return err
@@ -57,8 +62,10 @@ func (i *internalContainerLifecycleImpl) PreStopContainer(containerID string) er
 	return nil
 }
 
+// 释放container ID在i.topologyManager.podTopologyHints分配资源
 func (i *internalContainerLifecycleImpl) PostStopContainer(containerID string) error {
 	if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.TopologyManager) {
+		// 清理container ID在i.topologyManager.podTopologyHints分配资源
 		err := i.topologyManager.RemoveContainer(containerID)
 		if err != nil {
 			return err

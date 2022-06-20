@@ -100,6 +100,7 @@ type linuxVolumeQuotaApplier struct {
 	allowEmptyOutput bool
 }
 
+// 返回xfs_quota命令文件路径，比如"/usr/sbin/xfs_quota"
 func getXFSQuotaCmd() (string, error) {
 	quotaCmdLock.Lock()
 	defer quotaCmdLock.Unlock()
@@ -108,6 +109,7 @@ func getXFSQuotaCmd() (string, error) {
 	}
 	for _, program := range quotaCmds {
 		fileinfo, err := os.Stat(program)
+		// 文件是可以执行的
 		if err == nil && ((fileinfo.Mode().Perm() & (1 << 6)) != 0) {
 			klog.V(3).Infof("Found xfs_quota program %s", program)
 			quotaCmd = program
@@ -119,7 +121,9 @@ func getXFSQuotaCmd() (string, error) {
 	return "", fmt.Errorf("No xfs_quota program found")
 }
 
+// 执行"/usr/sbin/xfs_quota -t {mountsFile} -P/dev/null -D/dev/null -x -f {mountpoint} {command}"
 func doRunXFSQuotaCommand(mountpoint string, mountsFile, command string) (string, error) {
+	// 比如"/usr/sbin/xfs_quota"
 	quotaCmd, err := getXFSQuotaCmd()
 	if err != nil {
 		return "", err
@@ -142,7 +146,10 @@ func doRunXFSQuotaCommand(mountpoint string, mountsFile, command string) (string
 // a stuck NFS mount is present.
 // See https://bugzilla.redhat.com/show_bug.cgi?id=237120 for an example
 // of the problem that could be caused if this were to happen.
+// 从"/proc/self/mounts"找到挂载点对应的行，将这一行内容写入到临时文件"/tmp/mounts{xxx}"
+// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} {command}"
 func runXFSQuotaCommand(mountpoint string, command string) (string, error) {
+	// 创建一个临时文件"/tmp/mounts{xxx}"
 	tmpMounts, err := ioutil.TempFile("", "mounts")
 	if err != nil {
 		return "", fmt.Errorf("Cannot create temporary mount file: %v", err)
@@ -151,6 +158,7 @@ func runXFSQuotaCommand(mountpoint string, command string) (string, error) {
 	defer tmpMounts.Close()
 	defer os.Remove(tmpMountsFileName)
 
+	// 打开"/proc/self/mounts"
 	mounts, err := os.Open(MountsFile)
 	if err != nil {
 		return "", fmt.Errorf("Cannot open mounts file %s: %v", MountsFile, err)
@@ -159,16 +167,20 @@ func runXFSQuotaCommand(mountpoint string, command string) (string, error) {
 
 	scanner := bufio.NewScanner(mounts)
 	for scanner.Scan() {
+		// "^([^ ]*)[ \t]*([^ ]*)[ \t]*([^ ]*)"
 		match := MountParseRegexp.FindStringSubmatch(scanner.Text())
 		if match != nil {
 			mount := match[2]
+			// 找到挂载点
 			if mount == mountpoint {
+				// 将这一行写入临时文件
 				if _, err := tmpMounts.WriteString(fmt.Sprintf("%s\n", scanner.Text())); err != nil {
 					return "", fmt.Errorf("Cannot write temporary mounts file: %v", err)
 				}
 				if err := tmpMounts.Sync(); err != nil {
 					return "", fmt.Errorf("Cannot sync temporary mounts file: %v", err)
 				}
+				// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} {command}"
 				return doRunXFSQuotaCommand(mountpoint, tmpMountsFileName, command)
 			}
 		}
@@ -241,7 +253,11 @@ func (v linuxVolumeQuotaApplier) SetQuotaOnDir(path string, id QuotaID, bytes in
 	return err
 }
 
+// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} quota -p -N -n -v {xfsQuotaArg} {id}"
+// 返回命令输出的数字
 func getQuantity(mountpoint string, id QuotaID, xfsQuotaArg string, multiplier int64, allowEmptyOutput bool) (int64, error) {
+	// 从"/proc/self/mounts"找到挂载点对应的行，将这一行内容写入到临时文件"/tmp/mounts{xxx}"
+	// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} quota -p -N -n -v -b {id}"
 	data, err := runXFSQuotaCommand(mountpoint, fmt.Sprintf("quota -p -N -n -v %s %v", xfsQuotaArg, id))
 	if err != nil {
 		return 0, fmt.Errorf("Unable to run xfs_quota: %v", err)
@@ -249,10 +265,12 @@ func getQuantity(mountpoint string, id QuotaID, xfsQuotaArg string, multiplier i
 	if data == "" && allowEmptyOutput {
 		return 0, nil
 	}
+	// 命令输出匹配"^[^ \t]*[ \t]*([0-9]+)"
 	match := quotaParseRegexp.FindStringSubmatch(data)
 	if match == nil {
 		return 0, fmt.Errorf("Unable to parse quota output '%s'", data)
 	}
+	// 解析出数字
 	size, err := strconv.ParseInt(match[1], 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("Unable to parse data size '%s' from '%s': %v", match[1], data, err)
@@ -262,11 +280,15 @@ func getQuantity(mountpoint string, id QuotaID, xfsQuotaArg string, multiplier i
 }
 
 // GetConsumption returns the consumption in bytes if available via quotas
+// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} quota -p -N -n -v -b {id}"
+// 返回命令输出的数字乘以1024
 func (v linuxVolumeQuotaApplier) GetConsumption(_ string, id QuotaID) (int64, error) {
 	return getQuantity(v.mountpoint, id, "-b", 1024, v.allowEmptyOutput)
 }
 
 // GetInodes returns the inodes in use if available via quotas
+// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} quota -p -N -n -v -i {id}"
+// 返回命令输出的数字
 func (v linuxVolumeQuotaApplier) GetInodes(_ string, id QuotaID) (int64, error) {
 	return getQuantity(v.mountpoint, id, "-i", 1, v.allowEmptyOutput)
 }

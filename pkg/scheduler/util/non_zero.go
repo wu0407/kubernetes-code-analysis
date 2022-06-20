@@ -40,6 +40,8 @@ const (
 
 // GetNonzeroRequests returns the default cpu and memory resource request if none is found or
 // what is provided on the request.
+// request中没有指定cpu，则cpu request默认为100。否则，有就返回cpu request的值（乘以1000）
+// request中没有指定memory，则memory request为200Mi，有就返回memory request值
 func GetNonzeroRequests(requests *v1.ResourceList) (int64, int64) {
 	return GetNonzeroRequestForResource(v1.ResourceCPU, requests),
 		GetNonzeroRequestForResource(v1.ResourceMemory, requests)
@@ -47,6 +49,14 @@ func GetNonzeroRequests(requests *v1.ResourceList) (int64, int64) {
 
 // GetNonzeroRequestForResource returns the default resource request if none is found or
 // what is provided on the request.
+// request中没有指定cpu，则cpu request默认为100。否则，有就返回cpu request的值（乘以1000）
+// request中没有指定memory，则memory request为200Mi，有就返回memory request值
+// request中没有指定"ephemeral-storage"，则ephemeral-storage request为0，否则，如果没有启用"LocalStorageCapacityIsolation"，则为0。否则返回ephemeral-storage request的值
+// 如果资源名为下面几种情况，如果没有指定request，则默认为0。否则返回request值
+// 是扩展资源（包含斜杠，或不是“kubernetes.io/”为前缀，且不是“request.”为前缀。且将"requests." 加上name组成字符串，验证这个字符串是合法）
+// 或name包含"hugepages-"前缀
+// 或name为"kubernetes.io/"前缀
+// 或name包含"attachable-volumes-"前缀
 func GetNonzeroRequestForResource(resource v1.ResourceName, requests *v1.ResourceList) int64 {
 	switch resource {
 	case v1.ResourceCPU:
@@ -73,6 +83,10 @@ func GetNonzeroRequestForResource(resource v1.ResourceName, requests *v1.Resourc
 		}
 		return quantity.Value()
 	default:
+		// 是扩展资源（包含斜杠，或不是“kubernetes.io/”为前缀，且不是“request.”为前缀。且将"requests." 加上name组成字符串，验证这个字符串是合法）
+		// 或name包含"hugepages-"前缀
+		// 或name为"kubernetes.io/"前缀
+		// 或name包含"attachable-volumes-"前缀
 		if v1helper.IsScalarResourceName(resource) {
 			quantity, found := (*requests)[resource]
 			if !found {

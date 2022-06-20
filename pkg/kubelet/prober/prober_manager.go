@@ -234,6 +234,7 @@ func (m *manager) CleanupPods(desiredPods map[types.UID]sets.Empty) {
 	}
 }
 
+// 根据probe状态，设置podStatus里的containerstatus的started和ready字段，和根据init container处于Terminated状态且exitcode为0 设置initContainerstatus里的ready字段
 func (m *manager) UpdatePodStatus(podUID types.UID, podStatus *v1.PodStatus) {
 	for i, c := range podStatus.ContainerStatuses {
 		var started bool
@@ -242,23 +243,29 @@ func (m *manager) UpdatePodStatus(podUID types.UID, podStatus *v1.PodStatus) {
 		} else if !utilfeature.DefaultFeatureGate.Enabled(features.StartupProbe) {
 			// the container is running, assume it is started if the StartupProbe feature is disabled
 			started = true
+		// 从startupManager的缓存中获取container相关结果
 		} else if result, ok := m.startupManager.Get(kubecontainer.ParseContainerID(c.ContainerID)); ok {
+			// 发现了结果，判断是否成功
 			started = result == results.Success
 		} else {
 			// The check whether there is a probe which hasn't run yet.
+			// 是否已经有未运行startup探测worker
 			_, exists := m.getWorker(podUID, c.Name, startup)
 			started = !exists
 		}
 		podStatus.ContainerStatuses[i].Started = &started
 
+		// 已经启动，再判断是否ready
 		if started {
 			var ready bool
 			if c.State.Running == nil {
 				ready = false
+			// 从readinessManager的缓存中获取container相关结果
 			} else if result, ok := m.readinessManager.Get(kubecontainer.ParseContainerID(c.ContainerID)); ok {
 				ready = result == results.Success
 			} else {
 				// The check whether there is a probe which hasn't run yet.
+				// 是否已经有未运行readiness探测的worker
 				_, exists := m.getWorker(podUID, c.Name, readiness)
 				ready = !exists
 			}
@@ -269,6 +276,7 @@ func (m *manager) UpdatePodStatus(podUID types.UID, podStatus *v1.PodStatus) {
 	// succeeded.
 	for i, c := range podStatus.InitContainerStatuses {
 		var ready bool
+		// init container处于Terminated状态且exitcode为0，则为ready
 		if c.State.Terminated != nil && c.State.Terminated.ExitCode == 0 {
 			ready = true
 		}

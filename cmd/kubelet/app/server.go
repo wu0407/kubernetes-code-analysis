@@ -772,6 +772,7 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 				ExperimentalCPUManagerPolicy:          s.CPUManagerPolicy,
 				ExperimentalCPUManagerReconcilePeriod: s.CPUManagerReconcilePeriod.Duration,
 				ExperimentalPodPidsLimit:              s.PodPidsLimit,
+				// 默认为true
 				EnforceCPULimits:                      s.CPUCFSQuota,
 				CPUCFSQuotaPeriod:                     s.CPUCFSQuotaPeriod.Duration,
 				ExperimentalTopologyManagerPolicy:     s.TopologyManagerPolicy,
@@ -1254,6 +1255,8 @@ func createAndInitKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	// 发送start kubelet的event
 	k.BirthCry()
 
+	// 每一分钟执行容器的gc
+	// 当ImageGCHighThresholdPercent不为100，则每5分钟执行镜像的gc。否则不用镜像gc
 	k.StartGarbageCollection()
 
 	return k, nil

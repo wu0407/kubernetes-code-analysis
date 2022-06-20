@@ -789,6 +789,7 @@ func (plugin *kubenetNetworkPlugin) addContainerToNetwork(config *libcni.Network
 	// Todo get the timeout from parent ctx
 	cniTimeoutCtx, cancelFunc := context.WithTimeout(context.Background(), network.CNITimeoutSec*time.Second)
 	defer cancelFunc()
+	// 执行网络插件的ADD命令
 	res, err := plugin.cniConfig.AddNetwork(cniTimeoutCtx, config, rt)
 	if err != nil {
 		return nil, fmt.Errorf("error adding container to network: %v", err)

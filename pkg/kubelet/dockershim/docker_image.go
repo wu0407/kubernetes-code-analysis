@@ -64,11 +64,13 @@ func (ds *dockerService) ListImages(_ context.Context, r *runtimeapi.ListImagesR
 func (ds *dockerService) ImageStatus(_ context.Context, r *runtimeapi.ImageStatusRequest) (*runtimeapi.ImageStatusResponse, error) {
 	image := r.GetImage()
 
+	// 执行docker image inspect，并校验镜像地址与返回的结果是否一致
 	imageInspect, err := ds.client.InspectImageByRef(image.Image)
 	if err != nil {
 		if !libdocker.IsImageNotFoundError(err) {
 			return nil, err
 		}
+		// 根据镜像地址找不到镜像，则尝试镜像地址作为id来查找镜像
 		imageInspect, err = ds.client.InspectImageByID(image.Image)
 		if err != nil {
 			if libdocker.IsImageNotFoundError(err) {
@@ -78,6 +80,7 @@ func (ds *dockerService) ImageStatus(_ context.Context, r *runtimeapi.ImageStatu
 		}
 	}
 
+	// 将*dockertypes.ImageInspect（docker image inspect结果）转成*runtimeapi.Image
 	imageStatus, err := imageInspectToRuntimeAPIImage(imageInspect)
 	if err != nil {
 		return nil, err
@@ -91,6 +94,8 @@ func (ds *dockerService) ImageStatus(_ context.Context, r *runtimeapi.ImageStatu
 }
 
 // PullImage pulls an image with authentication config.
+// 拉取镜像，并启动一个goroutine 每10s记录拉取状态（进度条）到日志。
+// 执行docker image inspect，并校验镜像地址与返回的结果是否一致，如果inspect结果中有RepoDigests，则返回digest，否则返回镜像id
 func (ds *dockerService) PullImage(_ context.Context, r *runtimeapi.PullImageRequest) (*runtimeapi.PullImageResponse, error) {
 	image := r.GetImage()
 	auth := r.GetAuth()
@@ -103,6 +108,7 @@ func (ds *dockerService) PullImage(_ context.Context, r *runtimeapi.PullImageReq
 		authConfig.IdentityToken = auth.IdentityToken
 		authConfig.RegistryToken = auth.RegistryToken
 	}
+	// 拉取镜像，并启动一个goroutine 每10s记录拉取状态（进度条）到日志
 	err := ds.client.PullImage(image.Image,
 		authConfig,
 		dockertypes.ImagePullOptions{},
@@ -111,6 +117,7 @@ func (ds *dockerService) PullImage(_ context.Context, r *runtimeapi.PullImageReq
 		return nil, filterHTTPError(err, image.Image)
 	}
 
+	// 执行docker image inspect，并校验镜像地址与返回的结果是否一致，如果inspect结果中有RepoDigests，则返回digest，否则返回镜像id
 	imageRef, err := getImageRef(ds.client, image.Image)
 	if err != nil {
 		return nil, err
@@ -156,7 +163,9 @@ func (ds *dockerService) RemoveImage(_ context.Context, r *runtimeapi.RemoveImag
 }
 
 // getImageRef returns the image digest if exists, or else returns the image ID.
+// 执行docker image inspect，并校验镜像地址与返回的结果是否一致，如果inspect结果中有RepoDigests，则返回digest，否则返回镜像id
 func getImageRef(client libdocker.Interface, image string) (string, error) {
+	// 执行docker image inspect，并校验镜像地址与返回的结果是否一致
 	img, err := client.InspectImageByRef(image)
 	if err != nil {
 		return "", err

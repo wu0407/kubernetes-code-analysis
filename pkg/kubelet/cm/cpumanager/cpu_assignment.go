@@ -54,7 +54,7 @@ func (a *cpuAccumulator) take(cpus cpuset.CPUSet) {
 }
 
 // Returns true if the supplied socket is fully available in `topoDetails`.
-// 返回true----socket的逻辑cpu数量等于每个socket平均逻辑cpu数量
+// 返回true----这个socket的逻辑cpu数量等于每个socket平均逻辑cpu数量
 func (a *cpuAccumulator) isSocketFree(socketID int) bool {
 	return a.details.CPUsInSockets(socketID).Size() == a.topo.CPUsPerSocket()
 }
@@ -67,6 +67,7 @@ func (a *cpuAccumulator) isCoreFree(coreID int) bool {
 
 // Returns free socket IDs as a slice sorted by:
 // - socket ID, ascending.
+// 返回所有剩下可用的cpu的socket id，能满足这个socket的逻辑cpu数量等于每个socket平均逻辑cpu数量，说明这个socket的cpu都未被分配
 func (a *cpuAccumulator) freeSockets() []int {
 	return a.details.Sockets().Filter(a.isSocketFree).ToSlice()
 }
@@ -179,12 +180,16 @@ func takeByTopology(topo *topology.CPUTopology, availableCPUs cpuset.CPUSet, num
 	//    least a socket's-worth of CPUs.
 	// 情况1 需要分配的逻辑cpu数量大于等于每个socket 逻辑cpu数量，这里分配是向下取整--比如要1.2个socket * （平均每个socket cpu数），那么会分配1个socket所拥有的cpu，剩下的需要分配cpu，按照情况2处理或情况3处理
 	if acc.needs(acc.topo.CPUsPerSocket()) {
+		// 遍历剩下可用的cpu所有socket id，能满足这个socket的逻辑cpu数量等于每个socket平均逻辑cpu数量，说明这个socket的cpu都未被分配，排除掉socket里部分或全部cpu已经分配
 		for _, s := range acc.freeSockets() {
 			klog.V(4).Infof("[cpumanager] takeByTopology: claiming socket [%d]", s)
+			// acc.details.CPUsInSockets(s)为socket ids下所有cpu
+			// 分配整个socket cpu
 			acc.take(acc.details.CPUsInSockets(s))
 			if acc.isSatisfied() {
 				return acc.result, nil
 			}
+			// 还需要的cpu数量小于每个socket cpu数量，则退出循环
 			if !acc.needs(acc.topo.CPUsPerSocket()) {
 				break
 			}

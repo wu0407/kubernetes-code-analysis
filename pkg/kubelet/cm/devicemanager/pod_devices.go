@@ -66,6 +66,7 @@ func (pdev podDevices) delete(pods []string) {
 
 // Returns list of device Ids allocated to the given container for the given resource.
 // Returns nil if we don't have cached state for the given <podUID, contName, resource>.
+// 返回已经分配给container的resource的所有device id
 func (pdev podDevices) containerDevices(podUID, contName, resource string) sets.String {
 	if _, podExists := pdev[podUID]; !podExists {
 		return nil
@@ -81,6 +82,7 @@ func (pdev podDevices) containerDevices(podUID, contName, resource string) sets.
 }
 
 // Populates allocatedResources with the device resources allocated to the specified <podUID, contName>.
+// 从podDevices中获取所有已经分配给pod里container的resource和对应的device id，添加到allocatedResources
 func (pdev podDevices) addContainerAllocatedResources(podUID, contName string, allocatedResources map[string]sets.String) {
 	containers, exists := pdev[podUID]
 	if !exists {
@@ -96,6 +98,7 @@ func (pdev podDevices) addContainerAllocatedResources(podUID, contName string, a
 }
 
 // Removes the device resources allocated to the specified <podUID, contName> from allocatedResources.
+// 从allocatedResources里移除podDevices里分配给pod里container的resource对应的device id
 func (pdev podDevices) removeContainerAllocatedResources(podUID, contName string, allocatedResources map[string]sets.String) {
 	containers, exists := pdev[podUID]
 	if !exists {
@@ -130,6 +133,7 @@ func (pdev podDevices) devices() map[string]sets.String {
 }
 
 // Turns podDevices to checkpointData.
+// podDevices转成[]checkpoint.PodDevicesEntry
 func (pdev podDevices) toCheckpointData() []checkpoint.PodDevicesEntry {
 	var data []checkpoint.PodDevicesEntry
 	for podUID, containerDevices := range pdev {
@@ -179,6 +183,7 @@ func (pdev podDevices) fromCheckpointData(data []checkpoint.PodDevicesEntry) {
 }
 
 // Returns combined container runtime settings to consume the container's allocated devices.
+// 遍历所有device plugin返回给pod里container的resource的分配响应（allocResp *pluginapi.ContainerAllocateResponse）转成容器runtime运行参数（*DeviceRunContainerOptions）
 func (pdev podDevices) deviceRunContainerOptions(podUID, contName string) *DeviceRunContainerOptions {
 	containers, exists := pdev[podUID]
 	if !exists {
@@ -207,6 +212,7 @@ func (pdev podDevices) deviceRunContainerOptions(podUID, contName string) *Devic
 		for k, v := range resp.Envs {
 			if e, ok := envsMap[k]; ok {
 				klog.V(4).Infof("Skip existing env %s %s", k, v)
+				// 存在的相同的环境变量的key，但是值不一样，记录错误日志，并跳过这个环境变量，即以第一个遍历到的环境变量的值为准
 				if e != v {
 					klog.Errorf("Environment variable %s has conflicting setting: %s and %s", k, e, v)
 				}
@@ -221,6 +227,7 @@ func (pdev podDevices) deviceRunContainerOptions(podUID, contName string) *Devic
 		for _, dev := range resp.Devices {
 			if d, ok := devsMap[dev.ContainerPath]; ok {
 				klog.V(4).Infof("Skip existing device %s %s", dev.ContainerPath, dev.HostPath)
+				// 存在相同的容器设备挂载，但是宿主机目录不一样，记录错误日志，并跳过这个挂载，即以第一个遍历到的容器设备挂载为准
 				if d != dev.HostPath {
 					klog.Errorf("Container device %s has conflicting mapping host devices: %s and %s",
 						dev.ContainerPath, d, dev.HostPath)
@@ -240,6 +247,7 @@ func (pdev podDevices) deviceRunContainerOptions(podUID, contName string) *Devic
 		for _, mount := range resp.Mounts {
 			if m, ok := mountsMap[mount.ContainerPath]; ok {
 				klog.V(4).Infof("Skip existing mount %s %s", mount.ContainerPath, mount.HostPath)
+				// 存在相同的容器挂载，但是宿主机目录不一样，记录错误日志，并跳过这个挂载，即以第一个遍历到的容器挂载为准
 				if m != mount.HostPath {
 					klog.Errorf("Container mount %s has conflicting mapping host mounts: %s and %s",
 						mount.ContainerPath, m, mount.HostPath)
@@ -262,6 +270,7 @@ func (pdev podDevices) deviceRunContainerOptions(podUID, contName string) *Devic
 		for k, v := range resp.Annotations {
 			if e, ok := annotationsMap[k]; ok {
 				klog.V(4).Infof("Skip existing annotation %s %s", k, v)
+				// 存在相同key的annotation，但是value不一样，记录错误日志，并跳过annotation，即以第一个遍历到的annotation为准
 				if e != v {
 					klog.Errorf("Annotation %s has conflicting setting: %s and %s", k, e, v)
 				}

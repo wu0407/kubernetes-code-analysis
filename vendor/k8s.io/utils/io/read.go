@@ -30,6 +30,7 @@ var ErrLimitReached = errors.New("the read limit is reached")
 // ConsistentRead repeatedly reads a file until it gets the same content twice.
 // This is useful when reading files in /proc that are larger than page size
 // and kernel may modify them between individual read() syscalls.
+// 进行最多attempts次重复性读取，当两次读取内容一样的时候返回
 func ConsistentRead(filename string, attempts int) ([]byte, error) {
 	return consistentReadSync(filename, attempts, nil)
 }
@@ -37,6 +38,7 @@ func ConsistentRead(filename string, attempts int) ([]byte, error) {
 // consistentReadSync is the main functionality of ConsistentRead but
 // introduces a sync callback that can be used by the tests to mutate the file
 // from which the test data is being read
+// 进行最多attempts次重复性读取，当两次读取内容一样的时候返回。不一样的时候会先调用sync，然后再次读取
 func consistentReadSync(filename string, attempts int, sync func(int)) ([]byte, error) {
 	oldContent, err := ioutil.ReadFile(filename)
 	if err != nil {
@@ -50,6 +52,7 @@ func consistentReadSync(filename string, attempts int, sync func(int)) ([]byte, 
 		if err != nil {
 			return nil, err
 		}
+		// 这次读取内容与上一次读取内容一样，则返回文件内容
 		if bytes.Compare(oldContent, newContent) == 0 {
 			return newContent, nil
 		}

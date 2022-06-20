@@ -81,6 +81,19 @@ func (cgc *realContainerGC) GarbageCollect() error {
 	return cgc.runtime.GarbageCollect(cgc.policy, cgc.sourcesReadyProvider.AllReady(), false)
 }
 
+// 移除可以移除的container
+// 获取非running container且container createdAt时间距离现在已经经过minAge的container
+// allSourcesReady为true，则移除所有可以驱逐的container
+// 根据gcPolicy.MaxPerPodContainer，移除每个pod里老的可以移除的container
+// 根据gcPolicy.MaxContainers，移除pod里或所有container里老的可以移除的container
+//
+// 移除可以移除的sandbox
+// 如果pod删除了或pod处于Terminated状态，则移除所有不为running且没有container属于它的sandbox容器
+// 如果pod没有被删除了，且pod不处于Terminated状态，则保留pod的最近一个sanbox容器（移除其他老的且不为running且没有container属于它的pod）
+//
+// 移除pod日志目录
+// allSourcesReady为true，且pod（pod uid从目录名中提取）不为删除状态，则递归移除目录"/var/log/pods/{pod namespace}_{pod name}_{pod uid}"
+// "/var/log/containers/*.log"文件，如果链接的目标文件不存在，则移除这个链接
 func (cgc *realContainerGC) DeleteAllUnusedContainers() error {
 	klog.Infof("attempting to delete unused containers")
 	return cgc.runtime.GarbageCollect(cgc.policy, cgc.sourcesReadyProvider.AllReady(), true)

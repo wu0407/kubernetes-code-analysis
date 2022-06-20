@@ -186,7 +186,9 @@ func SplitHostname(named Named) (string, string) {
 // Parse parses s and returns a syntactically valid Reference.
 // If an error was encountered it is returned, along with a nil Reference.
 // NOTE: Parse will not handle short digests.
+// 解析镜像名返回相应的Reference对象
 func Parse(s string) (Reference, error) {
+	// 匹配镜像正则表达式 ((?:{域名}/)?{仓库}/{镜像名}?):({tag})@({digest})
 	matches := ReferenceRegexp.FindStringSubmatch(s)
 	if matches == nil {
 		if s == "" {
@@ -204,11 +206,14 @@ func Parse(s string) (Reference, error) {
 
 	var repo repository
 
+	// 匹配出域名和仓库 ({域名}/)?({仓库}(?:/{镜像名})?)
 	nameMatch := anchoredNameRegexp.FindStringSubmatch(matches[1])
 	if nameMatch != nil && len(nameMatch) == 3 {
+		// 如果匹配出两部分，域名和路径（仓库与镜像）
 		repo.domain = nameMatch[1]
 		repo.path = nameMatch[2]
 	} else {
+		// 只匹配出一部分，那只有路径
 		repo.domain = ""
 		repo.path = matches[1]
 	}
@@ -218,13 +223,16 @@ func Parse(s string) (Reference, error) {
 		tag:             matches[2],
 	}
 	if matches[3] != "" {
+		// 匹配三个且最后一个不为空，则最后一个是digest
 		var err error
+		// 解析digest并验证是否合法
 		ref.digest, err = digest.Parse(matches[3])
 		if err != nil {
 			return nil, err
 		}
 	}
 
+	// 根据（域名或路径）、tag、digest是否为空，返回对应的Reference实现
 	r := getBestReferenceType(ref)
 	if r == nil {
 		return nil, ErrNameEmpty
@@ -327,23 +335,30 @@ func TrimNamed(ref Named) Named {
 	}
 }
 
+// 根据（域名或路径）、tag、digest是否为空，返回对应的Reference实现
 func getBestReferenceType(ref reference) Reference {
+	// 如果域名和路径都为空，有digest那么直接返回digest，否则返回nil
 	if ref.Name() == "" {
 		// Allow digest only references
+		// digest不为空，则直接返回digest
 		if ref.digest != "" {
 			return digestReference(ref.digest)
 		}
 		return nil
 	}
+	// 域名或路径不为空，且没有tag
 	if ref.tag == "" {
+		// 没有tag且digest不为空，返回canonicalReference
 		if ref.digest != "" {
 			return canonicalReference{
 				namedRepository: ref.namedRepository,
 				digest:          ref.digest,
 			}
 		}
+		// 没有tag且没有digest，则返回repository
 		return ref.namedRepository
 	}
+	// 域名或路径不为空，有tag且没有digest，则返回taggedReference
 	if ref.digest == "" {
 		return taggedReference{
 			namedRepository: ref.namedRepository,
@@ -351,6 +366,7 @@ func getBestReferenceType(ref reference) Reference {
 		}
 	}
 
+	// 域名或路径不为空，且有tag也有digest（完整）
 	return ref
 }
 
@@ -381,6 +397,8 @@ func (r repository) String() string {
 	return r.Name()
 }
 
+// 当r.domain为空，则返回r.path
+// 否则返回r.domain + "/" + r.path
 func (r repository) Name() string {
 	if r.domain == "" {
 		return r.path

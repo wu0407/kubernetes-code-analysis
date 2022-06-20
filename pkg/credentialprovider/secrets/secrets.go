@@ -26,18 +26,24 @@ import (
 // MakeDockerKeyring inspects the passedSecrets to see if they contain any DockerConfig secrets.  If they do,
 // then a DockerKeyring is built based on every hit and unioned with the defaultKeyring.
 // If they do not, then the default keyring is returned
+// 尝试从secret里查找docker仓库凭证，如果secret里有，则返回联合secret里docker凭证与提供的defaultKeyring。否则返回提供的defaultKeyring
 func MakeDockerKeyring(passedSecrets []v1.Secret, defaultKeyring credentialprovider.DockerKeyring) (credentialprovider.DockerKeyring, error) {
 	passedCredentials := []credentialprovider.DockerConfig{}
+	// 先从passedSecrets（一般是pod里定义的pull secret）里查找
 	for _, passedSecret := range passedSecrets {
+		// secret里的Data字段包含的数据，key是".dockerconfigjson"且值不为空，且secret的Type字段是"kubernetes.io/dockerconfigjson"
 		if dockerConfigJSONBytes, dockerConfigJSONExists := passedSecret.Data[v1.DockerConfigJsonKey]; (passedSecret.Type == v1.SecretTypeDockerConfigJson) && dockerConfigJSONExists && (len(dockerConfigJSONBytes) > 0) {
 			dockerConfigJSON := credentialprovider.DockerConfigJson{}
+			// 解析为credentialprovider.DockerConfigJson（docker凭证"~/.docker/config.json"文件）
 			if err := json.Unmarshal(dockerConfigJSONBytes, &dockerConfigJSON); err != nil {
 				return nil, err
 			}
 
 			passedCredentials = append(passedCredentials, dockerConfigJSON.Auths)
+		// secret里的Data字段包含的数据，key是".dockercfg"且值不为空，且secret的Type字段是"kubernetes.io/dockercfg"
 		} else if dockercfgBytes, dockercfgExists := passedSecret.Data[v1.DockerConfigKey]; (passedSecret.Type == v1.SecretTypeDockercfg) && dockercfgExists && (len(dockercfgBytes) > 0) {
 			dockercfg := credentialprovider.DockerConfig{}
+			// 解析为credentialprovider.DockerConfig（仓库地址和对应凭证）
 			if err := json.Unmarshal(dockercfgBytes, &dockercfg); err != nil {
 				return nil, err
 			}
@@ -46,6 +52,8 @@ func MakeDockerKeyring(passedSecrets []v1.Secret, defaultKeyring credentialprovi
 		}
 	}
 
+	// 如果secret里有docker凭证，将凭证转成credentialprovider.BasicDockerKeyring
+	// 返回联合secret里docker凭证与提供的defaultKeyring
 	if len(passedCredentials) > 0 {
 		basicKeyring := &credentialprovider.BasicDockerKeyring{}
 		for _, currCredentials := range passedCredentials {
@@ -54,5 +62,6 @@ func MakeDockerKeyring(passedSecrets []v1.Secret, defaultKeyring credentialprovi
 		return credentialprovider.UnionDockerKeyring{basicKeyring, defaultKeyring}, nil
 	}
 
+	// 如果secret里没有docker凭证，则返回提供的defaultKeyring
 	return defaultKeyring, nil
 }

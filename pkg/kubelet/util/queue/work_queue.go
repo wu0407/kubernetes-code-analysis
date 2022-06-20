@@ -47,6 +47,7 @@ func NewBasicWorkQueue(clock clock.Clock) WorkQueue {
 	return &basicWorkQueue{queue: queue, clock: clock}
 }
 
+// 获得queue中过期的uid列表
 func (q *basicWorkQueue) GetWork() []types.UID {
 	q.lock.Lock()
 	defer q.lock.Unlock()
@@ -61,6 +62,7 @@ func (q *basicWorkQueue) GetWork() []types.UID {
 	return items
 }
 
+// 把uid加入到queue中并设置uid的过期时间
 func (q *basicWorkQueue) Enqueue(item types.UID, delay time.Duration) {
 	q.lock.Lock()
 	defer q.lock.Unlock()

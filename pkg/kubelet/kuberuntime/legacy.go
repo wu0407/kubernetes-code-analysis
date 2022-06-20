@@ -40,15 +40,18 @@ const (
 // legacyLogSymlink composes the legacy container log path. It is only used for legacy cluster
 // logging support.
 // 比如路径/var/log/containers/xiaoke-marketing-service-java-dev-standard-2-7899db54d8-mkshh_xiaoke-java-dev_app-3d0411e62e43e0ef970498fb1b6a5a097fd494d904ff839c49ebe1f9d94454a0.log
+// 返回"/var/log/containers/{podName}_{podNamespace}_{containerName}-{containerID}.log"
 func legacyLogSymlink(containerID string, containerName, podName, podNamespace string) string {
 	return logSymlink(legacyContainerLogsDir, kubecontainer.BuildPodFullName(podName, podNamespace),
 		containerName, containerID)
 }
 
+// 输出"{containerLogsDir}/{podFullName}_{containerName}-{containerID}.log"
 func logSymlink(containerLogsDir, podFullName, containerName, containerID string) string {
 	suffix := fmt.Sprintf(".%s", legacyLogSuffix)
 	logPath := fmt.Sprintf("%s_%s-%s", podFullName, containerName, containerID)
 	// Length of a filename cannot exceed 255 characters in ext4 on Linux.
+	// logPath加suffix长度超出255字符，则从logPath中尾部截掉超出的长度
 	if len(logPath) > ext4MaxFileNameLen-len(suffix) {
 		logPath = logPath[:ext4MaxFileNameLen-len(suffix)]
 	}

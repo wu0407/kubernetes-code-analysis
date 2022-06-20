@@ -1181,7 +1181,7 @@ func (m *manager) detectSubcontainers(containerName string) error {
 
 	// Remove the old containers.
 	for _, cont := range removed {
-		// 从m.containers获取这个容器的containerData，停止houskeeping（每一秒获取cgroup子系统的状态），从containerData.memoryCache.containerCacheMap移除cgroup子系统的状态数据集合
+		// 从m.containers获取这个容器的containerData，停止housekeeping（每一秒获取cgroup子系统的状态），从containerData.memoryCache.containerCacheMap移除cgroup子系统的状态数据集合
 		// 从m.containers中移除这个容器
 		// 生成containerDeletion事件，添加这个newEvent到eventHandler里的eventStore中，发送event到关注这个event的watch的channel中
 		err = m.destroyContainer(cont.Name)

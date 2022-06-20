@@ -55,7 +55,7 @@ func NewHandlerRunner(httpGetter kubetypes.HTTPGetter, commandRunner kubecontain
 	}
 }
 
-// 执行handler的Exec（命令执行）
+// 执行container.Lifecycle的PreStop和PostStart
 func (hr *HandlerRunner) Run(containerID kubecontainer.ContainerID, pod *v1.Pod, container *v1.Container, handler *v1.Handler) (string, error) {
 	switch {
 	case handler.Exec != nil:
@@ -169,12 +169,15 @@ type appArmorAdmitHandler struct {
 	apparmor.Validator
 }
 
+// 验证pod的container的"AppArmor" profile是合法且已加载
 func (a *appArmorAdmitHandler) Admit(attrs *PodAdmitAttributes) PodAdmitResult {
 	// If the pod is already running or terminated, no need to recheck AppArmor.
+	// pod处于"Pending"状态才需要检查AppArmor
 	if attrs.Pod.Status.Phase != v1.PodPending {
 		return PodAdmitResult{Admit: true}
 	}
 
+	// 验证pod的所有container的profile是合法且已加载
 	err := a.Validate(attrs.Pod)
 	if err == nil {
 		return PodAdmitResult{Admit: true}
@@ -196,23 +199,33 @@ type noNewPrivsAdmitHandler struct {
 	kubecontainer.Runtime
 }
 
+// admit不通过，下面条件都要满足：
+// 1. pod处于"Pending"状态
+// 2. pod.Spec.Containers有一个container定义了SecurityContext且配置了SecurityContext.AllowPrivilegeEscalation且值为false
+// 3. runtime为docker
+// 4. docker的apiserver版本小于1.23.0
 func (a *noNewPrivsAdmitHandler) Admit(attrs *PodAdmitAttributes) PodAdmitResult {
 	// If the pod is already running or terminated, no need to recheck NoNewPrivs.
+	// pod处于"Pending"状态才需要检查NoNewPrivs
 	if attrs.Pod.Status.Phase != v1.PodPending {
 		return PodAdmitResult{Admit: true}
 	}
 
 	// If the containers in a pod do not require no-new-privs, admit it.
+	// 只要pod.Spec.Containers有一个container定义了SecurityContext且配置了SecurityContext.AllowPrivilegeEscalation且值为false，则返回true
+	// 其他情况返回false（比如所有container都没有配置SecurityContext、比如配置SecurityContext.AllowPrivilegeEscalation为true）
 	if !noNewPrivsRequired(attrs.Pod) {
 		return PodAdmitResult{Admit: true}
 	}
 
 	// Always admit runtimes except docker.
+	// 非docker的runtime允许
 	if a.Runtime.Type() != kubetypes.DockerContainerRuntime {
 		return PodAdmitResult{Admit: true}
 	}
 
 	// Make sure docker api version is valid.
+	// 获取docker的ApiVersion
 	rversion, err := a.Runtime.APIVersion()
 	if err != nil {
 		return PodAdmitResult{
@@ -230,6 +243,7 @@ func (a *noNewPrivsAdmitHandler) Admit(attrs *PodAdmitAttributes) PodAdmitResult
 		}
 	}
 	// If the version is less than 1.23 it will return -1 above.
+	// docker ApiVersion小于1.23
 	if v == -1 {
 		return PodAdmitResult{
 			Admit:   false,
@@ -241,9 +255,12 @@ func (a *noNewPrivsAdmitHandler) Admit(attrs *PodAdmitAttributes) PodAdmitResult
 	return PodAdmitResult{Admit: true}
 }
 
+// 只要pod.Spec.Containers有一个container定义了SecurityContext且配置了SecurityContext.AllowPrivilegeEscalation且值为false，则返回true
+// 其他情况返回false
 func noNewPrivsRequired(pod *v1.Pod) bool {
 	// Iterate over pod containers and check if we added no-new-privs.
 	for _, c := range pod.Spec.Containers {
+		// 配置了SecurityContext且配置了c.SecurityContext.AllowPrivilegeEscalation且值为false，则返回true
 		if c.SecurityContext != nil && c.SecurityContext.AllowPrivilegeEscalation != nil && !*c.SecurityContext.AllowPrivilegeEscalation {
 			return true
 		}
@@ -261,18 +278,26 @@ type procMountAdmitHandler struct {
 	kubecontainer.Runtime
 }
 
+// admit不通过，下面条件都要满足：
+// 1. pod处于"Pending"状态
+// 2. pod.Spec.Containers有一个container定义了SecurityContext且配置了SecurityContext.ProcMount的值不是"Default"
+// 3. runtime为docker
+// 4. docker的apiserver版本小于1.38.0 
 func (a *procMountAdmitHandler) Admit(attrs *PodAdmitAttributes) PodAdmitResult {
 	// If the pod is already running or terminated, no need to recheck NoNewPrivs.
+	// pod处于"Pending"状态才需要检查
 	if attrs.Pod.Status.Phase != v1.PodPending {
 		return PodAdmitResult{Admit: true}
 	}
 
 	// If the containers in a pod only need the default ProcMountType, admit it.
+	// pod.Spec.Containers的SecurityContext都未设置，或设置c.SecurityContext.ProcMount的值是"Default"
 	if procMountIsDefault(attrs.Pod) {
 		return PodAdmitResult{Admit: true}
 	}
 
 	// Always admit runtimes except docker.
+	// 非docker的runtime允许
 	if a.Runtime.Type() != kubetypes.DockerContainerRuntime {
 		return PodAdmitResult{Admit: true}
 	}
@@ -296,6 +321,7 @@ func (a *procMountAdmitHandler) Admit(attrs *PodAdmitAttributes) PodAdmitResult 
 		}
 	}
 	// If the version is less than 1.38 it will return -1 above.
+	// docker的apiversion小于1.38.0
 	if v == -1 {
 		return PodAdmitResult{
 			Admit:   false,
@@ -307,6 +333,8 @@ func (a *procMountAdmitHandler) Admit(attrs *PodAdmitAttributes) PodAdmitResult 
 	return PodAdmitResult{Admit: true}
 }
 
+// 只要pod.Spec.Containers里有一个container，设置c.SecurityContext.ProcMount的值不是"Default"，则返回false
+// 否则返回true
 func procMountIsDefault(pod *v1.Pod) bool {
 	// Iterate over pod containers and check if we are using the DefaultProcMountType
 	// for all containers.

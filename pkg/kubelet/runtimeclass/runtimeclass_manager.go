@@ -58,6 +58,7 @@ func (m *Manager) WaitForCacheSync(stopCh <-chan struct{}) {
 // LookupRuntimeHandler returns the RuntimeHandler string associated with the given RuntimeClass
 // name (or the default of "" for nil). If the RuntimeClass is not found, it returns an
 // errors.NotFound error.
+// 从informer中获取runtimeClass
 func (m *Manager) LookupRuntimeHandler(runtimeClassName *string) (string, error) {
 	if runtimeClassName == nil || *runtimeClassName == "" {
 		// The default RuntimeClass always resolves to the empty runtime handler.

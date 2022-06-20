@@ -29,7 +29,10 @@ const (
 	minQuotaPeriod = 1000
 )
 
+// 这里代码跟pkg\kubelet\cm\helpers_linux.go里差不多，指数返回的值不是uint64，而是int64
+
 // milliCPUToShares converts milliCPU to CPU shares
+// 一个cpu等于1024 cpu_share，最小的cpu_share为2
 func milliCPUToShares(milliCPU int64) int64 {
 	if milliCPU == 0 {
 		// Return 2 here to really match kernel default for zero milliCPU.
@@ -44,6 +47,7 @@ func milliCPUToShares(milliCPU int64) int64 {
 }
 
 // milliCPUToQuota converts milliCPU to CFS quota and period values
+// quota = milliCPU * period/1000，最小的quota为1000（1ms）
 func milliCPUToQuota(milliCPU int64, period int64) (quota int64) {
 	// CFS quota is measured in two values:
 	//  - cfs_period_us=100ms (the amount of time to measure usage across)

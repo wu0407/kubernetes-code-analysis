@@ -25,6 +25,7 @@ type Cgroup struct {
 
 	// Paths represent the absolute cgroups paths to join.
 	// This takes precedence over Path.
+	// cgroup子系统名称和对应的cgroup路径
 	Paths map[string]string
 
 	// Resources contains various cgroups settings to apply

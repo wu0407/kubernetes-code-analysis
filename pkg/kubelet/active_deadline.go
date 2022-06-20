@@ -67,7 +67,9 @@ func (m *activeDeadlineHandler) ShouldSync(pod *v1.Pod) bool {
 
 // ShouldEvict returns true if the pod is past its active deadline.
 // It dispatches an event that the pod should be evicted if it is past its deadline.
+// 判断pod的active时间长度没有超过pod.Spec.ActiveDeadlineSeconds
 func (m *activeDeadlineHandler) ShouldEvict(pod *v1.Pod) lifecycle.ShouldEvictResponse {
+	// pod的active时间长度没有超过pod.Spec.ActiveDeadlineSeconds或没有设置pod.Spec.ActiveDeadlineSeconds，则返回evict false
 	if !m.pastActiveDeadline(pod) {
 		return lifecycle.ShouldEvictResponse{Evict: false}
 	}
@@ -76,12 +78,15 @@ func (m *activeDeadlineHandler) ShouldEvict(pod *v1.Pod) lifecycle.ShouldEvictRe
 }
 
 // pastActiveDeadline returns true if the pod has been active for more than its ActiveDeadlineSeconds
+// 检测pod status中StartTime距现在时间长度，是否超出pod.Spec.ActiveDeadlineSeconds
+// 即pod的active时间长度是否超过pod.Spec.ActiveDeadlineSeconds
 func (m *activeDeadlineHandler) pastActiveDeadline(pod *v1.Pod) bool {
 	// no active deadline was specified
 	if pod.Spec.ActiveDeadlineSeconds == nil {
 		return false
 	}
 	// get the latest status to determine if it was started
+	// 从status manager中获取pod的最新status
 	podStatus, ok := m.podStatusProvider.GetPodStatus(pod.UID)
 	if !ok {
 		podStatus = pod.Status

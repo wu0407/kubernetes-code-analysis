@@ -97,15 +97,18 @@ func NewObjectCache(
 	}
 }
 
+// 创建一个没有Indexers和Indices的threadSafeMap
 func (c *objectCache) newStore() cache.Store {
 	// TODO: We may consider created a dedicated store keeping just a single
 	// item, instead of using a generic store implementation for this purpose.
 	// However, simple benchmarks show that memory overhead in that case is
 	// decrease from ~600B to ~300B per object. So we are not optimizing it
 	// until we will see a good reason for that.
+	// 创建一个没有Indexers和Indices的threadSafeMap
 	return cache.NewStore(cache.MetaNamespaceKeyFunc)
 }
 
+// 创建一个只监听这个namespace和name的资源的reflector和store
 func (c *objectCache) newReflector(namespace, name string) *objectCacheItem {
 	fieldSelector := fields.Set{"metadata.name": name}.AsSelector().String()
 	listFunc := func(options metav1.ListOptions) (runtime.Object, error) {
@@ -134,6 +137,7 @@ func (c *objectCache) newReflector(namespace, name string) *objectCacheItem {
 	}
 }
 
+// 增加一个item的引用计数，如果这个对象不存在，则创建一个新的reflector（只watch和list这个资源）
 func (c *objectCache) AddReference(namespace, name string) {
 	key := objectKey{namespace: namespace, name: name}
 
@@ -146,12 +150,14 @@ func (c *objectCache) AddReference(namespace, name string) {
 	defer c.lock.Unlock()
 	item, exists := c.items[key]
 	if !exists {
+		// 不存在，则创建一个新的reflector（只watch和list这个资源）
 		item = c.newReflector(namespace, name)
 		c.items[key] = item
 	}
 	item.refCount++
 }
 
+// 减少这个item的引用次数，如果应用次数等于0，则停止这个item的reflector，并删除这个item
 func (c *objectCache) DeleteReference(namespace, name string) {
 	key := objectKey{namespace: namespace, name: name}
 
@@ -161,6 +167,7 @@ func (c *objectCache) DeleteReference(namespace, name string) {
 		item.refCount--
 		if item.refCount == 0 {
 			// Stop the underlying reflector.
+			// 这个item，没有任何pod需要则停止这个item的reflector
 			item.stop()
 			delete(c.items, key)
 		}
@@ -176,6 +183,7 @@ func (c *objectCache) key(namespace, name string) string {
 	return name
 }
 
+// 从c.items获取对象的objectCacheItem，在objectCacheItem的store中获取对象的资源（secret或configmap）。如果secret或configmap是不可修改的，则停止这个对象的reflector。
 func (c *objectCache) Get(namespace, name string) (runtime.Object, error) {
 	key := objectKey{namespace: namespace, name: name}
 
@@ -208,7 +216,9 @@ func (c *objectCache) Get(namespace, name string) (runtime.Object, error) {
 		//   already have it from here
 		// - doing that would require significant refactoring to reflector
 		// we limit ourselves to just quickly stop the reflector here.
+		// 如果secret或configmap是不可修改的，则停止这个对象的reflector
 		if utilfeature.DefaultFeatureGate.Enabled(features.ImmutableEphemeralVolumes) && c.isImmutable(object) {
+			// 关闭i.stopCh来这个停止对象的reflector
 			if item.stop() {
 				klog.V(4).Infof("Stopped watching for changes of %q/%q - object is immutable", namespace, name)
 			}

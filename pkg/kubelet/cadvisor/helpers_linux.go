@@ -34,6 +34,9 @@ type imageFsInfoProvider struct {
 
 // ImageFsInfoLabel returns the image fs label for the configured runtime.
 // For remote runtimes, it handles additional runtimes natively understood by cAdvisor.
+// 如果runtime是docker，则返回"docker-images"
+// 如果runtime是remote，如果runtimeEndpoint为"/var/run/crio/crio.sock"或"unix:///var/run/crio/crio.sock"（即运行时为cri-o），返回"crio-images"
+// 其他runtime，不支持，返回错误
 func (i *imageFsInfoProvider) ImageFsInfoLabel() (string, error) {
 	switch i.runtime {
 	case types.DockerContainerRuntime:

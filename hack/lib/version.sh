@@ -79,6 +79,8 @@ kube::version::get_version_vars() {
       # shellcheck disable=SC2001
       DASHES_IN_VERSION=$(echo "${KUBE_GIT_VERSION}" | sed "s/[^-]//g")
       if [[ "${DASHES_IN_VERSION}" == "---" ]] ; then
+        # 比如KUBE_GIT_VERSION为v1.25.0-alpha.0-601-gfdb2d544751adc
+        # 则输出KUBE_GIT_VERSION为v1.25.0-alpha.0.601+fdb2d544751adc
         # shellcheck disable=SC2001
         # We have distance to subversion (v1.1.0-subversion-1-gCommitHash)
         KUBE_GIT_VERSION=$(echo "${KUBE_GIT_VERSION}" | sed "s/-\([0-9]\{1,\}\)-g\([0-9a-f]\{14\}\)$/.\1\+\2/")

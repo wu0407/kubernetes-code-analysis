@@ -148,6 +148,7 @@ func (dswp *desiredStateOfWorldPopulator) Run(sourcesReady config.SourcesReady, 
 	wait.Until(dswp.populatorLoop, dswp.loopSleepDuration, stopCh)
 }
 
+// 设置dswp.pods.processedPods为false
 func (dswp *desiredStateOfWorldPopulator) ReprocessPod(
 	podName volumetypes.UniquePodName) {
 	dswp.markPodProcessingFailed(podName)

@@ -57,6 +57,7 @@ var (
 
 // generateEnvList converts KeyValue list to a list of strings, in the form of
 // '<key>=<value>', which can be understood by docker.
+// 将[]*runtimeapi.KeyValue转成'<key>=<value>'格式的[]string
 func generateEnvList(envs []*runtimeapi.KeyValue) (result []string) {
 	for _, env := range envs {
 		result = append(result, fmt.Sprintf("%s=%s", env.Key, env.Value))
@@ -68,6 +69,7 @@ func generateEnvList(envs []*runtimeapi.KeyValue) (result []string) {
 // labels. This is necessary because docker does not support annotations;
 // we *fake* annotations using labels. Note that docker labels are not
 // updatable.
+// 将annotations的key添加"annotation."前缀，然后与labels进行合并
 func makeLabels(labels, annotations map[string]string) map[string]string {
 	merged := make(map[string]string)
 	for k, v := range labels {
@@ -127,6 +129,7 @@ func extractLabels(input map[string]string) (map[string]string, map[string]strin
 // 'ro', if the path is read only
 // 'Z', if the volume requires SELinux relabeling
 // propagation mode such as 'rslave'
+// 将mounts []*runtimeapi.Mount转成'<HostPath>:<ContainerPath>[:options]'格式的[]string
 func generateMountBindings(mounts []*runtimeapi.Mount) []string {
 	result := make([]string, 0, len(mounts))
 	for _, m := range mounts {
@@ -143,6 +146,7 @@ func generateMountBindings(mounts []*runtimeapi.Mount) []string {
 			attrs = append(attrs, "Z")
 		}
 		switch m.Propagation {
+		// 默认为"private"
 		case runtimeapi.MountPropagation_PROPAGATION_PRIVATE:
 			// noop, private is default
 		case runtimeapi.MountPropagation_PROPAGATION_BIDIRECTIONAL:
@@ -244,6 +248,8 @@ func (f *dockerFilter) AddLabel(key, value string) {
 }
 
 // parseUserFromImageUser splits the user out of an user:group string.
+// 对id进行解析出user
+// 根据格式user[:group]，返回user
 func parseUserFromImageUser(id string) string {
 	if id == "" {
 		return id
@@ -258,7 +264,10 @@ func parseUserFromImageUser(id string) string {
 
 // getUserFromImageUser gets uid or user name of the image user.
 // If user is numeric, it will be treated as uid; or else, it is treated as user name.
+// 解析出用户id或用户名
 func getUserFromImageUser(imageUser string) (*int64, string) {
+	// 对id进行解析出user
+	// 根据格式user[:group]，返回user
 	user := parseUserFromImageUser(imageUser)
 	// return both nil if user is not specified in the image.
 	if user == "" {
@@ -285,6 +294,8 @@ func getUserFromImageUser(imageUser string) (*int64, string) {
 // In that case we have to create the container with a randomized name.
 // TODO(random-liu): Remove this work around after docker 1.11 is deprecated.
 // TODO(#33189): Monitor the tests to see if the fix is sufficient.
+// 为了解决docker 1.11版本以及之前版本的问题，如果docker移除容器发生"device or resource busy"问题，这个容器信息可能未被清理掉。导致创建相同名字容器时出现失败"Conflict. {container id} is already in use by container {container id}"。
+// 解决这个问题方法是，则再次执行移除发生冲突的旧容器。如果移除成功，则返回nil和原来的错误。如果移除失败，则对容器名字添加随机数字进行再次创建容器，返回创建的容器的返回和错误
 func recoverFromCreationConflictIfNeeded(client libdocker.Interface, createConfig dockertypes.ContainerCreateConfig, err error) (*dockercontainer.ContainerCreateCreatedBody, error) {
 	matches := conflictRE.FindStringSubmatch(err.Error())
 	if len(matches) != 2 {
@@ -324,25 +335,49 @@ func transformStartContainerError(err error) error {
 }
 
 // ensureSandboxImageExists pulls the sandbox image when it's not present.
+// 先检查本地是否有镜像，有镜像且tag、digest一致，则直接返回
+// 否则进行拉取镜像：
+// 遍历所有注册并启用的provider提供的凭证（pod的pull secret没有使用），找到匹配的image仓库地址的凭证列表和是否找到匹配凭证（sandbox没有使用pod里定义pull secret）
+// 目前内置云厂商（aws、gcp、azure）和dockerconfig provider
+// 如果是dockerconfig provider
+// 先从["/var/lib/kubelet/config.json", "当前目录下的config.json", "~/.docker/config.json", "/.docker/config.json"]返回第一个存在且正确配置文件里的内容
+// 没有读取到，则从["/var/lib/kubelet/.dockercfg", "当前目录/.dockercfg", "~/.dockercfg", "/.dockercfg"]，返回第一个存在且正确配置文件里的内容
+// 如果没有读取到任何凭证，则尝试不使用凭证进行拉取。
+// 否则使用凭证进行拉取。
+// 拉取镜像会启动一个goroutine 每10s记录拉取状态（进度条）到日志
 func ensureSandboxImageExists(client libdocker.Interface, image string) error {
+	// 执行docker image inspect，并校验镜像地址与返回的结果tag、digest是否一致
 	_, err := client.InspectImageByRef(image)
+	// 镜像存在且tag或digest是一致的，直接返回
 	if err == nil {
 		return nil
 	}
+	// 不是镜像不存在的错误，直接返回错误（比如镜像digest不一致）
 	if !libdocker.IsImageNotFoundError(err) {
 		return fmt.Errorf("failed to inspect sandbox image %q: %v", image, err)
 	}
 
+	// 镜像不存在情况
+
+	// 从镜像地址解析出仓库地址、镜像tag、镜像digest
 	repoToPull, _, _, err := parsers.ParseImageName(image)
 	if err != nil {
 		return err
 	}
 
+	// 返回注册且启用的dockerConfigProvider，credentialprovider.defaultDockerConfigProvider一直启用
 	keyring := credentialprovider.NewDockerKeyring()
+	// 遍历所有注册并启用的provider提供的凭证（pod的pull secret没有使用），找到匹配的image仓库地址的凭证列表和是否找到匹配凭证（sandbox没有使用pod里定义pull secret）
+	// 目前内置云厂商（aws、gcp、azure）和dockerconfig provider
+	// 如果是dockerconfig provider
+	// 先从["/var/lib/kubelet/config.json", "当前目录下的config.json", "~/.docker/config.json", "/.docker/config.json"]返回第一个存在且正确配置文件里的内容
+	// 没有读取到，则从["/var/lib/kubelet/.dockercfg", "当前目录/.dockercfg", "~/.dockercfg", "/.dockercfg"]，返回第一个存在且正确配置文件里的内容
 	creds, withCredentials := keyring.Lookup(repoToPull)
+	// 未找到匹配的凭证，尝试不提供凭证来拉取镜像
 	if !withCredentials {
 		klog.V(3).Infof("Pulling image %q without credentials", image)
 
+		// 拉取镜像，并启动一个goroutine 每10s记录拉取状态（进度条）到日志
 		err := client.PullImage(image, dockertypes.AuthConfig{}, dockertypes.ImagePullOptions{})
 		if err != nil {
 			return fmt.Errorf("failed pulling image %q: %v", image, err)
@@ -353,7 +388,9 @@ func ensureSandboxImageExists(client libdocker.Interface, image string) error {
 
 	var pullErrs []error
 	for _, currentCreds := range creds {
+		// currentCreds里只提供了 AuthConfig的Username、Password、Email字段
 		authConfig := dockertypes.AuthConfig(currentCreds)
+		// 拉取镜像，并启动一个goroutine 每10s记录拉取状态（进度条）到日志
 		err := client.PullImage(image, authConfig, dockertypes.ImagePullOptions{})
 		// If there was no error, return success
 		if err == nil {
@@ -383,6 +420,7 @@ func getAppArmorOpts(profile string) ([]dockerOpt, error) {
 }
 
 // fmtDockerOpts formats the docker security options using the given separator.
+// 返回[]string{"{opt.key}{sep}{opt.value}", "{opt.key}{sep}{opt.value}"}风格输出
 func fmtDockerOpts(opts []dockerOpt, sep rune) []string {
 	fmtOpts := make([]string, len(opts))
 	for i, opt := range opts {

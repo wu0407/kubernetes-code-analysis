@@ -83,6 +83,7 @@ func (kl *Kubelet) updatePodCIDR(cidr string) (bool, error) {
 // GetPodDNS returns DNS settings for the pod.
 // This function is defined in kubecontainer.RuntimeHelper interface so we
 // have to implement it.
+// 生成pod的dns配置
 func (kl *Kubelet) GetPodDNS(pod *v1.Pod) (*runtimeapi.DNSConfig, error) {
 	return kl.dnsConfigurer.GetPodDNS(pod)
 }

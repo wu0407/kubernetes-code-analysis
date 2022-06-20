@@ -55,6 +55,7 @@ const (
 	DockerPullableImageIDPrefix = "docker-pullable://"
 )
 
+// 生成"k8s_POD_{pod name}_{pod namespace}_{pod uid}_{pod attempt}"
 func makeSandboxName(s *runtimeapi.PodSandboxConfig) string {
 	return strings.Join([]string{
 		kubePrefix,                            // 0
@@ -66,6 +67,7 @@ func makeSandboxName(s *runtimeapi.PodSandboxConfig) string {
 	}, nameDelimiter)
 }
 
+// 生成"k8s_{container name}_{pod name}_{pod namespace}_{pod uid}_{container attempt}"
 func makeContainerName(s *runtimeapi.PodSandboxConfig, c *runtimeapi.ContainerConfig) string {
 	return strings.Join([]string{
 		kubePrefix,                            // 0

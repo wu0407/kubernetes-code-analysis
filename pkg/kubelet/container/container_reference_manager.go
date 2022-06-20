@@ -38,6 +38,7 @@ func NewRefManager() *RefManager {
 }
 
 // SetRef stores a reference to a pod's container, associating it with the given container ID.
+// 将id和对应的ref添加到c.containerIDToRef
 func (c *RefManager) SetRef(id ContainerID, ref *v1.ObjectReference) {
 	c.Lock()
 	defer c.Unlock()
@@ -45,6 +46,7 @@ func (c *RefManager) SetRef(id ContainerID, ref *v1.ObjectReference) {
 }
 
 // ClearRef forgets the given container id and its associated container reference.
+// 清除container id对应的ObjectReference
 func (c *RefManager) ClearRef(id ContainerID) {
 	c.Lock()
 	defer c.Unlock()
@@ -52,6 +54,7 @@ func (c *RefManager) ClearRef(id ContainerID) {
 }
 
 // GetRef returns the container reference of the given ID, or (nil, false) if none is stored.
+// 返回container id对应的ObjectReference
 func (c *RefManager) GetRef(id ContainerID) (ref *v1.ObjectReference, ok bool) {
 	c.RLock()
 	defer c.RUnlock()

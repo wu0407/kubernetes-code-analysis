@@ -61,6 +61,7 @@ func NewBackOff(initial, max time.Duration) *Backoff {
 }
 
 // Get the current backoff Duration
+// 返回id的回退周期
 func (p *Backoff) Get(id string) time.Duration {
 	p.RLock()
 	defer p.RUnlock()
@@ -141,6 +142,7 @@ func (p *Backoff) IsInBackOffSinceUpdate(id string, eventTime time.Time) bool {
 
 // Garbage collect records that have aged past maxDuration. Backoff users are expected
 // to invoke this periodically.
+// 清理开始回退时间离现在已经超过2倍最大回收周期的item
 func (p *Backoff) GC() {
 	p.Lock()
 	defer p.Unlock()

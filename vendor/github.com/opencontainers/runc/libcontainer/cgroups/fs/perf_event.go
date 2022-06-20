@@ -14,6 +14,8 @@ func (s *PerfEventGroup) Name() string {
 	return "perf_event"
 }
 
+// 创建"perf_event" subsystem cgroup子系统路径
+// 将d.pid（不为-1时）加入到"perf_event" subsystem cgroup下的"cgroup.procs"文件
 func (s *PerfEventGroup) Apply(d *cgroupData) error {
 	// we just want to join this group even though we don't set anything
 	if _, err := d.join("perf_event"); err != nil && !cgroups.IsNotFound(err) {

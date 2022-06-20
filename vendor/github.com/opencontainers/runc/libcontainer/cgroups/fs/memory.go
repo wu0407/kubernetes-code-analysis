@@ -27,13 +27,28 @@ func (s *MemoryGroup) Name() string {
 	return "memory"
 }
 
+// 根据cgroup.Resources判断是否要设置memory cgroup
+// 如果cgroup路径下面没有子cgroup路径且cgroup.procs里没有进程绑定了，则将"-1"写入到path下的memory.kmem.limit_in_bytes文件，设置为无限制
+// 将d.pid（不为-1时）加入到subsystem cgroup下的"cgroup.procs"文件
+// 发生任何错误移除memory subsystem子系统的绝对路径
 func (s *MemoryGroup) Apply(d *cgroupData) (err error) {
+	// 返回memory subsystem子系统的绝对路径，比如"/sys/fs/cgroup/memory/system.slice/kubelet.service"
 	path, err := d.path("memory")
 	if err != nil && !cgroups.IsNotFound(err) {
 		return err
 	} else if path == "" {
 		return nil
 	}
+	// 设了memory的资源值
+	// 返回true为
+	// 或的关系
+	// cgroup.Resources.Memory不为0
+	// cgroup.Resources.MemoryReservation不为0
+	// cgroup.Resources.MemorySwap大于0
+	// cgroup.Resources.KernelMemory大于0
+	// cgroup.Resources.KernelMemoryTCP大于0
+	// cgroup.Resources.OomKillDisable为true
+	// cgroup.Resources.MemorySwappiness不为空且其值不为-1
 	if memoryAssigned(d.config) {
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			if err := os.MkdirAll(path, 0755); err != nil {
@@ -43,11 +58,16 @@ func (s *MemoryGroup) Apply(d *cgroupData) (err error) {
 			// is created by libcontainer, otherwise we might get
 			// error when people use `cgroupsPath` to join an existed
 			// cgroup whose kernel memory is not initialized.
+			// 只设置kernel memory accouting
+			// 将"1"写入到path下的memory.kmem.limit_in_bytes文件
+			// 如果发生了"EBUSY"错误，说明cgroup路径下面还有子cgroup路径或cgroup.procs里已经有进程绑定了，直接返回
+			// 否则将"-1"写入到path下的memory.kmem.limit_in_bytes文件，设置为无限制
 			if err := EnableKernelMemoryAccounting(path); err != nil {
 				return err
 			}
 		}
 	}
+	// 发生任何错误移除path
 	defer func() {
 		if err != nil {
 			os.RemoveAll(path)
@@ -56,6 +76,8 @@ func (s *MemoryGroup) Apply(d *cgroupData) (err error) {
 
 	// We need to join memory cgroup after set memory limits, because
 	// kmem.limit_in_bytes can only be set when the cgroup is empty.
+	// 创建subsystem cgroup子系统路径
+	// 将pid加入到subsystem cgroup下的"cgroup.procs"文件
 	_, err = d.join("memory")
 	if err != nil && !cgroups.IsNotFound(err) {
 		return err
@@ -247,6 +269,15 @@ func (s *MemoryGroup) GetStats(path string, stats *cgroups.Stats) error {
 	return nil
 }
 
+// 返回true为
+// 或的关系
+// cgroup.Resources.Memory不为0
+// cgroup.Resources.MemoryReservation不为0
+// cgroup.Resources.MemorySwap大于0
+// cgroup.Resources.KernelMemory大于0
+// cgroup.Resources.KernelMemoryTCP大于0
+// cgroup.Resources.OomKillDisable为true
+// cgroup.Resources.MemorySwappiness不为空且其值不为-1
 func memoryAssigned(cgroup *configs.Cgroup) bool {
 	return cgroup.Resources.Memory != 0 ||
 		cgroup.Resources.MemoryReservation != 0 ||

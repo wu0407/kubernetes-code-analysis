@@ -191,6 +191,7 @@ func clearFSInfo(path string) {
 	clearBackingDev(path)
 }
 
+// 返回dirApplierMap[path]里的值
 func getApplier(path string) common.LinuxVolumeQuotaApplier {
 	dirApplierLock.Lock()
 	defer dirApplierLock.Unlock()
@@ -356,16 +357,20 @@ func AssignQuota(m mount.Interface, path string, poduid types.UID, bytes *resour
 }
 
 // GetConsumption -- retrieve the consumption (in bytes) of the directory
+// 返回目录占用的磁盘大小
 func GetConsumption(path string) (*resource.Quantity, error) {
 	// Note that we actually need to hold the lock at least through
 	// running the quota command, so it can't get recycled behind our back
 	quotaLock.Lock()
 	defer quotaLock.Unlock()
+	// 返回dirApplierMap[path]
 	applier := getApplier(path)
 	// No applier means directory is not under quota management
 	if applier == nil {
 		return nil, nil
 	}
+	// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} quota -p -N -n -v -b {id}"
+	// 返回命令输出的数字乘以1024
 	ibytes, err := applier.GetConsumption(path, dirQuotaMap[path])
 	if err != nil {
 		return nil, err
@@ -374,16 +379,21 @@ func GetConsumption(path string) (*resource.Quantity, error) {
 }
 
 // GetInodes -- retrieve the number of inodes in use under the directory
+// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} quota -p -N -n -v -i {id}"
+// 返回命令输出的数字
 func GetInodes(path string) (*resource.Quantity, error) {
 	// Note that we actually need to hold the lock at least through
 	// running the quota command, so it can't get recycled behind our back
 	quotaLock.Lock()
 	defer quotaLock.Unlock()
+	// 返回dirApplierMap[path]里的值
 	applier := getApplier(path)
 	// No applier means directory is not under quota management
 	if applier == nil {
 		return nil, nil
 	}
+	// 执行"/usr/sbin/xfs_quota -t /tmp/mounts{xxx} -P/dev/null -D/dev/null -x -f {mountpoint} quota -p -N -n -v -i {id}"
+	// 返回命令输出的数字
 	inodes, err := applier.GetInodes(path, dirQuotaMap[path])
 	if err != nil {
 		return nil, err

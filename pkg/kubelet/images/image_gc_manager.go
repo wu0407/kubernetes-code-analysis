@@ -139,9 +139,11 @@ func (i *imageCache) get() []container.Image {
 // Information about the images we track.
 type imageRecord struct {
 	// Time when this image was first detected.
+	// 第一次发现，设置发现时间
 	firstDetected time.Time
 
 	// Time when we last saw this image being used.
+	// 未使用的镜像，不会更新，使用中的镜像，会在detectImages里被更新
 	lastUsed time.Time
 
 	// Size of the image in bytes.
@@ -181,7 +183,7 @@ func (im *realImageGCManager) Start() {
 		if im.initialized {
 			ts = time.Now()
 		}
-		// 同步im.imageRecords为正在使用的镜像
+		// 同步im.imageRecords为node上所有的镜像
 		_, err := im.detectImages(ts)
 		if err != nil {
 			klog.Warningf("[imageGCManager] Failed to monitor images: %v", err)
@@ -210,7 +212,7 @@ func (im *realImageGCManager) GetImageList() ([]container.Image, error) {
 	return im.imageCache.get(), nil
 }
 
-// 获得正在使用的镜像id集合和同步im.imageRecords为正在使用的镜像
+// 获得正在使用的镜像id集合和同步im.imageRecords为node上所有的镜像
 func (im *realImageGCManager) detectImages(detectTime time.Time) (sets.String, error) {
 	imagesInUse := sets.NewString()
 
@@ -259,6 +261,7 @@ func (im *realImageGCManager) detectImages(detectTime time.Time) (sets.String, e
 		}
 
 		// Set last used time to now if the image is being used.
+		// image.ID在imagesInUse里
 		if isImageUsed(image.ID, imagesInUse) {
 			klog.V(5).Infof("Setting Image ID %s lastUsed to %v", image.ID, now)
 			im.imageRecords[image.ID].lastUsed = now
@@ -327,6 +330,7 @@ func (im *realImageGCManager) GarbageCollect() error {
 	return nil
 }
 
+// 移除node上未使用的镜像
 func (im *realImageGCManager) DeleteUnusedImages() error {
 	klog.Infof("attempting to delete unused images")
 	_, err := im.freeSpace(math.MaxInt64, time.Now())
@@ -339,7 +343,9 @@ func (im *realImageGCManager) DeleteUnusedImages() error {
 // bytes freed is always returned.
 // Note that error may be nil and the number of bytes free may be less
 // than bytesToFree.
+// 移除node上未使用的镜像，返回移除的镜像总大小
 func (im *realImageGCManager) freeSpace(bytesToFree int64, freeTime time.Time) (int64, error) {
+	// 获得正在使用的镜像id集合和同步im.imageRecords为node上所有的镜像
 	imagesInUse, err := im.detectImages(freeTime)
 	if err != nil {
 		return 0, err
@@ -349,8 +355,10 @@ func (im *realImageGCManager) freeSpace(bytesToFree int64, freeTime time.Time) (
 	defer im.imageRecordsLock.Unlock()
 
 	// Get all images in eviction order.
+	// 过滤出未使用的image
 	images := make([]evictionInfo, 0, len(im.imageRecords))
 	for image, record := range im.imageRecords {
+		// 忽略正在使用的image
 		if isImageUsed(image, imagesInUse) {
 			klog.V(5).Infof("Image ID %s is being used", image)
 			continue
@@ -360,6 +368,8 @@ func (im *realImageGCManager) freeSpace(bytesToFree int64, freeTime time.Time) (
 			imageRecord: *record,
 		})
 	}
+	// 先根据lastUsed时间进行排序，lastUsed时间是不一样，则lastUsed时间较早的排前面
+	// lastUsed时间是一样，则比较firstDetected时间，firstDetected时间较早的排前面。如果一样，则按照出现顺序进行排序。
 	sort.Sort(byLastUsedAndDetected(images))
 
 	// Delete unused images until we've freed up enough space.
@@ -376,6 +386,7 @@ func (im *realImageGCManager) freeSpace(bytesToFree int64, freeTime time.Time) (
 		// Avoid garbage collect the image if the image is not old enough.
 		// In such a case, the image may have just been pulled down, and will be used by a container right away.
 
+		// 新发现的镜像时间，还没有经过im.policy.MinAge，则跳过
 		if freeTime.Sub(image.firstDetected) < im.policy.MinAge {
 			klog.V(5).Infof("Image ID %s has age %v which is less than the policy's minAge of %v, not eligible for garbage collection", image.id, freeTime.Sub(image.firstDetected), im.policy.MinAge)
 			continue
@@ -383,6 +394,7 @@ func (im *realImageGCManager) freeSpace(bytesToFree int64, freeTime time.Time) (
 
 		// Remove image. Continue despite errors.
 		klog.Infof("[imageGCManager]: Removing image %q to free %d bytes", image.id, image.size)
+		// 调用cri，将镜像删除
 		err := im.runtime.RemoveImage(container.ImageSpec{Image: image.id})
 		if err != nil {
 			deletionErrors = append(deletionErrors, err)
@@ -411,14 +423,19 @@ type byLastUsedAndDetected []evictionInfo
 
 func (ev byLastUsedAndDetected) Len() int      { return len(ev) }
 func (ev byLastUsedAndDetected) Swap(i, j int) { ev[i], ev[j] = ev[j], ev[i] }
+// 先根据lastUsed时间进行排序，lastUsed时间是不一样，则lastUsed时间较早的排前面
+// lastUsed时间是一样，则比较firstDetected时间，firstDetected时间较早的排前面。如果一样，则按照出现顺序排序。
 func (ev byLastUsedAndDetected) Less(i, j int) bool {
 	// Sort by last used, break ties by detected.
+	// lastUsed时间是一样，则比较firstDetected时间，时间较早的排前面。如果一样，则按照出现顺序排序
 	if ev[i].lastUsed.Equal(ev[j].lastUsed) {
 		return ev[i].firstDetected.Before(ev[j].firstDetected)
 	}
+	// lastUsed时间是不一样，则lastUsed时间较早的排前面
 	return ev[i].lastUsed.Before(ev[j].lastUsed)
 }
 
+// imageID是否在imagesInUse里
 func isImageUsed(imageID string, imagesInUse sets.String) bool {
 	// Check the image ID.
 	if _, ok := imagesInUse[imageID]; ok {

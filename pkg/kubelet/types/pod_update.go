@@ -98,6 +98,7 @@ func GetValidatedSources(sources []string) ([]string, error) {
 }
 
 // GetPodSource returns the source of the pod based on the annotation.
+// 获取pod的annotations "kubernetes.io/config.source"值
 func GetPodSource(pod *v1.Pod) (string, error) {
 	if pod.Annotations != nil {
 		if source, ok := pod.Annotations[ConfigSourceAnnotationKey]; ok {
@@ -138,22 +139,27 @@ func (sp SyncPodType) String() string {
 }
 
 // IsMirrorPod returns true if the passed Pod is a Mirror Pod.
+// pod有annotations[kubernetes.io/config.mirror]
 func IsMirrorPod(pod *v1.Pod) bool {
 	_, ok := pod.Annotations[ConfigMirrorAnnotationKey]
 	return ok
 }
 
 // IsStaticPod returns true if the pod is a static pod.
+// pod的annotation["kubernetes.io/config.source"]值不是"api"返回true
 func IsStaticPod(pod *v1.Pod) bool {
 	source, err := GetPodSource(pod)
 	return err == nil && source != ApiserverSource
 }
 
 // IsCriticalPod returns true if pod's priority is greater than or equal to SystemCriticalPriority.
+// pod是static pod或mirror pod，或pod设置了优先级且优先级大于2000000000，返回true。其他情况返回false
 func IsCriticalPod(pod *v1.Pod) bool {
+	// pod的annotation["kubernetes.io/config.source"]值不是"api"返回true
 	if IsStaticPod(pod) {
 		return true
 	}
+	// pod有annotations[kubernetes.io/config.mirror]
 	if IsMirrorPod(pod) {
 		return true
 	}
@@ -178,6 +184,7 @@ func Preemptable(preemptor, preemptee *v1.Pod) bool {
 }
 
 // IsCriticalPodBasedOnPriority checks if the given pod is a critical pod based on priority resolved from pod Spec.
+// 优先级大于2000000000返回true
 func IsCriticalPodBasedOnPriority(priority int32) bool {
 	return priority >= scheduling.SystemCriticalPriority
 }

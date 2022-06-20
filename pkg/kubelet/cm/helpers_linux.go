@@ -46,6 +46,7 @@ const (
 )
 
 // MilliCPUToQuota converts milliCPU to CFS quota and period values.
+// quota = milliCPU * period/1000, 未启用"CustomCPUCFSQuotaPeriod"，则period固定为100ms。最小的quota为1000（1ms）
 func MilliCPUToQuota(milliCPU int64, period int64) (quota int64) {
 	// CFS quota is measured in two values:
 	//  - cfs_period_us=100ms (the amount of time to measure usage across given by period)
@@ -58,6 +59,7 @@ func MilliCPUToQuota(milliCPU int64, period int64) (quota int64) {
 		return
 	}
 
+	// 未启用"CustomCPUCFSQuotaPeriod"，则period固定为100ms
 	if !utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CPUCFSQuotaPeriod) {
 		period = QuotaPeriod
 	}
@@ -91,6 +93,7 @@ func MilliCPUToShares(milliCPU int64) uint64 {
 
 // HugePageLimits converts the API representation to a map
 // from huge page size (in bytes) to huge page limit (in bytes).
+// 返回hugepage页大小与limit大小
 func HugePageLimits(resourceList v1.ResourceList) map[int64]int64 {
 	hugePageLimits := map[int64]int64{}
 	for k, v := range resourceList {
@@ -109,8 +112,15 @@ func HugePageLimits(resourceList v1.ResourceList) map[int64]int64 {
 }
 
 // ResourceConfigForPod takes the input pod and outputs the cgroup resource config.
+// 计算pod里所有container的各个类型的资源总和
+// cpu request对应的是cgroup里的cpu_share，一个cpu等于1024 cpu_share，最小的cpu_share为2
+// cpu limit对应的是cgroup里的cfs_quota，quota = milliCPU * period/1000, 未启用"CustomCPUCFSQuotaPeriod"，则period固定为100ms。最小的quota为1000（1ms）
+// "Guaranteed" pod有HugePageLimit、CpuShares、CpuQuota、CpuPeriod、CpuPeriod、Memory
+// "Burstable" pod有HugePageLimit、CpuShares、（pod的所有container都设置了cpu limit，才设置CpuQuota和CpuPeriod）、（"Burstable"的pod的所有container都设置了memory limit，才设置MemoryLimits）
+// "Besteffort"的pod，只设置CpuShares、HugePageLimit
 func ResourceConfigForPod(pod *v1.Pod, enforceCPULimits bool, cpuPeriod uint64) *ResourceConfig {
 	// sum requests and limits.
+	// 统计pod的各种资源的limit和request
 	reqs, limits := resource.PodRequestsAndLimits(pod)
 
 	cpuRequests := int64(0)
@@ -127,7 +137,11 @@ func ResourceConfigForPod(pod *v1.Pod, enforceCPULimits bool, cpuPeriod uint64) 
 	}
 
 	// convert to CFS values
+	// 一个cpu等于1024 cpu_share，最小的cpu_share为2
+	// request对应的是cpu_share
 	cpuShares := MilliCPUToShares(cpuRequests)
+	// quota = milliCPU * period/1000, 未启用"CustomCPUCFSQuotaPeriod"，则period固定为100ms。最小的quota为1000（1ms）
+	// limit对应的是cfs_quota
 	cpuQuota := MilliCPUToQuota(cpuLimits, int64(cpuPeriod))
 
 	// track if limits were applied for each resource.
@@ -136,12 +150,15 @@ func ResourceConfigForPod(pod *v1.Pod, enforceCPULimits bool, cpuPeriod uint64) 
 	// map hugepage pagesize (bytes) to limits (bytes)
 	hugePageLimits := map[int64]int64{}
 	for _, container := range pod.Spec.Containers {
+		// 只要有一个container没有设置cpu limit，则cpuLimitsDeclared为false
 		if container.Resources.Limits.Cpu().IsZero() {
 			cpuLimitsDeclared = false
 		}
+		// 只要有一个container没有设置memory limit，则memoryLimitsDeclared为false
 		if container.Resources.Limits.Memory().IsZero() {
 			memoryLimitsDeclared = false
 		}
+		// 返回hugepage页大小与limit大小
 		containerHugePageLimits := HugePageLimits(container.Resources.Requests)
 		for k, v := range containerHugePageLimits {
 			if value, exists := hugePageLimits[k]; exists {
@@ -153,6 +170,7 @@ func ResourceConfigForPod(pod *v1.Pod, enforceCPULimits bool, cpuPeriod uint64) 
 	}
 
 	// quota is not capped when cfs quota is disabled
+	// enforceCPULimits默认为true
 	if !enforceCPULimits {
 		cpuQuota = int64(-1)
 	}
@@ -169,24 +187,31 @@ func ResourceConfigForPod(pod *v1.Pod, enforceCPULimits bool, cpuPeriod uint64) 
 		result.Memory = &memoryLimits
 	} else if qosClass == v1.PodQOSBurstable {
 		result.CpuShares = &cpuShares
+		// "Burstable"的pod的所有container都设置了cpu limit，才设置CpuQuota和CpuPeriod
 		if cpuLimitsDeclared {
 			result.CpuQuota = &cpuQuota
 			result.CpuPeriod = &cpuPeriod
 		}
+		// "Burstable"的pod的所有container都设置了memory limit，才设置Memory
 		if memoryLimitsDeclared {
 			result.Memory = &memoryLimits
 		}
 	} else {
+		// "Besteffort"的pod，只设置CpuShares
 		shares := uint64(MinShares)
 		result.CpuShares = &shares
 	}
+	// 所有qos class的pod都会设置HugePageLimit
 	result.HugePageLimit = hugePageLimits
 	return result
 }
 
 // GetCgroupSubsystems returns information about the mounted cgroup subsystems
+// Mounts：获得所有cgroup子系统的Mountpoint、Root、对应的Subsystems列表
+// MountPoints：子系统和挂载点信息
 func GetCgroupSubsystems() (*CgroupSubsystems, error) {
 	// get all cgroup mounts.
+	// 从/proc/self/mountinfo中获得所有cgroup子系统的Mountpoint、Root、对应的Subsystems列表
 	allCgroups, err := libcontainercgroups.GetCgroupMounts(true)
 	if err != nil {
 		return &CgroupSubsystems{}, err
@@ -236,6 +261,7 @@ func getCgroupProcs(dir string) ([]int, error) {
 }
 
 // GetPodCgroupNameSuffix returns the last element of the pod CgroupName identifier
+// 返回字符串"pod"+{pod uid}
 func GetPodCgroupNameSuffix(podUID types.UID) string {
 	return podCgroupNamePrefix + string(podUID)
 }

@@ -63,6 +63,7 @@ func NewRemoteRuntimeService(endpoint string, connectionTimeout time.Duration) (
 	}
 
 	return &RemoteRuntimeService{
+		// timeout默认为2分钟
 		timeout:       connectionTimeout,
 		runtimeClient: runtimeapi.NewRuntimeServiceClient(conn),
 		logReduction:  logreduction.NewLogReduction(identicalErrorDelay),
@@ -135,6 +136,11 @@ func (r *RemoteRuntimeService) StopPodSandbox(podSandBoxID string) error {
 
 // RemovePodSandbox removes the sandbox. If there are any containers in the
 // sandbox, they should be forcibly removed.
+// 如果为dockershim
+// 获取所有属于sandbox的普通容器
+// 先移除所有属于sandbox的普通容器（先移除kubelet创建的日志软链，然后再执行docker container rm移除容器）
+// 再移除sandbox容器，类似docker rm -v -f {container id}
+// 移除"/var/lib/dockershim/sandbox/{sandbox id}"文件
 func (r *RemoteRuntimeService) RemovePodSandbox(podSandBoxID string) error {
 	ctx, cancel := getContextWithTimeout(r.timeout)
 	defer cancel()

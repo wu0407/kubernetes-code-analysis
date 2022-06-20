@@ -128,7 +128,10 @@ func (m *csiBlockMapper) getPublishPath() string {
 
 // GetPodDeviceMapPath returns pod's device file which will be mapped to a volume
 // returns: pods/{podUID}/volumeDevices/kubernetes.io~csi, {specName}
+// 返回"/var/lib/kubelet/pods/{pod uid}/volumeDevices/kubernetes.io~csi"和m.specName
 func (m *csiBlockMapper) GetPodDeviceMapPath() (string, string) {
+	// utilstrings.EscapeQualifiedName(CSIPluginName) 将"/"替换成"~"，输出"kubernetes.io~csi"
+	// 默认为"/var/lib/kubelet/pods/{pod uid}/volumeDevices/kubernetes.io~csi" 
 	path := m.plugin.host.GetPodVolumeDeviceDir(m.podUID, utilstrings.EscapeQualifiedName(CSIPluginName))
 	klog.V(4).Infof(log("blockMapper.GetPodDeviceMapPath [path=%s; name=%s]", path, m.specName))
 	return path, m.specName

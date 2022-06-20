@@ -116,12 +116,14 @@ func (m *qosContainerManagerImpl) Start(getNodeAllocatable func() v1.ResourceLis
 		// check if it exists
 		// containerName为["kubepods", "Burstable"]和["kubepods", "BestEffort"]
 		if !cm.Exists(containerName) {
+			// 
 			if err := cm.Create(containerConfig); err != nil {
 				return fmt.Errorf("failed to create top level %v QOS cgroup : %v", qosClass, err)
 			}
 		} else {
 			// to ensure we actually have the right state, we update the config on startup
-			// 只更新cpu cgroup里的cpushare和hugelb group里hugepage相关的值
+			// "BestEffort" 更新cpu cgroup里的cpushare和hugetlb group里hugepage相关的值
+			// "Burstable" 更新hugetlb group里hugepage相关的值
 			if err := cm.Update(containerConfig); err != nil {
 				return fmt.Errorf("failed to update top level %v QOS cgroup : %v", qosClass, err)
 			}

@@ -68,6 +68,7 @@ func New(mounterPath string) Interface {
 // type, where kernel handles fstype for you. The mount 'options' is a list of options,
 // currently come from mount(8), e.g. "ro", "remount", "bind", etc. If no more option is
 // required, call Mount with an empty string list or nil.
+// 执行挂载，并记录挂载执行命令（敏感数据会做脱敏）
 func (mounter *Mounter) Mount(source string, target string, fstype string, options []string) error {
 	return mounter.MountSensitive(source, target, fstype, options, nil)
 }
@@ -77,18 +78,33 @@ func (mounter *Mounter) Mount(source string, target string, fstype string, optio
 // mount options and ensures the sensitiveOptions are never logged. This
 // method should be used by callers that pass sensitive material (like
 // passwords) as mount options.
+// 执行挂载，并记录挂载执行命令（敏感数据会做脱敏）
 func (mounter *Mounter) MountSensitive(source string, target string, fstype string, options []string, sensitiveOptions []string) error {
 	// Path to mounter binary if containerized mounter is needed. Otherwise, it is set to empty.
 	// All Linux distros are expected to be shipped with a mount utility that a support bind mounts.
 	mounterPath := ""
+	// 第一个返回 options和sensitiveOptions里是否包含了"bind"
+	// 第二各返回 options和sensitiveOptions里包含了"_netdev"，返回{"bind", "_netdev"}，否则返回{"bind"}
+	// 第三个返回 options里不包含了"bind"和"remount"，返回{"bind", "remount", option...}，否则返回{"bind", "remount"}
+	// 第四各返回 sensitiveOptions里不包含了"bind"和"remount"，返回sensitiveOptions，否则返回空
 	bind, bindOpts, bindRemountOpts, bindRemountOptsSensitive := MakeBindOptsSensitive(options, sensitiveOptions)
+	// options或sensitiveOptions包含了"bind"
 	if bind {
+		// defaultMountCommand为"mount"
+		// systemd的系统里执行systemd-run --description="Kubernetes transient mount for {target}" --scope -- mount [-t $fstype] [-o bind,$options] [$source] $target
+		// 非systemd系统执行mount [-t $fstype] [-o bind,$options] [$source] $target
 		err := mounter.doMount(mounterPath, defaultMountCommand, source, target, fstype, bindOpts, bindRemountOptsSensitive)
 		if err != nil {
 			return err
 		}
+		// 执行remount
+		// systemd的系统里执行systemd-run --description="Kubernetes transient mount for {target}" --scope -- mount [-t $fstype] [-o bind,remount,$options] [$source] $target
+		// 非systemd系统执行mount [-t $fstype] [-o bind,remount,$options] [$source] $target
 		return mounter.doMount(mounterPath, defaultMountCommand, source, target, fstype, bindRemountOpts, bindRemountOptsSensitive)
 	}
+
+	// options或sensitiveOptions不包含了"bind"
+
 	// The list of filesystems that require containerized mounter on GCI image cluster
 	fsTypesNeedMounter := map[string]struct{}{
 		"nfs":       {},
@@ -96,15 +112,22 @@ func (mounter *Mounter) MountSensitive(source string, target string, fstype stri
 		"ceph":      {},
 		"cifs":      {},
 	}
+	// fstype是否是支持文件系统类型
+	// fstype是支持类型，则使用mounter.mounterPath作为执行挂载命令
 	if _, ok := fsTypesNeedMounter[fstype]; ok {
 		mounterPath = mounter.mounterPath
 	}
+	// systemd的系统里执行systemd-run --description="Kubernetes transient mount for {target}" --scope -- {mounterPath} mount [-t $fstype] [-o $options] [$source] $target
+	// 非systemd系统执行{mounterPath} mount [-t $fstype] [-o $options] [$source] $target
 	return mounter.doMount(mounterPath, defaultMountCommand, source, target, fstype, options, sensitiveOptions)
 }
 
 // doMount runs the mount command. mounterPath is the path to mounter binary if containerized mounter is used.
 // sensitiveOptions is an extention of options except they will not be logged (because they may contain sensitive material)
+// systemd的系统里执行systemd-run --description="Kubernetes transient mount for {target}" --scope -- {mounterPath} {mountCmd} [-t $fstype] [-o $options] [$source] $target
+// 非systemd系统执行{mounterPath} {mountCmd} [-t $fstype] [-o $options] [$source] $target
 func (mounter *Mounter) doMount(mounterPath string, mountCmd string, source string, target string, fstype string, options []string, sensitiveOptions []string) error {
+	// 生成命令行挂载参数和日志记录挂载参数（sensitiveOptions处理为<masked>,<masked>这种格式）
 	mountArgs, mountArgsLogStr := MakeMountArgsSensitive(source, target, fstype, options, sensitiveOptions)
 	if len(mounterPath) > 0 {
 		mountArgs = append([]string{mountCmd}, mountArgs...)
@@ -112,6 +135,7 @@ func (mounter *Mounter) doMount(mounterPath string, mountCmd string, source stri
 		mountCmd = mounterPath
 	}
 
+	// 在systemd系统里，执行systemd-run --description=... --scope -- mount -t <type> <what> <where>来执行挂载
 	if mounter.withSystemd {
 		// Try to run mount via systemd-run --scope. This will escape the
 		// service where kubelet runs and any fuse daemons will be started in a
@@ -135,6 +159,7 @@ func (mounter *Mounter) doMount(mounterPath string, mountCmd string, source stri
 		//
 		// systemd-mount is not used because it's too new for older distros
 		// (CentOS 7, Debian Jessie).
+		// 生成system-run命令参数和命令执行记录字符，比如 systemd-run --description="Kubernetes transient mount for {target}" --scope -- mount [-t $fstype] [-o $options] [$source] $target
 		mountCmd, mountArgs, mountArgsLogStr = AddSystemdScopeSensitive("systemd-run", target, mountCmd, mountArgs, mountArgsLogStr)
 	} else {
 		// No systemd-run on the host (or we failed to check it), assume kubelet
@@ -188,6 +213,8 @@ func MakeMountArgs(source, target, fstype string, options []string) (mountArgs [
 
 // MakeMountArgsSensitive makes the arguments to the mount(8) command.
 // sensitiveOptions is an extention of options except they will not be logged (because they may contain sensitive material)
+// 生成命令行挂载参数，比如{"-t", $fstype, "-o", {$options,$sensitiveOptions}, $source, $target}
+// 和日志记录挂载参数（sensitiveOptions处理为<masked>,<masked>这种格式）
 func MakeMountArgsSensitive(source, target, fstype string, options []string, sensitiveOptions []string) (mountArgs []string, mountArgsLogStr string) {
 	// Build mount command as follows:
 	//   mount [-t $fstype] [-o $options] [$source] $target
@@ -203,6 +230,7 @@ func MakeMountArgsSensitive(source, target, fstype string, options []string, sen
 		combinedOptions = append(combinedOptions, sensitiveOptions...)
 		mountArgs = append(mountArgs, "-o", strings.Join(combinedOptions, ","))
 		// exclude sensitiveOptions from log string
+		// options和sensitiveOptions使用逗号进行拼接，sensitiveOptions处理为<masked>,<masked>这种格式，比如o1,o2,<masked>,<masked>
 		mountArgsLogStr += " -o " + sanitizedOptionsForLogging(options, sensitiveOptions)
 	}
 	if len(source) > 0 {
@@ -227,6 +255,7 @@ func AddSystemdScope(systemdRunPath, mountName, command string, args []string) (
 // AddSystemdScopeSensitive adds "system-run --scope" to given command line
 // It also accepts takes a sanitized string containing mount arguments, mountArgsLogStr,
 // and returns the string appended to the systemd command for logging.
+// 生成system-run命令参数和命令执行记录字符
 func AddSystemdScopeSensitive(systemdRunPath, mountName, command string, args []string, mountArgsLogStr string) (string, []string, string) {
 	descriptionArg := fmt.Sprintf("--description=Kubernetes transient mount for %s", mountName)
 	systemdRunArgs := []string{descriptionArg, "--scope", "--", command}
@@ -234,6 +263,7 @@ func AddSystemdScopeSensitive(systemdRunPath, mountName, command string, args []
 }
 
 // Unmount unmounts the target.
+// 执行umount {target}命令进行卸载
 func (mounter *Mounter) Unmount(target string) error {
 	klog.V(4).Infof("Unmounting %s", target)
 	command := exec.Command("umount", target)
@@ -245,6 +275,7 @@ func (mounter *Mounter) Unmount(target string) error {
 }
 
 // List returns a list of all mounted filesystems.
+// 读取并解析"/proc/mounts"文件
 func (*Mounter) List() ([]MountPoint, error) {
 	return ListProcMounts(procMountsPath)
 }
@@ -256,6 +287,7 @@ func (*Mounter) List() ([]MountPoint, error) {
 // mkdir /tmp/a /tmp/b; mount --bind /tmp/a /tmp/b; IsLikelyNotMountPoint("/tmp/b")
 // will return true. When in fact /tmp/b is a mount point. If this situation
 // is of interest to you, don't use this function...
+// 当file的设备号与父目录的设备号不一样，则为file为挂载点，返回false，否则返回true
 func (mounter *Mounter) IsLikelyNotMountPoint(file string) (bool, error) {
 	stat, err := os.Stat(file)
 	if err != nil {
@@ -266,6 +298,7 @@ func (mounter *Mounter) IsLikelyNotMountPoint(file string) (bool, error) {
 		return true, err
 	}
 	// If the directory has a different device as parent, then it is a mountpoint.
+	// file的设备号与父目录的设备号不一样，则为file为挂载点
 	if stat.Sys().(*syscall.Stat_t).Dev != rootStat.Sys().(*syscall.Stat_t).Dev {
 		return false, nil
 	}
@@ -454,22 +487,27 @@ func (mounter *SafeFormatAndMount) GetDiskFormat(disk string) (string, error) {
 
 // ListProcMounts is shared with NsEnterMounter
 func ListProcMounts(mountFilePath string) ([]MountPoint, error) {
+	// 最多尝试3次重复性读取mountFilePath，当两次读取内容一样的时候返回
 	content, err := utilio.ConsistentRead(mountFilePath, maxListTries)
 	if err != nil {
 		return nil, err
 	}
+	// 解析"/proc/mounts"文件
 	return parseProcMounts(content)
 }
 
+// 解析"/proc/mounts"文件，每一行为一个MountPoint
 func parseProcMounts(content []byte) ([]MountPoint, error) {
 	out := []MountPoint{}
 	lines := strings.Split(string(content), "\n")
 	for _, line := range lines {
+		// 空行直接忽略
 		if line == "" {
 			// the last split() item is empty string following the last \n
 			continue
 		}
 		fields := strings.Fields(line)
+		// 字段个数不为6，返回错误
 		if len(fields) != expectedNumFieldsPerLine {
 			// Do not log line in case it contains sensitive Mount options
 			return nil, fmt.Errorf("wrong number of fields (expected %d, got %d)", expectedNumFieldsPerLine, len(fields))

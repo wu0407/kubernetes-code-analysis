@@ -53,16 +53,22 @@ func stringKeyFunc(obj interface{}) (string, error) {
 }
 
 // Get gets cached objectEntry by using a unique string as the key.
+// objectCache使用懒惰策略来驱逐key，先从c.cache中获取，取到就返回，没有取到则执行c.updater获取数据，然后放入cache中
 func (c *ObjectCache) Get(key string) (interface{}, error) {
+	// 从c.cache中通过key查找objectEntry对象，如果对象过期了，则执行在cache中惰性删除
 	value, ok, err := c.cache.Get(objectEntry{key: key})
+	// 生成c.cache的key错误（这里不会发生）
 	if err != nil {
 		return nil, err
 	}
+	// 未找到了或过期了
 	if !ok {
+		// 调用c.updater来获取对象
 		obj, err := c.updater()
 		if err != nil {
 			return nil, err
 		}
+		// 对象添加c.cache中，c.cache保存的是objectEntry
 		err = c.cache.Add(objectEntry{
 			key: key,
 			obj: obj,

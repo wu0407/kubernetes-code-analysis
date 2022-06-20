@@ -101,6 +101,10 @@ type rlimitStatsProvider interface {
 }
 
 // RlimitStats returns base information about process count
+// 返回最大pid数量和当前的进程数量
+// MaxPID最大的pid数量是从/proc/sys/kernel/pid_max获取
+// NumOfRunningProcesses为系统运行的进程数
+// Time为现在时间
 func (p *StatsProvider) RlimitStats() (*statsapi.RlimitStats, error) {
 	return pidlimit.Stats()
 }
@@ -135,7 +139,9 @@ func (p *StatsProvider) GetCgroupCPUAndMemoryStats(cgroupName string, updateStat
 }
 
 // RootFsStats returns the stats of the node root filesystem.
+// 返回kubelet root目录所在挂载设备的最近状态（状态的时间、磁盘大小、可用大小、使用量、inode剩余量、inode总量、inode使用情况）
 func (p *StatsProvider) RootFsStats() (*statsapi.FsStats, error) {
+	// 返回kubelet root目录所在挂载设备的最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表、inode使用情况）
 	rootFsInfo, err := p.cadvisor.RootFsInfo()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get rootFs info: %v", err)
@@ -149,6 +155,7 @@ func (p *StatsProvider) RootFsStats() (*statsapi.FsStats, error) {
 
 	// Get the root container stats's timestamp, which will be used as the
 	// imageFs stats timestamp.  Dont force a stats update, as we only want the timestamp.
+	// 从cadvisor中获得"/"容器的最近一个ContainerStats（容器的监控状态cpu、内存、网络、blkio、pid等）
 	rootStats, err := getCgroupStats(p.cadvisor, "/", false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get root container stats: %v", err)
@@ -204,14 +211,18 @@ func (p *StatsProvider) GetRawContainerInfo(containerName string, req *cadvisora
 }
 
 // HasDedicatedImageFs returns true if a dedicated image filesystem exists for storing images.
+// 镜像保存的磁盘设备是否kubelet root目录所在挂载设备不一致
 func (p *StatsProvider) HasDedicatedImageFs() (bool, error) {
+	// 如果是cadvisor，获得镜像保存的磁盘设备名
 	device, err := p.containerStatsProvider.ImageFsDevice()
 	if err != nil {
 		return false, err
 	}
+	// 返回kubelet root目录所在挂载设备的最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表、inode使用情况）
 	rootFsInfo, err := p.cadvisor.RootFsInfo()
 	if err != nil {
 		return false, err
 	}
+	// 镜像保存的磁盘设备是否kubelet root目录所在挂载设备不一致
 	return device != rootFsInfo.Device, nil
 }

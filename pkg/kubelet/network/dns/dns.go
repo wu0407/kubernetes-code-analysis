@@ -82,6 +82,7 @@ func NewConfigurer(recorder record.EventRecorder, nodeRef *v1.ObjectReference, n
 	}
 }
 
+// 进行去重，重复的以第一个为准
 func omitDuplicates(strs []string) []string {
 	uniqueStrs := make(map[string]bool)
 
@@ -95,6 +96,8 @@ func omitDuplicates(strs []string) []string {
 	return ret
 }
 
+// search domain不能超过6个，去除超出部分。
+// 将search domain按照空格进行组装，总的字符串大小不能超过256，去除超出部分的domain
 func (c *Configurer) formDNSSearchFitsLimits(composedSearch []string, pod *v1.Pod) []string {
 	limitsExceeded := false
 
@@ -110,6 +113,7 @@ func (c *Configurer) formDNSSearchFitsLimits(composedSearch []string, pod *v1.Po
 			cutDomainsLen += len(composedSearch[i]) + 1
 			cutDomainsNum++
 
+			// 总的长度减去去除部分小于256字节，则说明找到了最大的search domain
 			if (resolvSearchLineStrLen - cutDomainsLen) <= validation.MaxDNSSearchListChars {
 				break
 			}
@@ -127,6 +131,7 @@ func (c *Configurer) formDNSSearchFitsLimits(composedSearch []string, pod *v1.Po
 	return composedSearch
 }
 
+// nameserver最多有三个，截掉超出部分
 func (c *Configurer) formDNSNameserversFitsLimits(nameservers []string, pod *v1.Pod) []string {
 	if len(nameservers) > validation.MaxDNSNameservers {
 		nameservers = nameservers[0:validation.MaxDNSNameservers]
@@ -137,13 +142,19 @@ func (c *Configurer) formDNSNameserversFitsLimits(nameservers []string, pod *v1.
 	return nameservers
 }
 
+// 对nameserver和search domain进行校验，是否超出长度限制。超出限制，则截断超出部分
 func (c *Configurer) formDNSConfigFitsLimits(dnsConfig *runtimeapi.DNSConfig, pod *v1.Pod) *runtimeapi.DNSConfig {
+	// nameserver最多有三个，截掉超出部分
 	dnsConfig.Servers = c.formDNSNameserversFitsLimits(dnsConfig.Servers, pod)
+	// search domain不能超过6个，去除超出部分。
+	// 将search domain按照空格进行组装，总的字符串大小不能超过256，去除超出部分的domain
 	dnsConfig.Searches = c.formDNSSearchFitsLimits(dnsConfig.Searches, pod)
 	return dnsConfig
 }
 
+// 生成[{pod namespace}+".svc."+{clusterdomain}, "svc."+{clusterdomain}, {clusterdomain}, {hostSearch}...]
 func (c *Configurer) generateSearchesForDNSClusterFirst(hostSearch []string, pod *v1.Pod) []string {
+	// 如果没有定义了clusterDomain，则返回宿主机的searchDomain
 	if c.ClusterDomain == "" {
 		return hostSearch
 	}
@@ -156,7 +167,12 @@ func (c *Configurer) generateSearchesForDNSClusterFirst(hostSearch []string, pod
 }
 
 // CheckLimitsForResolvConf checks limits in resolv.conf.
+// 检查宿主机的/etc/resolv.conf的search domain个数是否超出限制
+// 1. c.ClusterDomain不为空，则search domain个数最多为3个
+// 2. c.ClusterDomain为空，则search domain个数最多为6个
+// 检查主机的/etc/resolv.conf的search domain长度不能超过256个字符
 func (c *Configurer) CheckLimitsForResolvConf() {
+	// 打开宿主机的/etc/resolv.conf
 	f, err := os.Open(c.ResolverConfig)
 	if err != nil {
 		c.recorder.Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", err.Error())
@@ -165,6 +181,7 @@ func (c *Configurer) CheckLimitsForResolvConf() {
 	}
 	defer f.Close()
 
+	// 解析出nameserver、searches、options
 	_, hostSearch, _, err := parseResolvConf(f)
 	if err != nil {
 		c.recorder.Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", err.Error())
@@ -174,10 +191,13 @@ func (c *Configurer) CheckLimitsForResolvConf() {
 
 	domainCountLimit := validation.MaxDNSSearchPaths
 
+	// c.ClusterDomain默认不为空，则宿主机的/etc/resolv.conf里的search domain最多能有3个
+	// 因为c.ClusterDomain不为空，pod里面会添加三个 search domain，{pod namespace}.svc.cluster.local svc.cluster.local cluster.local，所以要减去3
 	if c.ClusterDomain != "" {
 		domainCountLimit -= 3
 	}
 
+	// search domain个数不能大于domainCountLimit
 	if len(hostSearch) > domainCountLimit {
 		log := fmt.Sprintf("Resolv.conf file '%s' contains search line consisting of more than %d domains!", c.ResolverConfig, domainCountLimit)
 		c.recorder.Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", log)
@@ -185,6 +205,7 @@ func (c *Configurer) CheckLimitsForResolvConf() {
 		return
 	}
 
+	// search domain的总长度不能大于256字节
 	if len(strings.Join(hostSearch, " ")) > validation.MaxDNSSearchListChars {
 		log := fmt.Sprintf("Resolv.conf file '%s' contains search line which length is more than allowed %d chars!", c.ResolverConfig, validation.MaxDNSSearchListChars)
 		c.recorder.Event(c.nodeRef, v1.EventTypeWarning, "CheckLimitsForResolvConf", log)
@@ -195,6 +216,7 @@ func (c *Configurer) CheckLimitsForResolvConf() {
 
 // parseResolvConf reads a resolv.conf file from the given reader, and parses
 // it into nameservers, searches and options, possibly returning an error.
+// 解析出nameserver、searches、options
 func parseResolvConf(reader io.Reader) (nameservers []string, searches []string, options []string, err error) {
 	file, err := utilio.ReadAtMost(reader, maxResolveConfLength)
 	if err != nil {
@@ -244,9 +266,11 @@ func parseResolvConf(reader io.Reader) (nameservers []string, searches []string,
 	return nameservers, searches, options, utilerrors.NewAggregate(allErrors)
 }
 
+// 解析出nameserver、searches、options
 func (c *Configurer) getHostDNSConfig() (*runtimeapi.DNSConfig, error) {
 	var hostDNS, hostSearch, hostOptions []string
 	// Get host DNS settings
+	// 默认为/etc/resolv.conf
 	if c.ResolverConfig != "" {
 		f, err := os.Open(c.ResolverConfig)
 		if err != nil {
@@ -266,6 +290,7 @@ func (c *Configurer) getHostDNSConfig() (*runtimeapi.DNSConfig, error) {
 	}, nil
 }
 
+// 返回pod的dns policy的pod dns类型
 func getPodDNSType(pod *v1.Pod) (podDNSType, error) {
 	dnsPolicy := pod.Spec.DNSPolicy
 	switch dnsPolicy {
@@ -274,10 +299,12 @@ func getPodDNSType(pod *v1.Pod) (podDNSType, error) {
 	case v1.DNSClusterFirstWithHostNet:
 		return podDNSCluster, nil
 	case v1.DNSClusterFirst:
+		// pod不是host网络，则返回dns cluster
 		if !kubecontainer.IsHostNetworkPod(pod) {
 			return podDNSCluster, nil
 		}
 		// Fallback to DNSDefault for pod on hostnetowrk.
+		// 否则返回host模式
 		fallthrough
 	case v1.DNSDefault:
 		return podDNSHost, nil
@@ -289,9 +316,11 @@ func getPodDNSType(pod *v1.Pod) (podDNSType, error) {
 
 // mergeDNSOptions merges DNS options. If duplicated, entries given by PodDNSConfigOption will
 // overwrite the existing ones.
+// 对existingDNSConfigOptions和dnsConfigOptions进行合并去重
 func mergeDNSOptions(existingDNSConfigOptions []string, dnsConfigOptions []v1.PodDNSConfigOption) []string {
 	optionsMap := make(map[string]string)
 	for _, op := range existingDNSConfigOptions {
+		// 解析出dns option的key和value
 		if index := strings.Index(op, ":"); index != -1 {
 			optionsMap[op[:index]] = op[index+1:]
 		} else {
@@ -306,6 +335,7 @@ func mergeDNSOptions(existingDNSConfigOptions []string, dnsConfigOptions []v1.Po
 		}
 	}
 	// Reconvert DNS options into a string array.
+	// 重新组装成option字符串
 	options := []string{}
 	for opName, opValue := range optionsMap {
 		op := opName
@@ -320,20 +350,27 @@ func mergeDNSOptions(existingDNSConfigOptions []string, dnsConfigOptions []v1.Po
 // appendDNSConfig appends DNS servers, search paths and options given by
 // PodDNSConfig to the existing DNS config. Duplicated entries will be merged.
 // This assumes existingDNSConfig and dnsConfig are not nil.
+// 聚合existingDNSConfig和dnsConfig并进行去重
 func appendDNSConfig(existingDNSConfig *runtimeapi.DNSConfig, dnsConfig *v1.PodDNSConfig) *runtimeapi.DNSConfig {
+	// 对dns server进行去重
 	existingDNSConfig.Servers = omitDuplicates(append(existingDNSConfig.Servers, dnsConfig.Nameservers...))
+	// 对search domain进行去重
 	existingDNSConfig.Searches = omitDuplicates(append(existingDNSConfig.Searches, dnsConfig.Searches...))
+	// 对option进行去重
 	existingDNSConfig.Options = mergeDNSOptions(existingDNSConfig.Options, dnsConfig.Options)
 	return existingDNSConfig
 }
 
 // GetPodDNS returns DNS settings for the pod.
+// 生成pod的dns配置
 func (c *Configurer) GetPodDNS(pod *v1.Pod) (*runtimeapi.DNSConfig, error) {
+	// 解析出nameserver、searches、options
 	dnsConfig, err := c.getHostDNSConfig()
 	if err != nil {
 		return nil, err
 	}
 
+	// 返回pod的dns policy的pod dns类型
 	dnsType, err := getPodDNSType(pod)
 	if err != nil {
 		klog.Errorf("Failed to get DNS type for pod %q: %v. Falling back to DNSClusterFirst policy.", format.Pod(pod), err)
@@ -344,6 +381,7 @@ func (c *Configurer) GetPodDNS(pod *v1.Pod) (*runtimeapi.DNSConfig, error) {
 		// DNSNone should use empty DNS settings as the base.
 		dnsConfig = &runtimeapi.DNSConfig{}
 	case podDNSCluster:
+		// 设置了cluster dns
 		if len(c.clusterDNS) != 0 {
 			// For a pod with DNSClusterFirst policy, the cluster DNS server is
 			// the only nameserver configured for the pod. The cluster DNS server
@@ -354,11 +392,14 @@ func (c *Configurer) GetPodDNS(pod *v1.Pod) (*runtimeapi.DNSConfig, error) {
 			for _, ip := range c.clusterDNS {
 				dnsConfig.Servers = append(dnsConfig.Servers, ip.String())
 			}
+			// 生成[{pod namespace}+".svc."+{clusterdomain}, "svc."+{clusterdomain}, {clusterdomain}, {hostSearch}...]
 			dnsConfig.Searches = c.generateSearchesForDNSClusterFirst(dnsConfig.Searches, pod)
+			// []string{"ndots:5"}
 			dnsConfig.Options = defaultDNSOptions
 			break
 		}
 		// clusterDNS is not known. Pod with ClusterDNSFirst Policy cannot be created.
+		// 没有设置cluster DNS，则发送event，设置为宿主机的
 		nodeErrorMsg := fmt.Sprintf("kubelet does not have ClusterDNS IP configured and cannot create Pod using %q policy. Falling back to %q policy.", v1.DNSClusterFirst, v1.DNSDefault)
 		c.recorder.Eventf(c.nodeRef, v1.EventTypeWarning, "MissingClusterDNS", nodeErrorMsg)
 		c.recorder.Eventf(pod, v1.EventTypeWarning, "MissingClusterDNS", "pod: %q. %s", format.Pod(pod), nodeErrorMsg)
@@ -372,10 +413,13 @@ func (c *Configurer) GetPodDNS(pod *v1.Pod) (*runtimeapi.DNSConfig, error) {
 		// "nameservers" are not specified is to "use the nameserver on the
 		// local machine". A nameserver setting of localhost is equivalent to
 		// this documented behavior.
+		// 如果 kubelet --resolv-conf命令行参数显式设置为空，则设置dns server为本机回环地址
 		if c.ResolverConfig == "" {
 			switch {
+			// 没有nodeIP或为ipv4地址，则设置dns server为"127.0.0.1"
 			case c.nodeIP == nil || c.nodeIP.To4() != nil:
 				dnsConfig.Servers = []string{"127.0.0.1"}
+			// 如果为ipv6地址，则设置dns server为"::1"
 			case c.nodeIP.To16() != nil:
 				dnsConfig.Servers = []string{"::1"}
 			}
@@ -383,19 +427,28 @@ func (c *Configurer) GetPodDNS(pod *v1.Pod) (*runtimeapi.DNSConfig, error) {
 		}
 	}
 
+	// 如果pod里设置了DNSConfig，聚合生成的dnsconfig和pod里设置DNSConfig并进行去重
 	if pod.Spec.DNSConfig != nil {
 		dnsConfig = appendDNSConfig(dnsConfig, pod.Spec.DNSConfig)
 	}
+	// 对nameserver和search domain进行校验，是否超出长度限制。超出限制，则截断超出部分
 	return c.formDNSConfigFitsLimits(dnsConfig, pod), nil
 }
 
 // SetupDNSinContainerizedMounter replaces the nameserver in containerized-mounter's rootfs/etc/resolve.conf with kubelet.ClusterDNS
+// 提取出c.ResolverConfig的文件里"search"后面的search domain，和遍历c.clusterDNS输出"nameserver ip[0]\nnameserver ip[0]"
+// 写入到{mounterPath}/rootfs/etc/resolv.conf
+// 输出类似
+// nameserver 192.168.1.1
+// nameserver 192.168.1.2
+// seaarch xxx.com xx.com
 func (c *Configurer) SetupDNSinContainerizedMounter(mounterPath string) {
 	resolvePath := filepath.Join(strings.TrimSuffix(mounterPath, "/mounter"), "rootfs", "etc", "resolv.conf")
 	dnsString := ""
 	for _, dns := range c.clusterDNS {
 		dnsString = dnsString + fmt.Sprintf("nameserver %s\n", dns)
 	}
+	// 宿主机的/etc/resolv.conf
 	if c.ResolverConfig != "" {
 		f, err := os.Open(c.ResolverConfig)
 		if err != nil {

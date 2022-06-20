@@ -38,8 +38,10 @@ func DefaultMemorySwap() int64 {
 	return 0
 }
 
+// 返回"seccomp"的SecurityOpts，比如seccompProfile为空，返回[]string{"seccomp=unconfined"}
 func (ds *dockerService) getSecurityOpts(seccompProfile string, separator rune) ([]string, error) {
 	// Apply seccomp options.
+	// 返回"seccomp"的SecurityOpts，比如seccompProfile为空，返回[]string{"seccomp=unconfined"}
 	seccompSecurityOpts, err := getSeccompSecurityOpts(seccompProfile, separator)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate seccomp security options for container: %v", err)
@@ -89,14 +91,22 @@ func getSeccompDockerOpts(seccompProfile string) ([]dockerOpt, error) {
 
 // getSeccompSecurityOpts gets container seccomp options from container seccomp profile.
 // It is an experimental feature and may be promoted to official runtime api in the future.
+// 返回"seccomp"的SecurityOpts，比如[]string{"seccomp=unconfined"}
 func getSeccompSecurityOpts(seccompProfile string, separator rune) ([]string, error) {
+	// seccompProfile为空""或unconfined，返回[]dockerOpt{{"seccomp", "unconfined", ""}}
+	// "runtime/default"或"docker/default",返回nil
+	// "localhost/<filepath>" 返回[]dockerOpt{{"seccomp","<file content>","<filepath>(md5:<md5sum>)"}}
 	seccompOpts, err := getSeccompDockerOpts(seccompProfile)
 	if err != nil {
 		return nil, err
 	}
+	// 返回[]string{"{opt.key}{sep}{opt.value}", "{opt.key}{sep}{opt.value}"}风格输出
+	// 比如[]dockerOpt{{"seccomp", "unconfined", ""}}，返回[]string{"seccomp=unconfined"}
 	return fmtDockerOpts(seccompOpts, separator), nil
 }
 
+// 设置createConfig.HostConfig里的Resources（包括Memory、MemorySwap、CPUShares、CPUQuota、CPUPeriod，没有CpusetCpus、CpusetMems）和OomScoreAdj
+// 设置createConfig.Config.User和createConfig.HostConfig的GroupAdd、Privileged、ReadonlyRootfs、CapAdd、CapDrop、SecurityOpt（包含selinux、apparmor、NoNewPrivs，但是没有Seccomp）、MaskedPaths、ReadonlyPaths、PidMode、NetworkMode、IpcMode、UTSMode、CgroupParent
 func (ds *dockerService) updateCreateConfig(
 	createConfig *dockertypes.ContainerCreateConfig,
 	config *runtimeapi.ContainerConfig,
@@ -121,6 +131,7 @@ func (ds *dockerService) updateCreateConfig(
 		// Note: ShmSize is handled in kube_docker_client.go
 
 		// Apply security context.
+		// 设置createConfig.Config.User和createConfig.HostConfig的GroupAdd、Privileged、ReadonlyRootfs、CapAdd、CapDrop、SecurityOpt（包含selinux、apparmor、NoNewPrivs，但是没有Seccomp）、MaskedPaths、ReadonlyPaths、PidMode、NetworkMode、IpcMode、UTSMode
 		if err := applyContainerSecurityContext(lc, podSandboxID, createConfig.Config, createConfig.HostConfig, securityOptSep); err != nil {
 			return fmt.Errorf("failed to apply container security context for container %q: %v", config.Metadata.Name, err)
 		}
@@ -129,6 +140,8 @@ func (ds *dockerService) updateCreateConfig(
 	// Apply cgroupsParent derived from the sandbox config.
 	if lc := sandboxConfig.GetLinux(); lc != nil {
 		// Apply Cgroup options.
+		// cgroup driver为systemd，则返回最后一个路径。cgroup driver为cgroupfs，则返回原始值
+		// 比如cgroup driver为systemd，"kubepods-burstable-podec7bb47a_07ef_48ff_9201_687474994eab.slice"
 		cgroupParent, err := ds.GenerateExpectedCgroupParent(lc.CgroupParent)
 		if err != nil {
 			return fmt.Errorf("failed to generate cgroup parent in expected syntax for container %q: %v", config.Metadata.Name, err)

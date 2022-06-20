@@ -73,6 +73,7 @@ type annotatedContainerInfo struct {
 }
 
 // newPodLabels creates pod labels from v1.Pod.
+// 创建一个runtimeapi labels，包括pod的Labels和["io.kubernetes.pod.name"]={pod name}和["io.kubernetes.pod.namespace"]={pod namespace}和["io.kubernetes.pod.uid"]={pod uid}
 func newPodLabels(pod *v1.Pod) map[string]string {
 	labels := map[string]string{}
 
@@ -94,6 +95,7 @@ func newPodAnnotations(pod *v1.Pod) map[string]string {
 }
 
 // newContainerLabels creates container labels from v1.Container and v1.Pod.
+// 返回label，包括["io.kubernetes.pod.name"]={pod name}和["io.kubernetes.pod.namespace"]={pod namespace}和["io.kubernetes.pod.uid"]={pod uid}和["io.kubernetes.container.name"]={container name}
 func newContainerLabels(container *v1.Container, pod *v1.Pod) map[string]string {
 	labels := map[string]string{}
 	labels[types.KubernetesPodNameLabel] = pod.Name
@@ -105,6 +107,15 @@ func newContainerLabels(container *v1.Container, pod *v1.Pod) map[string]string 
 }
 
 // newContainerAnnotations creates container annotations from v1.Container and v1.Pod.
+// 返回annotation包括device plugin annotations
+// ["io.kubernetes.container.hash"]={container hash}
+// ["io.kubernetes.container.restartCount"]={container restart count}
+// ["io.kubernetes.container.terminationMessagePath"]={container.TerminationMessagePath}
+// ["io.kubernetes.container.terminationMessagePolicy"]={container.TerminationMessagePolicy}
+// ["io.kubernetes.pod.deletionGracePeriod"]={pod.DeletionGracePeriodSeconds}，可能有（但是一般不会有，这个在pod被删除时候，应该不会进行创建容器）
+// ["io.kubernetes.pod.terminationGracePeriod"]={pod.Spec.TerminationGracePeriodSeconds}
+// ["io.kubernetes.container.preStopHandler"]={container prestop lifecycle json序列化后}，当container定义了Lifecycle.PreStop
+// ["io.kubernetes.container.ports"]={container.Ports json序列化后}，当container定义了Ports
 func newContainerAnnotations(container *v1.Container, pod *v1.Pod, restartCount int, opts *kubecontainer.RunContainerOptions) map[string]string {
 	annotations := map[string]string{}
 

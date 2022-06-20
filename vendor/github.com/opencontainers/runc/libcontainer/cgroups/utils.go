@@ -50,6 +50,9 @@ func IsCgroup2UnifiedMode() bool {
 }
 
 // https://www.kernel.org/doc/Documentation/cgroup-v1/cgroups.txt
+// 如果是cgroup2子系统，返回"/sys/fs/cgroup"
+// 否则cgroup1子系统，找到subsystem子系统在/proc/self/mountinfo信息里挂载目录（匹配cgroupPath）和root目录
+// 比如cgroupPath为"/sys/fs/cgroup" subsystem为"cpu", 返回"/sys/fs/cgroup/cpu,cpuacct"
 func FindCgroupMountpoint(cgroupPath, subsystem string) (string, error) {
 	if IsCgroup2UnifiedMode() {
 		return unifiedMountpoint, nil
@@ -64,6 +67,7 @@ func FindCgroupMountpointAndRoot(cgroupPath, subsystem string) (string, string, 
 	// parsing it directly sped up x10 times because of not using Sscanf.
 	// It was one of two major performance drawbacks in container start.
 	// 在"/proc/self/cgroup"里是否有subsystem
+	// 如果cgroup2，判断subsystem是否在"/sys/fs/cgroup/cgroup.controllers"
 	if !isSubsystemAvailable(subsystem) {
 		return "", "", NewNotFoundError(subsystem)
 	}
@@ -79,10 +83,11 @@ func FindCgroupMountpointAndRoot(cgroupPath, subsystem string) (string, string, 
 	}
 
 	// 这里的cgroupPath为"",意味着在findCgroupMountpointAndRootFromReader里strings.HasPrefix(fields[4], cgroupPath)都为true
-	// 即从/proc/self/mountinfo里每一行的最后一个字段，按照逗号进行分割，得到的切片中是否包含subsystem
+	// 即从/proc/self/mountinfo里每一行的最后一个字段，按照逗号进行分割，判断得到的切片中是否包含subsystem，如果包含subsystem，返回挂载点和根路径
 	return findCgroupMountpointAndRootFromReader(f, cgroupPath, subsystem)
 }
 
+// 从/proc/self/mountinfo里找到挂载路径前缀匹配cgroupPath的行，并对这一行的最后一个字段，按照逗号进行分割，判断得到的切片中是否包含subsystem，返回挂载点和根路径
 func findCgroupMountpointAndRootFromReader(reader io.Reader, cgroupPath, subsystem string) (string, string, error) {
 	scanner := bufio.NewScanner(reader)
 	for scanner.Scan() {
@@ -92,6 +97,7 @@ func findCgroupMountpointAndRootFromReader(reader io.Reader, cgroupPath, subsyst
 			continue
 		}
 		if strings.HasPrefix(fields[4], cgroupPath) {
+			// 最后一个字段，以逗号进行分隔，遍历匹配subsystem，返回挂载点和根路径
 			for _, opt := range strings.Split(fields[len(fields)-1], ",") {
 				if (subsystem == "" && fields[9] == "cgroup2") || opt == subsystem {
 					return fields[4], fields[3], nil
@@ -106,8 +112,12 @@ func findCgroupMountpointAndRootFromReader(reader io.Reader, cgroupPath, subsyst
 	return "", "", NewNotFoundError(subsystem)
 }
 
+// 判断内核是否支持subsystem cgroup子系统
+// cgroup2 从"/sys/fs/cgroup/cgroup.controllers"，获取支持的cgroup子系统列表
+// 从/proc/self/cgroup获得各种cgroup系统的路径，解析出map[{cgroup subsystem}]{cgroup-path}
 func isSubsystemAvailable(subsystem string) bool {
 	if IsCgroup2UnifiedMode() {
+		// cgroup2 从"/sys/fs/cgroup/cgroup.controllers"，获取支持的cgroup子系统列表
 		controllers, err := GetAllSubsystems()
 		if err != nil {
 			return false
@@ -129,6 +139,7 @@ func isSubsystemAvailable(subsystem string) bool {
 	return avail
 }
 
+// 从mountinfo中获取最长的匹配dir的挂载路径
 func GetClosestMountpointAncestor(dir, mountinfo string) string {
 	deepestMountPoint := ""
 	for _, mountInfoEntry := range strings.Split(mountinfo, "\n") {
@@ -144,6 +155,10 @@ func GetClosestMountpointAncestor(dir, mountinfo string) string {
 	return deepestMountPoint
 }
 
+// 从"/proc/self/mountinfo"找到" 第一个cgroup子系统挂载路径
+// 从"/proc/self/mountinfo"找到" - "后面部分（字段数量必须大于等于3）中，第一个字段为"cgroup"或"cgroup2"的行，返回这一行的第5个字段的父路径
+// 比如 31 30 0:27 / /sys/fs/cgroup/systemd rw,nosuid,nodev,noexec,relatime shared:9 - cgroup cgroup rw,xattr,release_agent=/usr/lib/systemd/systemd-cgroups-agent,name=systemd
+// 返回"/sys/fs/cgroup"
 func FindCgroupMountpointDir() (string, error) {
 	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
@@ -157,6 +172,7 @@ func FindCgroupMountpointDir() (string, error) {
 		fields := strings.Split(text, " ")
 		// Safe as mountinfo encodes mountpoints with spaces as \040.
 		index := strings.Index(text, " - ")
+		// " - "后面部分
 		postSeparatorFields := strings.Fields(text[index+3:])
 		numPostFields := len(postSeparatorFields)
 
@@ -277,6 +293,8 @@ func GetCgroupMounts(all bool) ([]Mount, error) {
 }
 
 // GetAllSubsystems returns all the cgroup subsystems supported by the kernel
+// cgroup2 从"/sys/fs/cgroup/cgroup.controllers"，获取支持的cgroup子系统列表
+// cgroup1 从"/proc/cgroups"，获取支持的cgroup子系统列表
 func GetAllSubsystems() ([]string, error) {
 	// /proc/cgroups is meaningless for v2
 	// https://github.com/torvalds/linux/blob/v5.3/Documentation/admin-guide/cgroup-v2.rst#deprecated-v1-core-features
@@ -318,34 +336,39 @@ func GetAllSubsystems() ([]string, error) {
 }
 
 // GetOwnCgroup returns the relative path to the cgroup docker is running in.
+// 从/proc/self/cgroup，获得subsystem的cgroup路径（相对cgroup根路径（比如/sys/fs/cgroup））
 func GetOwnCgroup(subsystem string) (string, error) {
-	// 从/proc/self/cgroup获得各种cgroup系统的路径，解析出map[{cgroup subsystem}]{cgroup-path}
+	// 从/proc/self/cgroup获得各种cgroup系统的路径，解析出map[{cgroup subsystem}]{cgroup-path}，这里的cgroup-path是相对cgroup根路径（比如/sys/fs/cgroup）
 	cgroups, err := ParseCgroupFile("/proc/self/cgroup")
 	if err != nil {
 		return "", err
 	}
 
-	// 获得subsystem的cgroup系统的路径
+	// 从提供cgroups中提取出subsystem对应的路径
 	return getControllerPath(subsystem, cgroups)
 }
 
-// 进程的cgroup subsystem的路径
+// 进程的cgroup subsystem的绝对路径
 func GetOwnCgroupPath(subsystem string) (string, error) {
+	// 从/proc/self/cgroup获得subsystem的cgroup路径(相对于cgroup root目录)
 	cgroup, err := GetOwnCgroup(subsystem)
 	if err != nil {
 		return "", err
 	}
 
+	// 返回cgroup subsystem子系统的绝对路径
 	return getCgroupPathHelper(subsystem, cgroup)
 }
 
+// 从/proc/1/cgroup获得subsystem对应的相对cgroup根路径
 func GetInitCgroup(subsystem string) (string, error) {
-	// 从/proc/1/cgroup获得各种cgroup系统的路径，解析出map[{cgroup subsystem}]{cgroup-path}
+	// 从/proc/1/cgroup获得各种cgroup系统的路径，解析出map[{cgroup subsystem}]{cgroup-path}，这里的cgroup-path是相对cgroup根路径（比如/sys/fs/cgroup），比如"cpu"对应"/"
 	cgroups, err := ParseCgroupFile("/proc/1/cgroup")
 	if err != nil {
 		return "", err
 	}
 
+	// 从提供cgroups中提取出subsystem对应的路径
 	return getControllerPath(subsystem, cgroups)
 }
 
@@ -358,7 +381,7 @@ func GetInitCgroupPath(subsystem string) (string, error) {
 	return getCgroupPathHelper(subsystem, cgroup)
 }
 
-// 找到subsystem子系统在/proc/self/mountinfo中的挂载目录
+// 返回cgroup subsystem子系统的绝对路径（从/proc/self/mountinfo里获取subsystem的挂载路径和根路径，然后进行cgroup路径拼合）
 func getCgroupPathHelper(subsystem, cgroup string) (string, error) {
 	// 找到subsystem子系统在/proc/self/mountinfo信息里挂载目录和root目录
 	mnt, root, err := FindCgroupMountpointAndRoot("", subsystem)
@@ -402,7 +425,8 @@ func readProcsFile(dir string) ([]int, error) {
 
 // ParseCgroupFile parses the given cgroup file, typically from
 // /proc/<pid>/cgroup, into a map of subgroups to cgroup names.
-// 从/proc/{pid}/cgroup中解析出map[{cgroup subsystem}]{cgroup-path}
+// 从/proc/{pid}/cgroup中解析出map[{cgroup subsystem}]{cgroup-path}，这里的cgroup-path是相对cgroup根路径（比如/sys/fs/cgroup）
+// 比如"cpu"对应"/system.slice/kubelet.service"
 func ParseCgroupFile(path string) (map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -442,6 +466,7 @@ func parseCgroupFromReader(r io.Reader) (map[string]string, error) {
 	return cgroups, nil
 }
 
+// 从提供cgroups中提取出subsystem对应的路径
 func getControllerPath(subsystem string, cgroups map[string]string) (string, error) {
 	if IsCgroup2UnifiedMode() {
 		return "/", nil
@@ -465,9 +490,12 @@ func PathExists(path string) bool {
 	return true
 }
 
+// 遍历cgroupPaths将pid写入path下的"cgroup.procs"文件
 func EnterPid(cgroupPaths map[string]string, pid int) error {
 	for _, path := range cgroupPaths {
 		if PathExists(path) {
+			// 将pid写入到path下的"cgroup.procs"文件，最多重试5次
+			// 在cpuset子系统中，如果dir目录下"cpuset.cpus"和"cpuset.mems"文件为空，则写入dir下的"cgroup.procs"文件会报错"write error: No space left on device"
 			if err := WriteCgroupProc(path, pid); err != nil {
 				return err
 			}
@@ -562,6 +590,9 @@ func GetAllPids(path string) ([]int, error) {
 }
 
 // WriteCgroupProc writes the specified pid into the cgroup's cgroup.procs file
+// 如果pid为-1，直接返回
+// 将pid写入到dir下的"cgroup.procs"文件，最多重试5次
+// 在cpuset子系统中，如果dir目录下"cpuset.cpus"和"cpuset.mems"文件为空，则写入dir下的"cgroup.procs"文件会报错"write error: No space left on device"
 func WriteCgroupProc(dir string, pid int) error {
 	// Normally dir should not be empty, one case is that cgroup subsystem
 	// is not mounted, we will get empty dir, and we want it fail here.

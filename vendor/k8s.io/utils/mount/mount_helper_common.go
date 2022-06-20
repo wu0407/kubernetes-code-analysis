@@ -27,16 +27,21 @@ import (
 // if successful. If extensiveMountPointCheck is true IsNotMountPoint will be
 // called instead of IsLikelyNotMountPoint. IsNotMountPoint is more expensive
 // but properly handles bind mounts within the same fs.
+// 执行umount {mountPath}，然后移除mountPath目录
 func CleanupMountPoint(mountPath string, mounter Interface, extensiveMountPointCheck bool) error {
 	pathExists, pathErr := PathExists(mountPath)
+	// 挂载路径不存在，直接返回
 	if !pathExists {
 		klog.Warningf("Warning: Unmount skipped because path does not exist: %v", mountPath)
 		return nil
 	}
+	// 是否是挂载点损坏错误
 	corruptedMnt := IsCorruptedMnt(pathErr)
+	// pathErr不为nil且不是挂载点损坏错误，返回错误
 	if pathErr != nil && !corruptedMnt {
 		return fmt.Errorf("Error checking path: %v", pathErr)
 	}
+	// 卸载mountPath挂载点，然后移除mountPath目录
 	return doCleanupMountPoint(mountPath, mounter, extensiveMountPointCheck, corruptedMnt)
 }
 
@@ -47,13 +52,20 @@ func CleanupMountPoint(mountPath string, mounter Interface, extensiveMountPointC
 // IsNotMountPoint is more expensive but properly handles bind mounts within the same fs.
 // if corruptedMnt is true, it means that the mountPath is a corrupted mountpoint, and the mount point check
 // will be skipped
+// 卸载mountPath挂载点，然后移除mountPath目录
 func doCleanupMountPoint(mountPath string, mounter Interface, extensiveMountPointCheck bool, corruptedMnt bool) error {
 	var notMnt bool
 	var err error
+	// 不是挂载点损坏
 	if !corruptedMnt {
+		// 需要全面的挂载点检查
 		if extensiveMountPointCheck {
+			// 如果mountPath的设备号与父目录的设备号不一样，说明mountPath是挂载点，直接返回false
+			// 否则从"/proc/mounts"文件里查找，是否为挂载路径
 			notMnt, err = IsNotMountPoint(mounter, mountPath)
 		} else {
+			// 不需要全面挂载点检查，则执行快速挂载点检查
+			// 当mountPath的设备号与父目录的设备号不一样（但是不能判断同一目录下的bind挂载），则为mountPath为挂载点，返回false，否则返回true
 			notMnt, err = mounter.IsLikelyNotMountPoint(mountPath)
 		}
 
@@ -61,26 +73,38 @@ func doCleanupMountPoint(mountPath string, mounter Interface, extensiveMountPoin
 			return err
 		}
 
+		// mountPath不是挂载点，则直接删除mountPath目录
 		if notMnt {
 			klog.Warningf("Warning: %q is not a mountpoint, deleting", mountPath)
 			return os.Remove(mountPath)
 		}
 	}
 
+	// mountPath挂载点损坏
+
 	// Unmount the mount path
 	klog.V(4).Infof("%q is a mountpoint, unmounting", mountPath)
+	// 执行umount {target}命令进行卸载
 	if err := mounter.Unmount(mountPath); err != nil {
 		return err
 	}
 
+	// 删除挂载点目录mountPath
+
+	// 需要全面的挂载点检查
 	if extensiveMountPointCheck {
+		// 如果mountPath的设备号与父目录的设备号不一样，说明mountPath是挂载点，直接返回false
+		// 否则从"/proc/mounts"文件里查找，是否为挂载路径
 		notMnt, err = IsNotMountPoint(mounter, mountPath)
 	} else {
+		// 不需要全面挂载点检查，则执行快速挂载点检查
+		// 当mountPath的设备号与父目录的设备号不一样（但是不能判断同一目录下的bind挂载），则为mountPath为挂载点，返回false，否则返回true
 		notMnt, err = mounter.IsLikelyNotMountPoint(mountPath)
 	}
 	if err != nil {
 		return err
 	}
+	// mountPath不是挂载点，则直接删除mountPath目录
 	if notMnt {
 		klog.V(4).Infof("%q is unmounted, deleting the directory", mountPath)
 		return os.Remove(mountPath)
@@ -97,6 +121,7 @@ func PathExists(path string) (bool, error) {
 	} else if os.IsNotExist(err) {
 		return false, nil
 	} else if IsCorruptedMnt(err) {
+		// 如果为挂载点损坏错误，也返回true
 		return true, err
 	}
 	return false, err

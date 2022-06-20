@@ -19,6 +19,8 @@ func (s *PidsGroup) Name() string {
 	return "pids"
 }
 
+// 创建"pids" subsystem cgroup子系统路径
+// 将d.pid（不为-1时）加入到"pids" subsystem cgroup下的"cgroup.procs"文件
 func (s *PidsGroup) Apply(d *cgroupData) error {
 	_, err := d.join("pids")
 	if err != nil && !cgroups.IsNotFound(err) {

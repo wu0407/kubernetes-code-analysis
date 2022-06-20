@@ -16,6 +16,9 @@ func (s *NameGroup) Name() string {
 	return s.GroupName
 }
 
+// 如果s.Join为true
+// 创建s.GroupName subsystem cgroup子系统路径
+// 将d.pid（不为-1时）加入到s.GroupName subsystem cgroup下的"cgroup.procs"文件
 func (s *NameGroup) Apply(d *cgroupData) error {
 	if s.Join {
 		// ignore errors if the named cgroup does not exist

@@ -55,6 +55,9 @@ func newFsResourceAnalyzer(statsProvider Provider, calcVolumePeriod time.Duratio
 }
 
 // Start eager background caching of volume stats.
+// 启动一个goroutine，周期性更新s.cachedVolumeStats
+// s.cachedVolumeStats保存了volumeStatCalculator集合，用于计算kubelet上所有pod的所有volume状态，volumeStatCalculator用于生成并保存pod的volume状态。
+// 每个pod会启动一个goroutine，周期性获得pod各个volume的目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free，并将状态保存到volumeStatCalculator.latest
 func (s *fsResourceAnalyzer) Start() {
 	s.startOnce.Do(func() {
 		if s.calcPeriod <= 0 {
@@ -62,25 +65,35 @@ func (s *fsResourceAnalyzer) Start() {
 			return
 		}
 		klog.Info("Starting FS ResourceAnalyzer")
+		// 更新s.cachedVolumeStats保存了volumeStatCalculator集合，用于计算kubelet上所有pod的所有volume状态，volumeStatCalculator用于生成并保存pod的volume状态。
+		// 每个pod会启动一个goroutine，周期性获得pod各个volume的目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free，并将状态保存到volumeStatCalculator.latest
 		go wait.Forever(func() { s.updateCachedPodVolumeStats() }, s.calcPeriod)
 	})
 }
 
 // updateCachedPodVolumeStats calculates and caches the PodVolumeStats for every Pod known to the kubelet.
+// 更新s.cachedVolumeStats，s.cachedVolumeStats保存了volumeStatCalculator集合。volumeStatCalculator用于计算kubelet上所有pod的所有volume状态，保存pod的volume状态的对象。
+// 每个pod会启动一个goroutine，周期性获得pod各个volume的目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free，并将状态保存到volumeStatCalculator.latest
 func (s *fsResourceAnalyzer) updateCachedPodVolumeStats() {
 	oldCache := s.cachedVolumeStats.Load().(statCache)
 	newCache := make(statCache)
 
 	// Copy existing entries to new map, creating/starting new entries for pods missing from the cache
+	// statsProvider一般是kubelet
+	// 所有普通pod和static pod，如果static pod，则从status manager中获取最新状态赋值给pod的Status字段
 	for _, pod := range s.statsProvider.GetPods() {
+		// 没有在老的cache中，则添加到newCache中
 		if value, found := oldCache[pod.GetUID()]; !found {
+			// 启动一个goroutine，周期性获得pod各个volume的目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free，并将状态保存到volumeStatCalculator.latest，返回volumeStatCalculator
 			newCache[pod.GetUID()] = newVolumeStatCalculator(s.statsProvider, s.calcPeriod, pod).StartOnce()
 		} else {
+			// 在老的cache中，则赋值给newCache
 			newCache[pod.GetUID()] = value
 		}
 	}
 
 	// Stop entries for pods that have been deleted
+	// pod如果delete，则停止周期性获得pod各个volume的状态的goroutine
 	for uid, entry := range oldCache {
 		if _, found := newCache[uid]; !found {
 			entry.StopOnce()
@@ -88,18 +101,26 @@ func (s *fsResourceAnalyzer) updateCachedPodVolumeStats() {
 	}
 
 	// Update the cache reference
+	// 将新的cache保存到s.cachedVolumeStats
 	s.cachedVolumeStats.Store(newCache)
 }
 
 // GetPodVolumeStats returns the PodVolumeStats for a given pod.  Results are looked up from a cache that
 // is eagerly populated in the background, and never calculated on the fly.
+// 从s.cachedVolumeStats获得最新的statCache（所有pod与对应的保存pod的所有volume状态的volumeStatCalculator）
+// 从statCache中获取保存pod的所有volume状态的volumeStatCalculator
+// 从statCalc.latest里获取PodVolumeStats（pod各个volume的获取目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free）
 func (s *fsResourceAnalyzer) GetPodVolumeStats(uid types.UID) (PodVolumeStats, bool) {
+	// 从s.cachedVolumeStats获得最新的statCache（所有pod与对应的保存pod的所有volume状态的volumeStatCalculator）
 	cache := s.cachedVolumeStats.Load().(statCache)
+	// 从statCache中获取保存pod的所有volume状态的volumeStatCalculator
 	statCalc, found := cache[uid]
 	if !found {
 		// TODO: Differentiate between stats being empty
 		// See issue #20679
 		return PodVolumeStats{}, false
 	}
+	// 从statCalc.latest里获取PodVolumeStats（pod各个volume的获取目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free）
+	// 状态分为两类EphemeralVolumes（EmptyDir且EmptyDir底层存储不是内存、ConfigMap、GitRepo）和PersistentVolumes
 	return statCalc.GetLatest()
 }

@@ -161,11 +161,16 @@ func (cc *cadvisorClient) MachineInfo() (*cadvisorapi.MachineInfo, error) {
 	return cc.GetMachineInfo()
 }
 
+// 获得镜像保存的磁盘设备最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表、inode使用情况），磁盘可能有多个
 func (cc *cadvisorClient) ImagesFsInfo() (cadvisorapiv2.FsInfo, error) {
+	// 如果runtime是docker，则返回"docker-images"
+	// 如果runtime是remote，如果runtimeEndpoint为"/var/run/crio/crio.sock"或"unix:///var/run/crio/crio.sock"（即运行时为cri-o），返回"crio-images"
+	// 其他runtime，不支持，返回错误
 	label, err := cc.imageFsInfoProvider.ImageFsInfoLabel()
 	if err != nil {
 		return cadvisorapiv2.FsInfo{}, err
 	}
+	// 获得这个label的磁盘设备最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表），磁盘可能有多个
 	return cc.getFsInfo(label)
 }
 
@@ -175,7 +180,9 @@ func (cc *cadvisorClient) RootFsInfo() (cadvisorapiv2.FsInfo, error) {
 	return cc.GetDirFsInfo(cc.rootPath)
 }
 
+// 获得这个label的磁盘设备最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表），磁盘可能有多个
 func (cc *cadvisorClient) getFsInfo(label string) (cadvisorapiv2.FsInfo, error) {
+	// 获得这个label的磁盘设备最近状态（磁盘设备名、状态的时间、磁盘大小、可用大小、使用量、label列表），磁盘可能有多个
 	res, err := cc.GetFsInfo(label)
 	if err != nil {
 		return cadvisorapiv2.FsInfo{}, err

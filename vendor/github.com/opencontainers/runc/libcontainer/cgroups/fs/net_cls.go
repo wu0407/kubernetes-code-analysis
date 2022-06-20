@@ -17,6 +17,8 @@ func (s *NetClsGroup) Name() string {
 	return "net_cls"
 }
 
+// 创建"net_cls" subsystem cgroup子系统路径
+// 将d.pid（不为-1时）加入到"net_cls" subsystem cgroup下的"cgroup.procs"文件
 func (s *NetClsGroup) Apply(d *cgroupData) error {
 	_, err := d.join("net_cls")
 	if err != nil && !cgroups.IsNotFound(err) {

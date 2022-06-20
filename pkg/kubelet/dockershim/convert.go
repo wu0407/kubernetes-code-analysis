@@ -44,6 +44,7 @@ func imageToRuntimeAPIImage(image *dockertypes.ImageSummary) (*runtimeapi.Image,
 	}, nil
 }
 
+// 将*dockertypes.ImageInspect（docker image inspect结果）转成*runtimeapi.Image
 func imageInspectToRuntimeAPIImage(image *dockertypes.ImageInspect) (*runtimeapi.Image, error) {
 	if image == nil || image.Config == nil {
 		return nil, fmt.Errorf("unable to convert a nil pointer to a runtime API image")
@@ -57,6 +58,7 @@ func imageInspectToRuntimeAPIImage(image *dockertypes.ImageInspect) (*runtimeapi
 		Size_:       size,
 	}
 
+	// 解析出用户id或用户名
 	uid, username := getUserFromImageUser(image.Config.User)
 	if uid != nil {
 		runtimeImage.Uid = &runtimeapi.Int64Value{Value: *uid}

@@ -30,8 +30,11 @@ func (s *CpuacctGroup) Name() string {
 	return "cpuacct"
 }
 
+// 创建"cpuacct" subsystem cgroup子系统路径
+// 将pid（不为-1时）加入到"cpuacct" subsystem cgroup下的"cgroup.procs"文件
 func (s *CpuacctGroup) Apply(d *cgroupData) error {
 	// we just want to join this group even though we don't set anything
+	// 将pid（不为-1时）加入到subsystem cgroup下的"cgroup.procs"文件
 	if _, err := d.join("cpuacct"); err != nil && !cgroups.IsNotFound(err) {
 		return err
 	}

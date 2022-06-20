@@ -266,6 +266,8 @@ func NewContainerManager(mountUtil mount.Interface, cadvisorInterface cadvisor.I
 		// of note, we always use the cgroupfs driver when performing this check since
 		// the input is provided in that format.
 		// this is important because we do not want any name conversion to occur.
+		// cgroupRoot为空，在cgroup driver为systemd情况下，则cgroupPaths为各个子系统在系统中的挂载，比如cpu-->/sys/fs/cgroup/cpu,cpuacct
+		// 不是所有cgroup子系统的路径都存在
 		if !cgroupManager.Exists(cgroupRoot) {
 			return nil, fmt.Errorf("invalid configuration: cgroup-root %q doesn't exist", cgroupRoot)
 		}
@@ -362,6 +364,7 @@ func (cm *containerManagerImpl) NewPodContainerManager() PodContainerManager {
 			subsystems:        cm.subsystems,
 			cgroupManager:     cm.cgroupManager,
 			podPidsLimit:      cm.ExperimentalPodPidsLimit,
+			// 默认为true
 			enforceCPULimits:  cm.EnforceCPULimits,
 			cpuCFSQuotaPeriod: uint64(cm.CPUCFSQuotaPeriod / time.Microsecond),
 		}
@@ -451,10 +454,10 @@ func setupKernelTunables(option KernelTunableBehavior) error {
 //    为system-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename system-reserved-cgroup}，限制值为各个类型system-reserved值
 //    为kube-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename kube-reserved-cgroup}，限制值为各个类型kube-reserved
 // 5. 设置cm.periodicTasks和cm.systemContainers
-//   cm.periodicTasks里可能有
+//   cm.periodicTasks的值可能有
 //     当运行时为docker，设置cm.RuntimeCgroupsName为docker的cgroup路径
 //     当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
-//   cm.systemContainers里可能有
+//   cm.systemContainers的值可能有
 //    当cm.SystemCgroupsName不为空， cm.SystemCgroupsName: newSystemCgroups(cm.SystemCgroupsName), ensureStateFunc: 将非内核pid或非init进程的pid移动到cm.SystemCgroupsNamecgroup中
 //    当cm.kubeletCgroupsName不为空，cm.kubeletCgroupsName: newSystemCgroups(cm.KubeletCgroupsName), ensureStateFunc: 设置kubelet进程的oom_score_adj为-999,将kubelet进程移动到kubeletCgroupsName的cgroup路径中
 func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
@@ -500,7 +503,7 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 
 	// Enforce Node Allocatable (if required)
 	// 应用--enforce-node-allocatable的配置，设置各个（cpu、memory、pid、hugepage）cgroup的限制值
-	// 为pods，则设置在/sys/fs/cgroup/{cgroup sub system}/kubepods.slice，限制值为各个类型capacity减去SystemReserved和KubeReserved
+	// 为pods，则设置在/sys/fs/cgroup/{cgroup sub system}/kubepods.slice，限制值为node各个资源类型capacity减去SystemReserved和KubeReserved
 	// 为system-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename system-reserved-cgroup}，限制值为各个类型system-reserved值
 	// 为kube-reserved， 则设置在/sys/fs/cgroup/{cgroup sub system}/{basename kube-reserved-cgroup}，限制值为各个类型kube-reserved
 	if err := cm.enforceNodeAllocatableCgroups(); err != nil {
@@ -545,9 +548,16 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 		systemContainers = append(systemContainers, cont)
 	}
 
-	// 添加cm.KubeletCgroupsName的systemContainer到systemContainers或添加任务（设置cm.KubeletCgroupsName为kubelet进程的cgroup路径和设置kubelet进程的oom_score_adj为-999）到cm.periodicTasks
+	// 创建cm.KubeletCgroupsName的*systemContainer并添加到systemContainers或添加任务（设置cm.KubeletCgroupsName为kubelet进程的cgroup路径和设置kubelet进程的oom_score_adj为-999）到cm.periodicTasks
 	// 设置kubelet进程的oom_score_adj为-999
-	// 如果配置了--kubelet-cgroups或配置文件KubeletCgroups，则将kubelet进程移动到指定的cgroup路径中
+	// 如果配置了--kubelet-cgroups或配置文件KubeletCgroups，则将kubelet进程移动到指定的cgroup路径中，并设置cgroup目录的属性值
+	// 设置cgroup目录的属性值：
+	// cpuset
+	//    递归的创建KubeletCgroupsName的cpuset cgroup父目录
+	//    如果递归路径下面的"cpuset.cpus"和"cpuset.mems"文件的内容为空，则设置为其父目录里对应文件的值
+	//    对于KubeletCgroupsName的cpuset cgroup目录下面的"cpuset.cpus"和"cpuset.mems"文件的内容设置为父目录里对应文件的值（创建cpuset cgroup目录时候，自动会设置cpuset.cpus和cpuset.mems为空，设置为父目录的值以后可能为空或不为空）
+	// 
+	// 如果设置cgroup子系统出错，则忽略这个错误，并且下次执行ensureStateFunc不会执行这个cgroup子系统
 	if cm.KubeletCgroupsName != "" {
 		cont := newSystemCgroups(cm.KubeletCgroupsName)
 		allowAllDevices := true
@@ -570,6 +580,7 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 				klog.Error(err)
 				return
 			}
+			// 获取kubelet进程的cgroup路径，比如/system.slice/kubelet.service
 			cont, err := getContainer(os.Getpid())
 			if err != nil {
 				klog.Errorf("failed to find cgroups of kubelet - %v", err)
@@ -578,6 +589,7 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 			cm.Lock()
 			defer cm.Unlock()
 
+			// 设置cm.KubeletCgroupsName为kubelet进程的cgroup路径
 			cm.KubeletCgroupsName = cont
 		})
 	}
@@ -587,8 +599,8 @@ func (cm *containerManagerImpl) setupNode(activePods ActivePodsFunc) error {
 	// 当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
 
 	// cm.systemContainers里可能有
-	// cm.SystemCgroupsName: newSystemCgroups(cm.SystemCgroupsName), ensureStateFunc: 将非内核pid或非init进程的pid移动到cm.SystemCgroupsName的cgroup中
-	// cm.kubeletCgroupsName: newSystemCgroups(cm.KubeletCgroupsName), ensureStateFunc: 设置kubelet进程的oom_score_adj为-999,将kubelet进程移动到kubeletCgroupsName的cgroup路径中
+	// 当cm.SystemCgroupsName不为空: newSystemCgroups(cm.SystemCgroupsName), ensureStateFunc: 将非内核pid或非init进程的pid移动到cm.SystemCgroupsName的cgroup中
+	// 当cm.kubeletCgroupsName不为空: newSystemCgroups(cm.KubeletCgroupsName), ensureStateFunc: 设置kubelet进程的oom_score_adj为-999,将kubelet进程移动到kubeletCgroupsName的cgroup路径中
 	cm.systemContainers = systemContainers
 	return nil
 }
@@ -618,7 +630,11 @@ func (cm *containerManagerImpl) GetNodeConfig() NodeConfig {
 }
 
 // GetPodCgroupRoot returns the literal cgroupfs value for the cgroup containing all pods.
+// systemd为cgroup driver，默认返回为"/kubepods.slice"
+// cgroupfs为cgroup driver，则返回"/kubepods"
 func (cm *containerManagerImpl) GetPodCgroupRoot() string {
+	// cm.cgroupRoot默认为["kubepods"]
+	// systemd为cgroup driver，则输出"kubepods.slice"
 	return cm.cgroupManager.Name(cm.cgroupRoot)
 }
 
@@ -626,6 +642,13 @@ func (cm *containerManagerImpl) GetMountedSubsystems() *CgroupSubsystems {
 	return cm.subsystems
 }
 
+// 返回qosContainerManager字段中qosContainersInfo
+// 如果启用percgroupqos，则返回QOSContainersInfo {
+//     Guaranteed: ["kubepods"]
+//     Burstable: ["kubepods", "burstable"]
+//     BestEffort：["kubepods", "bestEffort"]
+// }
+// 否则返回qosContainerManagerNoop
 func (cm *containerManagerImpl) GetQOSContainersInfo() QOSContainersInfo {
 	return cm.qosContainerManager.GetQOSContainersInfo()
 }
@@ -735,7 +758,7 @@ func (cm *containerManagerImpl) Start(node *v1.Node,
 	// 5. 设置cm.periodicTasks和cm.systemContainers
 	//   cm.periodicTasks里可能有
 	//     当运行时为docker，设置cm.RuntimeCgroupsName为docker的cgroup路径
-	//     当cm.KubeletCgroupsName为空（没有配置kubelet cgroup），设置kubelet进程的oom_score_adj为-999
+	//     当cm.KubeletCgroupsName为空（没有配置kubelet cgroup，KubeletCgroupsName这个字段在被嵌套NodeConfig字段中），设置kubelet进程的oom_score_adj为-999
 	//   cm.systemContainers里可能有
 	//    当cm.SystemCgroupsName不为空， cm.SystemCgroupsName: newSystemCgroups(cm.SystemCgroupsName), ensureStateFunc: 将非内核pid或非init进程的pid移动到cm.SystemCgroupsNamecgroup中
 	//    当cm.kubeletCgroupsName不为空，cm.kubeletCgroupsName: newSystemCgroups(cm.KubeletCgroupsName), ensureStateFunc: 设置kubelet进程的oom_score_adj为-999,将kubelet进程移动到kubeletCgroupsName的cgroup路径中
@@ -799,16 +822,21 @@ func (cm *containerManagerImpl) GetPluginRegistrationHandler() cache.PluginHandl
 }
 
 // TODO: move the GetResources logic to PodContainerManager.
+// 从pod分配记录中（cm.deviceManager.podDevices）判断容器是否已经分配过需要的资源，没有就进行分配
+// 返回分配过或新分配资源转成container runtime运行参数（*kubecontainer.RunContainerOptions）
 func (cm *containerManagerImpl) GetResources(pod *v1.Pod, container *v1.Container) (*kubecontainer.RunContainerOptions, error) {
 	opts := &kubecontainer.RunContainerOptions{}
 	// Allocate should already be called during predicateAdmitHandler.Admit(),
 	// just try to fetch device runtime information from cached state here
+	// 从pod分配记录中（cm.deviceManager.podDevices）判断容器是否已经分配过需要的资源，没有就进行分配
+	// 返回分配过或新分配资源转成container runtime运行参数（*DeviceRunContainerOptions）
 	devOpts, err := cm.deviceManager.GetDeviceRunContainerOptions(pod, container)
 	if err != nil {
 		return nil, err
 	} else if devOpts == nil {
 		return opts, nil
 	}
+	// 进行拷贝操作
 	opts.Devices = append(opts.Devices, devOpts.Devices...)
 	opts.Mounts = append(opts.Mounts, devOpts.Mounts...)
 	opts.Envs = append(opts.Envs, devOpts.Envs...)
@@ -838,10 +866,12 @@ type resourceAllocator struct {
 	deviceManager devicemanager.Manager
 }
 
+// admit通过条件是：成功为pod里所有普通container和init container，分配container的limit中所有需要device plugins的资源，且成功分配cpu（如果policy为static policy，成功为Guaranteed的pod且container request的cpu为整数的container，分配cpu）
 func (m *resourceAllocator) Admit(attrs *lifecycle.PodAdmitAttributes) lifecycle.PodAdmitResult {
 	pod := attrs.Pod
 
 	for _, container := range append(pod.Spec.InitContainers, pod.Spec.Containers...) {
+		// 从注册的device plugins，分配container的limit中所有需要的资源
 		err := m.deviceManager.Allocate(pod, &container)
 		if err != nil {
 			return lifecycle.PodAdmitResult{
@@ -852,6 +882,7 @@ func (m *resourceAllocator) Admit(attrs *lifecycle.PodAdmitAttributes) lifecycle
 		}
 
 		if m.cpuManager != nil {
+			// policy为static policy，为Guaranteed的pod且container request的cpu为整数的container，分配cpu
 			err = m.cpuManager.Allocate(pod, &container)
 			if err != nil {
 				return lifecycle.PodAdmitResult{
@@ -1008,12 +1039,16 @@ func ensureProcessInContainerWithOOMScore(pid int, oomScoreAdj int, manager *fs.
 
 	var errs []error
 	if manager != nil {
+		// 获得kubelt进程的cgroup路径，比如/system.slice/kubelet.service
 		cont, err := getContainer(pid)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("failed to find container of PID %d: %v", pid, err))
 		}
 
+		// kubelet进程的cgroup路径与manager.Cgroups.Name（ 即cm.KubeletCgroupsName，配置了--kubelet-cgroups或配置文件KubeletCgroups）不一致，则创建指定的cgroup路径，并设置各个子系统的属性值
 		if cont != manager.Cgroups.Name {
+			// 创建各个cgroup系统目录，并将pid加入到这个cgroup中
+			// 其中cpuset、cpu、memory有特殊处理，具体看vendor\github.com\opencontainers\runc\libcontainer\cgroups\fs\apply_raw.go
 			err = manager.Apply(pid)
 			if err != nil {
 				errs = append(errs, fmt.Errorf("failed to move PID %d (in %q) to %q: %v", pid, cont, manager.Cgroups.Name, err))
@@ -1024,6 +1059,7 @@ func ensureProcessInContainerWithOOMScore(pid int, oomScoreAdj int, manager *fs.
 	// Also apply oom-score-adj to processes
 	oomAdjuster := oom.NewOOMAdjuster()
 	klog.V(5).Infof("attempting to apply oom_score_adj of %d to pid %d", oomScoreAdj, pid)
+	// 将oomScoreAdj值写入到/proc/<pid>/oom_score_adj
 	if err := oomAdjuster.ApplyOOMScoreAdj(pid, oomScoreAdj); err != nil {
 		klog.V(3).Infof("Failed to apply oom_score_adj %d for pid %d: %v", oomScoreAdj, pid, err)
 		errs = append(errs, fmt.Errorf("failed to apply oom score %d to PID %d: %v", oomScoreAdj, pid, err))
@@ -1135,6 +1171,8 @@ func (cm *containerManagerImpl) GetCapacity() v1.ResourceList {
 	return cm.capacity
 }
 
+// 更新node status会调用（在pkg\kubelet\kubelet_node_status.go里kl.defaultNodeStatusFuncs）
+// 返回所有device plugin的resource的capacity（包括health和unhealthy的）、所有device plugin的resource的allocatable（包括health的），所有删除掉的resource
 func (cm *containerManagerImpl) GetDevicePluginResourceCapacity() (v1.ResourceList, v1.ResourceList, []string) {
 	return cm.deviceManager.GetCapacity()
 }

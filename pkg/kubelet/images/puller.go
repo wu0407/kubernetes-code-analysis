@@ -44,8 +44,10 @@ func newParallelImagePuller(imageService kubecontainer.ImageService) imagePuller
 	return &parallelImagePuller{imageService}
 }
 
+// 启动一个goroutine根据是否达到限速进行拉取镜像或不拉取，并把结果发送到pullChan里
 func (pip *parallelImagePuller) pullImage(spec kubecontainer.ImageSpec, pullSecrets []v1.Secret, pullChan chan<- pullResult, podSandboxConfig *runtimeapi.PodSandboxConfig) {
 	go func() {
+		// 没有达到限速限制，则进行拉取镜像，返回镜像id或digest。否则返回空和"pull QPS exceeded"错误
 		imageRef, err := pip.imageService.PullImage(spec, pullSecrets, podSandboxConfig)
 		pullChan <- pullResult{
 			imageRef: imageRef,
@@ -64,6 +66,7 @@ type serialImagePuller struct {
 
 func newSerialImagePuller(imageService kubecontainer.ImageService) imagePuller {
 	imagePuller := &serialImagePuller{imageService, make(chan *imagePullRequest, maxImagePullRequests)}
+	// 启动一个goroutine，消费imagePuller.pullRequests通道里的数据，根据是否达到限速进行拉取镜像或不拉取，并把结果发送到*imagePullRequest.pullChan里
 	go wait.Until(imagePuller.processImagePullRequests, time.Second, wait.NeverStop)
 	return imagePuller
 }
@@ -75,6 +78,7 @@ type imagePullRequest struct {
 	podSandboxConfig *runtimeapi.PodSandboxConfig
 }
 
+// 生成一个拉取镜像的请求发送到sip.pullRequests通道中，让sip.processImagePullRequests()顺序执行拉取
 func (sip *serialImagePuller) pullImage(spec kubecontainer.ImageSpec, pullSecrets []v1.Secret, pullChan chan<- pullResult, podSandboxConfig *runtimeapi.PodSandboxConfig) {
 	sip.pullRequests <- &imagePullRequest{
 		spec:             spec,
@@ -84,8 +88,10 @@ func (sip *serialImagePuller) pullImage(spec kubecontainer.ImageSpec, pullSecret
 	}
 }
 
+// 消费sip.pullRequests通道里的数据，根据是否达到限速进行拉取镜像或不拉取，并把结果发送到*imagePullRequest.pullChan里
 func (sip *serialImagePuller) processImagePullRequests() {
 	for pullRequest := range sip.pullRequests {
+		// 没有达到限速限制，则进行拉取镜像，返回镜像id或digest。否则返回空和"pull QPS exceeded"错误
 		imageRef, err := sip.imageService.PullImage(pullRequest.spec, pullRequest.pullSecrets, pullRequest.podSandboxConfig)
 		pullRequest.pullChan <- pullResult{
 			imageRef: imageRef,

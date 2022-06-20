@@ -41,6 +41,7 @@ const (
 )
 
 // Checks whether app armor is required for pod to be run.
+// pod的annotations第一个包含前缀"container.apparmor.security.beta.kubernetes.io/"的annotation的值不为"unconfined"，则返回true，代表需要apparmor验证
 func isRequired(pod *v1.Pod) bool {
 	for key, value := range pod.Annotations {
 		if strings.HasPrefix(key, ContainerAnnotationKeyPrefix) {
@@ -51,12 +52,14 @@ func isRequired(pod *v1.Pod) bool {
 }
 
 // GetProfileName returns the name of the profile to use with the container.
+// 返回annotations["container.apparmor.security.beta.kubernetes.io/"+containerName]
 func GetProfileName(pod *v1.Pod, containerName string) string {
 	return GetProfileNameFromPodAnnotations(pod.Annotations, containerName)
 }
 
 // GetProfileNameFromPodAnnotations gets the name of the profile to use with container from
 // pod annotations
+// 返回annotations["container.apparmor.security.beta.kubernetes.io/"+containerName]
 func GetProfileNameFromPodAnnotations(annotations map[string]string, containerName string) string {
 	return annotations[ContainerAnnotationKeyPrefix+containerName]
 }

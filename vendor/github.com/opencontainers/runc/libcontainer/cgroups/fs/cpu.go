@@ -20,16 +20,29 @@ func (s *CpuGroup) Name() string {
 	return "cpu"
 }
 
+// 创建path cgroup路径
+// 如果配置里CpuRtPeriod不为0，则将值写入到path下的"cpu.rt_period_us"文件
+// 如果配置里CpuRtRuntime不为0，则将值写入到path下的"cpu.rt_runtime_us"文件
+// 将d.pid（不为-1时）写入（覆盖）到path下的"cgroup.procs"文件，最多重试5次 
 func (s *CpuGroup) Apply(d *cgroupData) error {
 	// We always want to join the cpu group, to allow fair cpu scheduling
 	// on a container basis
+	// 返回cpu subsystem子系统的绝对路径，比如"/sys/fs/cgroup/cpu/system.slice/kubelet.service"
 	path, err := d.path("cpu")
 	if err != nil && !cgroups.IsNotFound(err) {
 		return err
 	}
+	// 创建path cgroup路径
+	// 如果配置里CpuRtPeriod不为0，则将值写入到path下的"cpu.rt_period_us"文件
+	// 如果配置里CpuRtRuntime不为0，则将值写入到path下的"cpu.rt_runtime_us"文件
+	// 将pid（不为-1时）写入（覆盖）到path下的"cgroup.procs"文件，最多重试5次
 	return s.ApplyDir(path, d.config, d.pid)
 }
 
+// 创建path cgroup路径
+// 如果配置里CpuRtPeriod不为0，则将值写入到path下的"cpu.rt_period_us"文件
+// 如果配置里CpuRtRuntime不为0，则将值写入到path下的"cpu.rt_runtime_us"文件
+// 将pid（不为-1时）写入（覆盖）到path下的"cgroup.procs"文件，最多重试5次
 func (s *CpuGroup) ApplyDir(path string, cgroup *configs.Cgroup, pid int) error {
 	// This might happen if we have no cpu cgroup mounted.
 	// Just do nothing and don't fail.
@@ -42,14 +55,19 @@ func (s *CpuGroup) ApplyDir(path string, cgroup *configs.Cgroup, pid int) error 
 	// We should set the real-Time group scheduling settings before moving
 	// in the process because if the process is already in SCHED_RR mode
 	// and no RT bandwidth is set, adding it will fail.
+	// 如果CpuRtPeriod不为0，则将值写入到path下的"cpu.rt_period_us"文件
+	// 如果CpuRtRuntime不为0，则将值写入到path下的"cpu.rt_runtime_us"文件
 	if err := s.SetRtSched(path, cgroup); err != nil {
 		return err
 	}
 	// because we are not using d.join we need to place the pid into the procs file
 	// unlike the other subsystems
+	// 将pid（不为-1）写入（覆盖）到path下的"cgroup.procs"文件，最多重试5次
 	return cgroups.WriteCgroupProc(path, pid)
 }
 
+// 如果CpuRtPeriod不为0，则将值写入到path下的"cpu.rt_period_us"文件
+// 如果CpuRtRuntime不为0，则将值写入到path下的"cpu.rt_runtime_us"文件
 func (s *CpuGroup) SetRtSched(path string, cgroup *configs.Cgroup) error {
 	if cgroup.Resources.CpuRtPeriod != 0 {
 		if err := fscommon.WriteFile(path, "cpu.rt_period_us", strconv.FormatUint(cgroup.Resources.CpuRtPeriod, 10)); err != nil {

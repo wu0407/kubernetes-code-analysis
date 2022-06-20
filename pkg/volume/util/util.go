@@ -237,7 +237,9 @@ func GenerateVolumeName(clusterName, pvName string, maxLength int) string {
 }
 
 // GetPath checks if the path from the mounter is empty.
+// 返回插件在宿主机上挂载路径
 func GetPath(mounter volume.Mounter) (string, error) {
+	// 调用插件的获取在宿主机上挂载路径
 	path := mounter.GetPath()
 	if path == "" {
 		return "", fmt.Errorf("Path is empty %s", reflect.TypeOf(mounter).String())
@@ -323,6 +325,7 @@ func GetWindowsPath(path string) string {
 }
 
 // GetUniquePodName returns a unique identifier to reference a pod by
+// pod uid转成types.UniquePodName
 func GetUniquePodName(pod *v1.Pod) types.UniquePodName {
 	return types.UniquePodName(pod.UID)
 }
@@ -453,6 +456,7 @@ func CheckPersistentVolumeClaimModeBlock(pvc *v1.PersistentVolumeClaim) bool {
 // IsWindowsUNCPath checks if path is prefixed with \\
 // This can be used to skip any processing of paths
 // that point to SMB shares, local named pipes and local UNC path
+// windows系统下，且有`\\`前缀返回true
 func IsWindowsUNCPath(goos, path string) bool {
 	if goos != "windows" {
 		return false
@@ -483,6 +487,9 @@ func IsWindowsLocalPath(goos, path string) bool {
 }
 
 // MakeAbsolutePath convert path to absolute path according to GOOS
+// path格式化成对应操作系统风格的路径
+// 非windows系统，进行path路径格式标准化
+// windows系统，包含":"直接返回path。包含"/"或"\\"，添加盘符"c:"。其他情况添加"c:\\"前缀
 func MakeAbsolutePath(goos, path string) string {
 	if goos != "windows" {
 		return filepath.Clean("/" + path)
@@ -580,6 +587,8 @@ func GetPluginMountDir(host volume.VolumeHost, name string) string {
 
 // IsLocalEphemeralVolume determines whether the argument is a local ephemeral
 // volume vs. some other type
+// volume是GitRepo、不为"Memory"的EmptyDir、configMap、DownwardAPI，返回true
+// 而在pkg\kubelet\eviction\helpers.go里localVolumeNames，为HostPath、不为"Memory"的EmptyDir、configMap、gitrepo挂载的volume在pod.Spec.Volumes名字列表
 func IsLocalEphemeralVolume(volume v1.Volume) bool {
 	return volume.GitRepo != nil ||
 		(volume.EmptyDir != nil && volume.EmptyDir.Medium != v1.StorageMediumMemory) ||
@@ -588,6 +597,7 @@ func IsLocalEphemeralVolume(volume v1.Volume) bool {
 
 // GetPodVolumeNames returns names of volumes that are used in a pod,
 // either as filesystem mount or raw block device.
+// 所有普通container、initcontainer、EphemeralContainer里的挂载的volume和volumeDevice
 func GetPodVolumeNames(pod *v1.Pod) (mounts sets.String, devices sets.String) {
 	mounts = sets.NewString()
 	devices = sets.NewString()

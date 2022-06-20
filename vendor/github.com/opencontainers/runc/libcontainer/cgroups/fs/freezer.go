@@ -19,6 +19,8 @@ func (s *FreezerGroup) Name() string {
 	return "freezer"
 }
 
+// 创建"freezer" subsystem cgroup子系统路径
+// 将d.pid（不为-1时）加入到"freezer" subsystem cgroup下的"cgroup.procs"文件
 func (s *FreezerGroup) Apply(d *cgroupData) error {
 	_, err := d.join("freezer")
 	if err != nil && !cgroups.IsNotFound(err) {

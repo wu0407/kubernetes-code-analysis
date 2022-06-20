@@ -32,7 +32,7 @@ var (
 		&FreezerGroup{},
 		&NameGroup{GroupName: "name=systemd", Join: true},
 	}
-	// hugepage类型列表
+	// 系统支持的hugepage类型列表
 	HugePageSizes, _ = cgroups.GetHugePageSize()
 )
 
@@ -75,6 +75,7 @@ var cgroupRootLock sync.Mutex
 var cgroupRoot string
 
 // Gets the cgroupRoot.
+// 返回cgroup子系统挂载父路径，比如返回"/sys/fs/cgroup"
 func getCgroupRoot() (string, error) {
 	cgroupRootLock.Lock()
 	defer cgroupRootLock.Unlock()
@@ -83,6 +84,8 @@ func getCgroupRoot() (string, error) {
 		return cgroupRoot, nil
 	}
 
+	// 从"/proc/self/mountinfo"找到" 第一个cgroup子系统挂载路径，返回其父目录
+	// 比如返回"/sys/fs/cgroup"
 	root, err := cgroups.FindCgroupMountpointDir()
 	if err != nil {
 		return "", err
@@ -135,6 +138,7 @@ func (m *Manager) getSubsystems() subsystemSet {
 	return subsystemsLegacy
 }
 
+// 创建各个cgroup系统目录，并将pid（不为-1时）加入（覆盖）到这个cgroup中"cgroup.procs"文件
 func (m *Manager) Apply(pid int) (err error) {
 	if m.Cgroups == nil {
 		return nil
@@ -144,14 +148,23 @@ func (m *Manager) Apply(pid int) (err error) {
 
 	var c = m.Cgroups
 
+	// 返回cgroupData
+	// return &cgroupData{
+	// 	root:    cgroup挂载的父路径，比如" /sys/fs/cgroup"
+	// 	innerPath: 这个实例的cgroup路径, 即m.Cgroups.Path路径或m.Cgroups.Parent和m.Cgroups.Name拼起来的路径
+	// 	config:    c,
+	// 	pid:       pid,
+	// }
 	d, err := getCgroupData(m.Cgroups, pid)
 	if err != nil {
 		return err
 	}
 
 	m.Paths = make(map[string]string)
+	// 已经知道cgroup子系统和对应挂载路径，这个在重复执行的时候会使用到
 	if c.Paths != nil {
 		for name, path := range c.Paths {
+			// 返回cgroup subsystem子系统的绝对路径
 			_, err := d.path(name)
 			if err != nil {
 				if cgroups.IsNotFound(err) {
@@ -164,10 +177,12 @@ func (m *Manager) Apply(pid int) (err error) {
 		return cgroups.EnterPid(m.Paths, pid)
 	}
 
+	// c.Paths为空，则遍历执行所有cgroup子系统来设置c.Paths，一般这个在第一次执行的时候
 	for _, sys := range m.getSubsystems() {
 		// TODO: Apply should, ideally, be reentrant or be broken up into a separate
 		// create and join phase so that the cgroup hierarchy for a container can be
 		// created then join consists of writing the process pids to cgroup.procs
+		// 返回cgroup subsystem子系统的绝对路径
 		p, err := d.path(sys.Name())
 		if err != nil {
 			// The non-presence of the devices subsystem is
@@ -179,11 +194,32 @@ func (m *Manager) Apply(pid int) (err error) {
 		}
 		m.Paths[sys.Name()] = p
 
+		// cpuset:
+		//   1. 递归的创建cpuset的cgroup父目录
+		//   2. 如果递归路径下面的"cpuset.cpus"和"cpuset.mems"文件的内容为空，则设置为其父目录里对应文件的值
+		//   3. 创建cpuset的cgroup目录
+		//   4. cgroup里设置了CpusetCpus和CpusetMems值，则写入进程cpuset的cgroup目录下"cpuset.cpus"和"cpuset.mems"文件
+		//   5. 如果path路径下面的"cpuset.cpus"和"cpuset.mems"文件的内容为空，则设置为父目录里对应文件的值
+		//   6. 将pid写入（覆盖）到cpuset的cgroup下的"cgroup.procs"文件，最多重试5次
+		// memory:
+		//   1. 根据cgroup.Resources判断是否要设置memory cgroup
+		//   2. 如果cgroup路径下面没有子cgroup路径且cgroup.procs里没有进程绑定了，则将"-1"写入到path下的memory.kmem.limit_in_bytes文件，设置为无限制
+		//   3. 将pid加入到subsystem cgroup下的"cgroup.procs"文件
+		//   4. 发生任何错误移除memory subsystem子系统的绝对路径
+		// cpu:
+		//   1. 创建path cgroup路径
+		//   2. 如果配置里CpuRtPeriod不为0，则将值写入到path下的"cpu.rt_period_us"文件
+		//   3. 如果配置里CpuRtRuntime不为0，则将值写入到path下的"cpu.rt_runtime_us"文件
+		//   4. 将d.pid写入（覆盖）到path下的"cgroup.procs"文件，最多重试5次
+		// devices、cpuacct、pid、blkio、hugetlb、net_cls、net_prio、pref_event、freezer、"name=systemd":
+		//   1. 创建 subsystem cgroup子系统路径
+		//   2. 将pid加入（覆盖）到 subsystem cgroup下的"cgroup.procs"文件
 		if err := sys.Apply(d); err != nil {
 			// In the case of rootless (including euid=0 in userns), where an explicit cgroup path hasn't
 			// been set, we don't bail on error in case of permission problems.
 			// Cases where limits have been set (and we couldn't create our own
 			// cgroup) are handled by Set.
+			// rootless（m.Rootless为true，非root模式）且错误是权限错误且m.Cgroups.Path为空，则忽略这个错误并将这个cgroup子系统从m.Paths移除，下次执行的时候不再执行这个cgroup子系统
 			if isIgnorableError(m.Rootless, err) && m.Cgroups.Path == "" {
 				delete(m.Paths, sys.Name())
 				continue
@@ -332,11 +368,13 @@ func (m *Manager) GetAllPids() ([]int, error) {
 }
 
 func getCgroupData(c *configs.Cgroup, pid int) (*cgroupData, error) {
+	// 返回cgroup子系统挂载父路径，比如返回"/sys/fs/cgroup"
 	root, err := getCgroupRoot()
 	if err != nil {
 		return nil, err
 	}
 
+	// c.Name、c.Parent不能和c.Path一起存在
 	if (c.Name != "" || c.Parent != "") && c.Path != "" {
 		return nil, fmt.Errorf("cgroup: either Path or Name and Parent should be used")
 	}
@@ -359,7 +397,11 @@ func getCgroupData(c *configs.Cgroup, pid int) (*cgroupData, error) {
 	}, nil
 }
 
+// 返回cgroup subsystem子系统的绝对路径，比如"/sys/fs/cgroup/cpu,cpuacct/system.slice/kubelet.service"
 func (raw *cgroupData) path(subsystem string) (string, error) {
+	// 如果是cgroup2子系统，返回"/sys/fs/cgroup"
+	// 否则cgroup1子系统，找到subsystem子系统在/proc/self/mountinfo信息里挂载目录和root目录
+	// 比如raw.root为"/sys/fs/cgroup" subsystem为"cpu", 返回"/sys/fs/cgroup/cpu,cpuacct"
 	mnt, err := cgroups.FindCgroupMountpoint(raw.root, subsystem)
 	// If we didn't mount the subsystem, there is no point we make the path.
 	if err != nil {
@@ -369,28 +411,38 @@ func (raw *cgroupData) path(subsystem string) (string, error) {
 	// If the cgroup name/path is absolute do not look relative to the cgroup of the init process.
 	if filepath.IsAbs(raw.innerPath) {
 		// Sometimes subsystems can be mounted together as 'cpu,cpuacct'.
+		// raw.innerPath是绝对路径，则返回拼接路径raw.root, filepath.Base(mnt), raw.innerPath
+		// 比如raw.root为"/sys/fs/cgroup"，mnt为"/sys/fs/cgroup/cpu,cpuacct"， raw.innerPath为"/system.slice/kubelet.service"
+		// 返回"/sys/fs/cgroup/cpu,cpuacct/system.slice/kubelet.service"
 		return filepath.Join(raw.root, filepath.Base(mnt), raw.innerPath), nil
 	}
 
 	// Use GetOwnCgroupPath instead of GetInitCgroupPath, because the creating
 	// process could in container and shared pid namespace with host, and
 	// /proc/1/cgroup could point to whole other world of cgroups.
+	// 进程的cgroup subsystem的绝对路径
 	parentPath, err := cgroups.GetOwnCgroupPath(subsystem)
 	if err != nil {
 		return "", err
 	}
 
+	// raw.innerPath是相对路径，则返回拼合parentPath和raw.innerPath
 	return filepath.Join(parentPath, raw.innerPath), nil
 }
 
+// 创建subsystem cgroup子系统路径
+// 将raw.pid加入（覆盖）到subsystem cgroup下的"cgroup.procs"文件
 func (raw *cgroupData) join(subsystem string) (string, error) {
+	// 返回cgroup subsystem子系统的绝对路径，比如"/sys/fs/cgroup/cpu,cpuacct/system.slice/kubelet.service"
 	path, err := raw.path(subsystem)
 	if err != nil {
 		return "", err
 	}
+	// 创建这个cgroup子系统路径
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return "", err
 	}
+	// 将pid写入（覆盖）到的subsystem cgroup下的"cgroup.procs"文件，最多重试5次
 	if err := cgroups.WriteCgroupProc(path, raw.pid); err != nil {
 		return "", err
 	}

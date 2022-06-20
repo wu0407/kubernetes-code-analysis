@@ -142,9 +142,11 @@ func (d *kubeDockerClient) CreateContainer(opts dockertypes.ContainerCreateConfi
 	defer cancel()
 	// we provide an explicit default shm size as to not depend on docker daemon.
 	// TODO: evaluate exposing this as a knob in the API
+	// 当opts.HostConfig.ShmSize小于等于0，设置opts.HostConfig.ShmSize为67108864
 	if opts.HostConfig != nil && opts.HostConfig.ShmSize <= 0 {
 		opts.HostConfig.ShmSize = defaultShmSize
 	}
+	// kubelet创建的docker 容器，opts.NetworkingConfig为nil，不使用docker的自身网络，而使用cni
 	createResp, err := d.client.ContainerCreate(ctx, opts.Config, opts.HostConfig, opts.NetworkingConfig, opts.Name)
 	if ctxErr := contextError(ctx); ctxErr != nil {
 		return nil, ctxErr
@@ -213,24 +215,28 @@ func (d *kubeDockerClient) inspectImageRaw(ref string) (*dockertypes.ImageInspec
 	return &resp, nil
 }
 
+// 执行docker image inspect，并校验镜像与inspect结果里id一样，或者是否镜像里包含digest且digest为inspect结果的id
 func (d *kubeDockerClient) InspectImageByID(imageID string) (*dockertypes.ImageInspect, error) {
 	resp, err := d.inspectImageRaw(imageID)
 	if err != nil {
 		return nil, err
 	}
 
+	// image与inspect结果里id不一样，且image里不包含digest，或image里包含digest且digest不为inspect结果的id
 	if !matchImageIDOnly(*resp, imageID) {
 		return nil, ImageNotFoundError{ID: imageID}
 	}
 	return resp, nil
 }
 
+// 执行docker image inspect，并校验镜像地址与返回的结果是否一致
 func (d *kubeDockerClient) InspectImageByRef(imageRef string) (*dockertypes.ImageInspect, error) {
 	resp, err := d.inspectImageRaw(imageRef)
 	if err != nil {
 		return nil, err
 	}
 
+	// 镜像inspect的结果和镜像地址tag不一致，或镜像inspect的结果和digest都不一致
 	if !matchImageTagOrSHA(*resp, imageRef) {
 		return nil, ImageNotFoundError{ID: imageRef}
 	}
@@ -281,6 +287,8 @@ func newProgress() *progress {
 	return &progress{timestamp: time.Now()}
 }
 
+// 设置message字段为docker JSONMessage，并更新timestamp字段（更新最后状态的时间）
+// 让周期性报告的goroutine里调用p.get()能够获取到状态
 func (p *progress) set(msg *dockermessage.JSONMessage) {
 	p.Lock()
 	defer p.Unlock()
@@ -288,6 +296,8 @@ func (p *progress) set(msg *dockermessage.JSONMessage) {
 	p.timestamp = time.Now()
 }
 
+// 打印出docker拉取的进度条和最后状态的时间，比如"f7ec5a41d630: Extracting [============================================>  ] 20.7MB/131.7MB"
+// 比如未执行p.set(msg *dockermessage.JSONMessage) 输出"No progress"
 func (p *progress) get() (string, time.Time) {
 	p.RLock()
 	defer p.RUnlock()
@@ -326,6 +336,7 @@ func newProgressReporter(image string, cancel context.CancelFunc, imagePullProgr
 }
 
 // start starts the progressReporter
+// 每10s执行记录docker拉取镜像状态日志
 func (p *progressReporter) start() {
 	go func() {
 		ticker := time.NewTicker(defaultImagePullingProgressReportInterval)
@@ -334,15 +345,19 @@ func (p *progressReporter) start() {
 			// TODO(random-liu): Report as events.
 			select {
 			case <-ticker.C:
+				// 打印出docker拉取的进度条和最后状态的时间，比如"f7ec5a41d630: Extracting [============================================> ] 20.7MB/131.7MB"
 				progress, timestamp := p.progress.get()
 				// If there is no progress for p.imagePullProgressDeadline, cancel the operation.
+				// 超过p.imagePullProgressDeadline没有进行拉取，取消
 				if time.Since(timestamp) > p.imagePullProgressDeadline {
 					klog.Errorf("Cancel pulling image %q because of no progress for %v, latest progress: %q", p.image, p.imagePullProgressDeadline, progress)
+					// 停止拉取镜像
 					p.cancel()
 					return
 				}
 				klog.V(2).Infof("Pulling image %q: %q", p.image, progress)
 			case <-p.stopCh:
+				// 打印出docker拉取的进度条，比如"f7ec5a41d630: Extracting [============================================> ] 20.7MB/131.7MB"
 				progress, _ := p.progress.get()
 				klog.V(2).Infof("Stop pulling image %q: %q", p.image, progress)
 				return
@@ -356,8 +371,10 @@ func (p *progressReporter) stop() {
 	close(p.stopCh)
 }
 
+// 拉取镜像，并启动一个goroutine 每10s记录拉取状态（进度条）到日志
 func (d *kubeDockerClient) PullImage(image string, auth dockertypes.AuthConfig, opts dockertypes.ImagePullOptions) error {
 	// RegistryAuth is the base64 encoded credentials for the registry
+	// auth转成byte然后进行base64编码
 	base64Auth, err := base64EncodeAuth(auth)
 	if err != nil {
 		return err
@@ -365,13 +382,16 @@ func (d *kubeDockerClient) PullImage(image string, auth dockertypes.AuthConfig, 
 	opts.RegistryAuth = base64Auth
 	ctx, cancel := d.getCancelableContext()
 	defer cancel()
+	// 这个是异步
 	resp, err := d.client.ImagePull(ctx, image, opts)
 	if err != nil {
 		return err
 	}
 	defer resp.Close()
 	reporter := newProgressReporter(image, cancel, d.imagePullProgressDeadline)
+	// 启动一个goroutine每10s执行记录docker拉取镜像状态日志
 	reporter.start()
+	// 停止goroutine
 	defer reporter.stop()
 	decoder := json.NewDecoder(resp)
 	for {
@@ -386,6 +406,8 @@ func (d *kubeDockerClient) PullImage(image string, auth dockertypes.AuthConfig, 
 		if msg.Error != nil {
 			return msg.Error
 		}
+		// 设置message字段为docker JSONMessage，并更新timestamp字段（更新最后状态的时间）
+		// 让reporter.start()启动的goroutine里调用p.get()能够获取到最新状态
 		reporter.set(&msg)
 	}
 	return nil

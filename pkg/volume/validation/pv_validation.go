@@ -59,8 +59,11 @@ func checkMountOption(pv *api.PersistentVolume) field.ErrorList {
 }
 
 // ValidatePathNoBacksteps will make sure the targetPath does not have any element which is ".."
+// 路径中每一层不能包含".."
 func ValidatePathNoBacksteps(targetPath string) error {
+	// 替换多个连续"/"为一个"/"，然后根据"/"进行切割
 	parts := strings.Split(filepath.ToSlash(targetPath), "/")
+	// 每层路径中不能是".."
 	for _, item := range parts {
 		if item == ".." {
 			return errors.New("must not contain '..'")

@@ -115,9 +115,12 @@ type podWorkers struct {
 	// Track the current state of per-pod goroutines.
 	// Currently all update request for a given pod coming when another
 	// update of this pod is being processed are ignored.
+	// 每个uid的goroutine 状态，是否处理了chan里的消息，正在处理为true，已经处理完为false
 	isWorking map[types.UID]bool
 	// Tracks the last undelivered work item for this pod - a work item is
 	// undelivered if it comes in while the worker is working.
+	// worker goroutine，只有一个buffer，为了保证生产者不hang住，在worker正在处理时候，将要生产的消息保存在lastUndeliveredWorkUpdate里，代表等待发送到chan中
+	// 这样可以保证后续其他生产UpdatePodOptions，出现堆积时候，worker只处理最后的一个UpdatePodOptions，新的一个UpdatePodOptions覆盖老的，但是UpdateType为kubetypes.SyncPodKill不会被覆盖，后续的生产UpdatePodOptions会被丢弃
 	lastUndeliveredWorkUpdate map[types.UID]UpdatePodOptions
 
 	workQueue queue.WorkQueue
@@ -155,6 +158,13 @@ func newPodWorkers(syncPodFn syncPodFnType, recorder record.EventRecorder, workQ
 	}
 }
 
+// 消费podUpdates中的消息，执行(kl *Kubelet) syncPod
+// 执行完成后执行消息里的回调函数OnCompleteFunc
+// 检测缓冲里是否消息
+// 将uid执行错误加入到p.workQueue中并设置uid的过期时间
+// 检查暂存器p.lastUndeliveredWorkUpdate[uid]是否有UpdatePodOptions
+// 如果有，将p.lastUndeliveredWorkUpdate[uid]里的UpdatePodOptions发送到chan中，让worker处理
+// 如果没有，则设置worker的状态p.isWorking[uid]为false，代表未在工作中（已经处理完chan中的UpdatePodOptions）
 func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 	var lastSyncTime time.Time
 	for update := range podUpdates {
@@ -165,6 +175,8 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 			// Time. This ensures the worker doesn't start syncing until
 			// after the cache is at least newer than the finished time of
 			// the previous sync.
+			// 尝试从缓存中获取pod的runtime status缓存，成功则直接返回pod的runtime status和是否inspect pod发生错误
+			// 否则添加一个订阅记录到p.podCache.subscribers[id]，等待chan中有数据，然后返回pod的runtime status和是否inspect pod发生错误
 			status, err := p.podCache.GetNewerThan(podUID, lastSyncTime)
 			if err != nil {
 				// This is the legacy event thrown by manage pod loop
@@ -172,6 +184,7 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 				p.recorder.Eventf(update.Pod, v1.EventTypeWarning, events.FailedSync, "error determining status: %v", err)
 				return err
 			}
+			// p.syncPodFn是(kl *Kubelet) syncPod
 			err = p.syncPodFn(syncPodOptions{
 				mirrorPod:      update.MirrorPod,
 				pod:            update.Pod,
@@ -190,6 +203,10 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 			// IMPORTANT: we do not log errors here, the syncPodFn is responsible for logging errors
 			klog.Errorf("Error syncing pod %s (%q), skipping: %v", update.Pod.UID, format.Pod(update.Pod), err)
 		}
+		// 将uid的执行错误加入到p.workQueue中并设置uid的过期时间
+		// 检查暂存器p.lastUndeliveredWorkUpdate[uid]是否有UpdatePodOptions
+		// 如果有，将p.lastUndeliveredWorkUpdate[uid]里的UpdatePodOptions发送到chan中，让worker处理
+		// 如果没有，则设置worker的状态p.isWorking[uid]为false，代表未在工作中（已经处理完chan中的UpdatePodOptions）
 		p.wrapUp(update.Pod.UID, err)
 	}
 }
@@ -197,6 +214,8 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan UpdatePodOptions) {
 // Apply the new setting to the specified pod.
 // If the options provide an OnCompleteFunc, the function is invoked if the update is accepted.
 // Update requests are ignored if a kill pod request is pending.
+// 确保每个pod uid有一个goroutine来处理UpdatePodOptions
+// 根据goroutine的工作状态，来处理UpdatePodOptions。如果goroutine不在工作中，则UpdatePodOptions投递到chan中（让goroutine处理）。如果goroutine在工作中则，将UpdatePodOption放到暂存器中（等待goroutine处理完当前消息后，再来处理）。
 func (p *podWorkers) UpdatePod(options *UpdatePodOptions) {
 	pod := options.Pod
 	uid := pod.UID
@@ -205,6 +224,7 @@ func (p *podWorkers) UpdatePod(options *UpdatePodOptions) {
 
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
+	// 每个pod uid会创建一个chan，和启动一个goroutine来读取这个chan里的UpdatePodOptions，进行处理
 	if podUpdates, exists = p.podUpdates[uid]; !exists {
 		// We need to have a buffer here, because checkForUpdates() method that
 		// puts an update into channel is called from the same goroutine where
@@ -219,14 +239,26 @@ func (p *podWorkers) UpdatePod(options *UpdatePodOptions) {
 		// comment in syncPod.
 		go func() {
 			defer runtime.HandleCrash()
+			// 消费podUpdates中的消息，执行(kl *Kubelet) syncPod
+			// 执行完成后执行消息里的回调函数OnCompleteFunc
+			// 检测缓冲里是否消息
+			// 将uid执行错误加入到p.workQueue中并设置uid的过期时间
+			// 检查暂存器p.lastUndeliveredWorkUpdate[uid]是否有UpdatePodOptions
+			// 如果有，将p.lastUndeliveredWorkUpdate[uid]里的UpdatePodOptions发送到chan中，让worker处理
+			// 如果没有，则设置worker的状态p.isWorking[uid]为false，代表未在工作中（已经处理完chan中的UpdatePodOptions）
 			p.managePodLoop(podUpdates)
 		}()
 	}
+	// 是否将消息投递到chan中，还是暂时缓冲起来，等goroutine（p.managePodLoop方法）自己处理完（p.wrapUp方法）会去检测缓冲里是否消息，有消息则进行消费
+
+	// 如果之前pod的goroutine处理完chan中的UpdatePodOptions或pod.UID不在p.isWorking里，则设置p.isWorking[pod.UID]为true，并发送option给chan
 	if !p.isWorking[pod.UID] {
 		p.isWorking[pod.UID] = true
 		podUpdates <- *options
 	} else {
 		// if a request to kill a pod is pending, we do not let anything overwrite that request.
+		// 如果之前的pod的goroutine未处理完chan中的UpdatePodOptions，则覆盖之前p.lastUndeliveredWorkUpdate里保存的pod对应的UpdatePodOptions
+		// 之前p.lastUndeliveredWorkUpdate里保存的pod对应的UpdatePodOptions的UpdateType为kubetypes.SyncPodKill不会被覆盖，则这个UpdatePodOptions就丢弃
 		update, found := p.lastUndeliveredWorkUpdate[pod.UID]
 		if !found || update.UpdateType != kubetypes.SyncPodKill {
 			p.lastUndeliveredWorkUpdate[pod.UID] = *options
@@ -260,22 +292,34 @@ func (p *podWorkers) ForgetNonExistingPodWorkers(desiredPods map[types.UID]sets.
 	}
 }
 
+// 将uid执行错误加入到p.workQueue中并设置uid的过期时间
+// 检查暂存器p.lastUndeliveredWorkUpdate[uid]是否有UpdatePodOptions
+// 如果有，将p.lastUndeliveredWorkUpdate[uid]里的UpdatePodOptions发送到chan中，让worker处理
+// 如果没有，则设置worker的状态p.isWorking[uid]为false，代表未在工作中（已经处理完chan中的UpdatePodOptions）
 func (p *podWorkers) wrapUp(uid types.UID, syncErr error) {
 	// Requeue the last update if the last sync returned error.
 	switch {
 	case syncErr == nil:
 		// No error; requeue at the regular resync interval.
+		// 把uid加入到queue中并设置uid的过期时间
 		p.workQueue.Enqueue(uid, wait.Jitter(p.resyncInterval, workerResyncIntervalJitterFactor))
 	case strings.Contains(syncErr.Error(), NetworkNotReadyErrorMsg):
 		// Network is not ready; back off for short period of time and retry as network might be ready soon.
+		// 错误里包含"network is not ready"
+		// 把uid加入到queue中并设置uid的过期时间
 		p.workQueue.Enqueue(uid, wait.Jitter(backOffOnTransientErrorPeriod, workerBackOffPeriodJitterFactor))
 	default:
 		// Error occurred during the sync; back off and then retry.
+		// 把uid加入到queue中并设置uid的过期时间
 		p.workQueue.Enqueue(uid, wait.Jitter(p.backOffPeriod, workerBackOffPeriodJitterFactor))
 	}
+	// 检查p.lastUndeliveredWorkUpdate[uid]是否有UpdatePodOptions，有的话，将p.lastUndeliveredWorkUpdate[uid]里的UpdatePodOptions发送到chan中，让worker处理
+	// 否则，则设置worker的状态p.isWorking[uid]为false，代表未在工作中（已经处理完chan中的UpdatePodOptions）
 	p.checkForUpdates(uid)
 }
 
+// 检查p.lastUndeliveredWorkUpdate[uid]是否有UpdatePodOptions，有的话，将p.lastUndeliveredWorkUpdate[uid]里的UpdatePodOptions发送到chan中，让worker处理
+// 否则，则设置worker的状态p.isWorking[uid]为false，代表未在工作中（已经处理完chan中的UpdatePodOptions）
 func (p *podWorkers) checkForUpdates(uid types.UID) {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
@@ -289,9 +333,12 @@ func (p *podWorkers) checkForUpdates(uid types.UID) {
 
 // killPodNow returns a KillPodFunc that can be used to kill a pod.
 // It is intended to be injected into other modules that need to kill a pod.
+// 返回利用pod worker机制来移除pod（停止pod里所有container和sandbox）函数
 func killPodNow(podWorkers PodWorkers, recorder record.EventRecorder) eviction.KillPodFunc {
 	return func(pod *v1.Pod, status v1.PodStatus, gracePeriodOverride *int64) error {
 		// determine the grace period to use when killing the pod
+		// gracePeriod默认为0
+		// 参数里有设置gracePeriodOverride，则设置为参数里gracePeriodOverride值，否则pod.Spec.TerminationGracePeriodSeconds有则设置这个值
 		gracePeriod := int64(0)
 		if gracePeriodOverride != nil {
 			gracePeriod = *gracePeriodOverride
@@ -301,6 +348,7 @@ func killPodNow(podWorkers PodWorkers, recorder record.EventRecorder) eviction.K
 
 		// we timeout and return an error if we don't get a callback within a reasonable time.
 		// the default timeout is relative to the grace period (we settle on 10s to wait for kubelet->runtime traffic to complete in sigkill)
+		// timeout为1.5个gracePeriod，最小的timeout为10s
 		timeout := int64(gracePeriod + (gracePeriod / 2))
 		minTimeout := int64(10)
 		if timeout < minTimeout {
@@ -320,17 +368,21 @@ func killPodNow(podWorkers PodWorkers, recorder record.EventRecorder) eviction.K
 				ch <- response{err: err}
 			},
 			KillPodOptions: &KillPodOptions{
+				// 这个用于更新kl.statusManager里的pod的status
 				PodStatusFunc: func(p *v1.Pod, podStatus *kubecontainer.PodStatus) v1.PodStatus {
 					return status
 				},
+				// PodTerminationGracePeriodSecondsOverride为调用cri超时时间（在runtimeService里，默认为2分钟+gracePeriod），如果runtime为dockershim，这个gracePeriod超时时间会传给docker作为docker stop的graceful时间
 				PodTerminationGracePeriodSecondsOverride: gracePeriodOverride,
 			},
 		})
 
 		// wait for either a response, or a timeout
 		select {
+		// 等待podWorker里的kl.syncPod执行完，返回err可能为nil
 		case r := <-ch:
 			return r.err
+		// timeout为1.5个gracePeriod，最小的timeout为10s
 		case <-time.After(timeoutDuration):
 			recorder.Eventf(pod, v1.EventTypeWarning, events.ExceededGracePeriod, "Container runtime did not kill the pod within specified grace period.")
 			return fmt.Errorf("timeout waiting to kill pod")

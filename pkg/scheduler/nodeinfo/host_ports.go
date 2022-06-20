@@ -52,9 +52,12 @@ func (h HostPortInfo) Add(ip, protocol string, port int32) {
 		return
 	}
 
+	// 如果ip为空，则设置默认的"0.0.0.0"
+	// 如果protocol为空，则设置默认的"TCP"
 	h.sanitize(&ip, &protocol)
 
 	pp := NewProtocolPort(protocol, port)
+	// ip不在h中，则新建一个map赋值给h[ip]
 	if _, ok := h[ip]; !ok {
 		h[ip] = map[ProtocolPort]struct{}{
 			*pp: {},
@@ -62,6 +65,7 @@ func (h HostPortInfo) Add(ip, protocol string, port int32) {
 		return
 	}
 
+	// 设置h[ip]里的pp
 	h[ip][*pp] = struct{}{}
 }
 
@@ -125,6 +129,8 @@ func (h HostPortInfo) CheckConflict(ip, protocol string, port int32) bool {
 }
 
 // sanitize the parameters
+// 如果ip为空，则设置默认的"0.0.0.0"
+// 如果protocol为空，则设置默认的"TCP"
 func (h HostPortInfo) sanitize(ip, protocol *string) {
 	if len(*ip) == 0 {
 		*ip = DefaultBindAllHostIP

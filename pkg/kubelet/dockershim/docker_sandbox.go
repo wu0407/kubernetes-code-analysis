@@ -84,11 +84,18 @@ func (ds *dockerService) clearNetworkReady(podSandboxID string) {
 // For docker, PodSandbox is implemented by a container holding the network
 // namespace for the pod.
 // Note: docker doesn't use LogDirectory (yet).
+// 1. 确保podsandbox镜像存在（检测镜像是否存在，不存在则进行拉取）
+// 2. 创建sandbox容器
+// 3. 创建sandbox checkpoint文件
+// 4. 启动sandbox
+// 5. 修改容器内的/etc/reslove.conf文件
+// 6. 调用cni插件分配ip、网卡
 func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPodSandboxRequest) (*runtimeapi.RunPodSandboxResponse, error) {
 	config := r.GetConfig()
 
 	// Step 1: Pull the image for the sandbox.
 	image := defaultSandboxImage
+	// 如果定义了podSandboxImage，且不为空，就用新的sandbox
 	podSandboxImage := ds.podSandboxImage
 	if len(podSandboxImage) != 0 {
 		image = podSandboxImage
@@ -97,6 +104,17 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 	// NOTE: To use a custom sandbox image in a private repository, users need to configure the nodes with credentials properly.
 	// see: http://kubernetes.io/docs/user-guide/images/#configuring-nodes-to-authenticate-to-a-private-repository
 	// Only pull sandbox image when it's not present - v1.PullIfNotPresent.
+	// ensureSandboxImageExists pulls the sandbox image when it's not present.
+	// 先检查本地是否有镜像，有镜像且tag、digest一致，则直接返回
+	// 否则进行拉取镜像：
+	// 遍历所有注册并启用的provider提供的凭证（pod的pull secret没有使用），找到匹配的image仓库地址的凭证列表和是否找到匹配凭证（sandbox没有使用pod里定义pull secret）
+	// 目前内置云厂商（aws、gcp、azure）和dockerconfig provider
+	// 如果是dockerconfig provider
+	// 先从["/var/lib/kubelet/config.json", "当前目录下的config.json", "~/.docker/config.json", "/.docker/config.json"]返回第一个存在且正确配置文件里的内容
+	// 没有读取到，则从["/var/lib/kubelet/.dockercfg", "当前目录/.dockercfg", "~/.dockercfg", "/.dockercfg"]，返回第一个存在且正确配置文件里的内容
+	// 如果没有读取到任何凭证，则尝试不使用凭证进行拉取。
+	// 否则使用凭证进行拉取。
+	// 拉取镜像会启动一个goroutine 每10s记录拉取状态（进度条）到日志
 	if err := ensureSandboxImageExists(ds.client, image); err != nil {
 		return nil, err
 	}
@@ -105,12 +123,16 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 	if r.GetRuntimeHandler() != "" && r.GetRuntimeHandler() != runtimeName {
 		return nil, fmt.Errorf("RuntimeHandler %q not supported", r.GetRuntimeHandler())
 	}
+	// 根据config *runtimeapi.PodSandboxConfig和image生成创建docker容器的配置createConfig *dockertypes.ContainerCreateConfig
 	createConfig, err := ds.makeSandboxDockerConfig(config, image)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make sandbox docker config for pod %q: %v", config.Metadata.Name, err)
 	}
+	// 创建sandbox容器
 	createResp, err := ds.client.CreateContainer(*createConfig)
 	if err != nil {
+		// 为了解决docker 1.11版本以及之前版本的问题，如果docker移除容器发生"device or resource busy"问题，这个容器信息可能未被清理掉。导致创建相同名字容器时出现失败"Conflict. {container id} is already in use by container {container id}"。
+		// 解决这个问题方法是，则再次执行移除发生冲突的旧容器。如果移除成功，则返回nil和原来的错误。如果移除失败，则对容器名字添加随机数字进行再次创建容器，返回创建的容器的返回和错误
 		createResp, err = recoverFromCreationConflictIfNeeded(ds.client, *createConfig, err)
 	}
 
@@ -138,6 +160,7 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 	// Step 4: Start the sandbox container.
 	// Assume kubelet's garbage collector would remove the sandbox later, if
 	// startContainer failed.
+	// 启动sandbox容器
 	err = ds.client.StartContainer(createResp.ID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start sandbox container for pod %q: %v", config.Metadata.Name, err)
@@ -163,6 +186,7 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 	}
 
 	// Do not invoke network plugins if in hostNetwork mode.
+	// host网络模式直接返回（不用调用cni分配ip）
 	if config.GetLinux().GetSecurityContext().GetNamespaceOptions().GetNetwork() == runtimeapi.NamespaceMode_NODE {
 		return resp, nil
 	}
@@ -176,6 +200,7 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 	// recognized by the CNI standard yet.
 	cID := kubecontainer.BuildContainerID(runtimeName, createResp.ID)
 	networkOptions := make(map[string]string)
+	// 从runtimeapi.PodSandboxConfig中获取dns配置（search domain、option、server）
 	if dnsConfig := config.GetDnsConfig(); dnsConfig != nil {
 		// Build DNS options.
 		dnsOption, err := json.Marshal(dnsConfig)
@@ -191,11 +216,13 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 
 		// Ensure network resources are cleaned up even if the plugin
 		// succeeded but an error happened between that success and here.
+		// 设置pod网络失败，则调用网络插件，进行清理操作（释放ip、网卡、iptables、cni result cache等）
 		err = ds.network.TearDownPod(config.GetMetadata().Namespace, config.GetMetadata().Name, cID)
 		if err != nil {
 			errList = append(errList, fmt.Errorf("failed to clean up sandbox container %q network for pod %q: %v", createResp.ID, config.Metadata.Name, err))
 		}
 
+		// 停止sandbox容器
 		err = ds.client.StopContainer(createResp.ID, defaultSandboxGracePeriod)
 		if err != nil {
 			errList = append(errList, fmt.Errorf("failed to stop sandbox container %q for pod %q: %v", createResp.ID, config.Metadata.Name, err))
@@ -274,7 +301,7 @@ func (ds *dockerService) StopPodSandbox(ctx context.Context, r *runtimeapi.StopP
 	errList := []error{}
 	// 从缓存中获取这个sandbox网络是否ready
 	ready, ok := ds.getNetworkReady(podSandboxID)
-	// 不是host网络且网络ready或不存在，则不ready的网络无需清理
+	// 不是host网络，且网络ready或不在缓存中（比如kubelet重启了），则进行清理网络，不ready的网络无需清理
 	if !hostNetwork && (ready || !ok) {
 		// Only tear down the pod network if we haven't done so already
 		cID := kubecontainer.BuildContainerID(runtimeName, podSandboxID)
@@ -320,6 +347,10 @@ func (ds *dockerService) StopPodSandbox(ctx context.Context, r *runtimeapi.StopP
 
 // RemovePodSandbox removes the sandbox. If there are running containers in the
 // sandbox, they should be forcibly removed.
+// 获取所有属于sandbox的普通容器
+// 先移除所有属于sandbox的普通容器（先移除kubelet创建的日志软链，然后再执行docker container rm移除容器）
+// 再移除sandbox容器，类似docker rm -v -f {container id}
+// 移除"/var/lib/dockershim/sandbox/{sandbox id}"文件
 func (ds *dockerService) RemovePodSandbox(ctx context.Context, r *runtimeapi.RemovePodSandboxRequest) (*runtimeapi.RemovePodSandboxResponse, error) {
 	podSandboxID := r.PodSandboxId
 	var errs []error
@@ -328,31 +359,38 @@ func (ds *dockerService) RemovePodSandbox(ctx context.Context, r *runtimeapi.Rem
 
 	opts.Filters = dockerfilters.NewArgs()
 	f := newDockerFilter(&opts.Filters)
+	// 过滤label里"io.kubernetes.sandbox.id"为podSandboxID的容器
 	f.AddLabel(sandboxIDLabelKey, podSandboxID)
 
+	// 所有的container里"io.kubernetes.sandbox.id"为podSandboxID的容器（普通容器，非sandbox容器）
 	containers, err := ds.client.ListContainers(opts)
 	if err != nil {
 		errs = append(errs, err)
 	}
 
 	// Remove all containers in the sandbox.
+	// 先移除属于sanbox的普通容器
 	for i := range containers {
+		// 先移除kubelet创建的日志软链，然后再执行docker container rm移除容器
 		if _, err := ds.RemoveContainer(ctx, &runtimeapi.RemoveContainerRequest{ContainerId: containers[i].ID}); err != nil && !libdocker.IsContainerNotFoundError(err) {
 			errs = append(errs, err)
 		}
 	}
 
 	// Remove the sandbox container.
+	// 再移除sandbox容器，类似docker rm -v -f {container id}
 	err = ds.client.RemoveContainer(podSandboxID, dockertypes.ContainerRemoveOptions{RemoveVolumes: true, Force: true})
 	if err == nil || libdocker.IsContainerNotFoundError(err) {
 		// Only clear network ready when the sandbox has actually been
 		// removed from docker or doesn't exist
+		// 从ds.networkReady移除podSandboxID
 		ds.clearNetworkReady(podSandboxID)
 	} else {
 		errs = append(errs, err)
 	}
 
 	// Remove the checkpoint of the sandbox.
+	// 移除"/var/lib/dockershim/sandbox/{sandbox id}"文件
 	if err := ds.checkpointManager.RemoveCheckpoint(podSandboxID); err != nil {
 		errs = append(errs, err)
 	}
@@ -415,7 +453,7 @@ func (ds *dockerService) getIPs(podSandboxID string, sandbox *dockertypes.Contai
 		return nil
 	}
 
-	// sandbox网络ready，从网络插件中获取sanbox容器的ip，并返回
+	// sandbox网络ready，从网络插件中获取sandbox容器的ip，并返回
 	ips, err := ds.getIPsFromPlugin(sandbox)
 	if err == nil {
 		return ips
@@ -427,7 +465,7 @@ func (ds *dockerService) getIPs(podSandboxID string, sandbox *dockertypes.Contai
 	// conclude that the plugin must have failed setup, or forgotten its ip.
 	// This is not a sensible assumption for plugins across the board, but if
 	// a plugin doesn't want this behavior, it can throw an error.
-	// 通过网络插件获取容器ip失败，则从sandbox (docker insepct reponse)网络属性获取ip
+	// 通过网络插件获取容器ip失败，则从sandbox (docker inspect response)网络属性获取ip
 	if sandbox.NetworkSettings.IPAddress != "" {
 		ips = append(ips, sandbox.NetworkSettings.IPAddress)
 	}
@@ -489,7 +527,7 @@ func (ds *dockerService) PodSandboxStatus(ctx context.Context, req *runtimeapi.P
 	// This is a workaround for windows, where sandbox is not in use, and pod IP is determined through containers belonging to the Pod.
 	// linux系统里determinePodIPBySandboxID返回为空，则从执行getIPs获取容器ip
 	if ips = ds.determinePodIPBySandboxID(podSandboxID); len(ips) == 0 {
-		// 先从网络插件中获取容器的ip，如果失败，则从(docker insepct reponse)的网络属性获取ip
+		// 先从网络插件中获取容器的ip，如果失败，则从(docker inspect response)的网络属性获取ip
 		ips = ds.getIPs(podSandboxID, r)
 	}
 
@@ -656,7 +694,7 @@ func (ds *dockerService) applySandboxLinuxOptions(hc *dockercontainer.HostConfig
 	}
 	// Apply security context.
 	// 修改createConfig.config.User--容器运行用户
-	// 设置HostConfig的GroupAdd、Privileged（sandbox不设置）、ReadonlyRootfs、CapAdd（不设置）、CapDrop（不设置）、SecurityOpt、MaskedPaths（为nil）、ReadonlyPaths（为nil）
+	// 设置HostConfig的GroupAdd、Privileged（sandbox不设置）、ReadonlyRootfs、CapAdd（不设置）、CapDrop（不设置）、SecurityOpt（只处理selinux）、MaskedPaths（为nil）、ReadonlyPaths（为nil）
 	// 修改HostConfig里各个namespace类型设置--IpcMode、NetworkMode、PidMode
 	if err := applySandboxSecurityContext(lc, createConfig.Config, hc, ds.network, separator); err != nil {
 		return err
@@ -691,19 +729,25 @@ func (ds *dockerService) applySandboxResources(hc *dockercontainer.HostConfig, l
 // makeSandboxDockerConfig returns dockertypes.ContainerCreateConfig based on runtimeapi.PodSandboxConfig.
 func (ds *dockerService) makeSandboxDockerConfig(c *runtimeapi.PodSandboxConfig, image string) (*dockertypes.ContainerCreateConfig, error) {
 	// Merge annotations and labels because docker supports only labels.
+	// 包括pod的Labels和["io.kubernetes.pod.name"]={pod name}和["io.kubernetes.pod.namespace"]={pod namespace}和["io.kubernetes.pod.uid"]={pod uid}
+	// 和pod.Annotations的key添加前缀"annotation."
 	labels := makeLabels(c.GetLabels(), c.GetAnnotations())
 	// Apply a label to distinguish sandboxes from regular containers.
+	// 添加labels["io.kubernetes.docker.type"]="podsandbox"
 	labels[containerTypeLabelKey] = containerTypeLabelSandbox
 	// Apply a container name label for infra container. This is used in summary v1.
 	// TODO(random-liu): Deprecate this label once container metrics is directly got from CRI.
+	// 添加labels["io.kubernetes.container.name"]="POD"
 	labels[types.KubernetesContainerNameLabel] = sandboxContainerName
 
 	hc := &dockercontainer.HostConfig{
 		IpcMode: dockercontainer.IpcMode("shareable"),
 	}
 	createConfig := &dockertypes.ContainerCreateConfig{
+		// 容器名为"k8s_POD_{pod name}_{pod namespace}_{pod uid}_{pod attempt}"
 		Name: makeSandboxName(c),
 		Config: &dockercontainer.Config{
+			// 容器主机名
 			Hostname: c.Hostname,
 			// TODO: Handle environment variables.
 			Image:  image,
@@ -713,7 +757,7 @@ func (ds *dockerService) makeSandboxDockerConfig(c *runtimeapi.PodSandboxConfig,
 	}
 
 	// Apply linux-specific options.
-	// 设置hc和createConfig.Config
+	// 设置hc和createConfig.Config，其中security部分只处理selinux（这里没有处理seccomp，seccomp在下面代码中设置。sandbox只设置selinux和seccomp，不设置Apparmor）
 	if err := ds.applySandboxLinuxOptions(hc, c.GetLinux(), createConfig, image, securityOptSeparator); err != nil {
 		return nil, err
 	}
@@ -733,6 +777,7 @@ func (ds *dockerService) makeSandboxDockerConfig(c *runtimeapi.PodSandboxConfig,
 	}
 
 	// Set security options.
+	// 设置seccomp
 	securityOpts, err := ds.getSecurityOpts(c.GetLinux().GetSecurityContext().GetSeccompProfilePath(), securityOptSeparator)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate sandbox security options for sandbox %q: %v", c.Metadata.Name, err)
