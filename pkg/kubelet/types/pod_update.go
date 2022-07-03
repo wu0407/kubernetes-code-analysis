@@ -171,10 +171,15 @@ func IsCriticalPod(pod *v1.Pod) bool {
 
 // Preemptable returns true if preemptor pod can preempt preemptee pod
 // if preemptee is not critical or if preemptor's priority is greater than preemptee's priority
+// 返回true条件是（或的关系）
+// preemptor是CriticalPod，且preemptee不是IsCriticalPod，直接返回true
+// preemptor的pod优先级大于preemptee的pod的优先级，返回true
 func Preemptable(preemptor, preemptee *v1.Pod) bool {
+	// preemptor是CriticalPod，且preemptee不是IsCriticalPod，直接返回true
 	if IsCriticalPod(preemptor) && !IsCriticalPod(preemptee) {
 		return true
 	}
+	// preemptor的pod优先级大于preemptee的pod的优先级，返回true
 	if (preemptor != nil && preemptor.Spec.Priority != nil) &&
 		(preemptee != nil && preemptee.Spec.Priority != nil) {
 		return *(preemptor.Spec.Priority) > *(preemptee.Spec.Priority)

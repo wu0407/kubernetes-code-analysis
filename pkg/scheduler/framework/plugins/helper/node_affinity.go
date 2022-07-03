@@ -25,8 +25,10 @@ import (
 
 // PodMatchesNodeSelectorAndAffinityTerms checks whether the pod is schedulable onto nodes according to
 // the requirements in both NodeAffinity and nodeSelector.
+// node是否匹配pod的Spec.NodeSelector或pod.Spec.Affinity
 func PodMatchesNodeSelectorAndAffinityTerms(pod *v1.Pod, node *v1.Node) bool {
 	// Check if node.Labels match pod.Spec.NodeSelector.
+	// 如果pod有定义NodeSelector，则检测NodeSelector是否匹配node labels。不匹配直接返回false
 	if len(pod.Spec.NodeSelector) > 0 {
 		selector := labels.SelectorFromSet(pod.Spec.NodeSelector)
 		if !selector.Matches(labels.Set(node.Labels)) {
@@ -46,6 +48,7 @@ func PodMatchesNodeSelectorAndAffinityTerms(pod *v1.Pod, node *v1.Node) bool {
 		nodeAffinity := affinity.NodeAffinity
 		// if no required NodeAffinity requirements, will do no-op, means select all nodes.
 		// TODO: Replace next line with subsequent commented-out line when implement RequiredDuringSchedulingRequiredDuringExecution.
+		// 如果没有定义nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution，则返回true
 		if nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
 			// if nodeAffinity.RequiredDuringSchedulingRequiredDuringExecution == nil && nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution == nil {
 			return true
@@ -60,8 +63,10 @@ func PodMatchesNodeSelectorAndAffinityTerms(pod *v1.Pod, node *v1.Node) bool {
 		// }
 
 		// Match node selector for requiredDuringSchedulingIgnoredDuringExecution.
+		// 定义nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution
 		if nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution != nil {
 			nodeSelectorTerms := nodeAffinity.RequiredDuringSchedulingIgnoredDuringExecution.NodeSelectorTerms
+			// node匹配其中一个nodeSelectorTerm就返回true，（支持MatchExpressions或MatchFields（匹配"metadata.name"字段））
 			nodeAffinityMatches = nodeAffinityMatches && nodeMatchesNodeSelectorTerms(node, nodeSelectorTerms)
 		}
 
@@ -71,6 +76,7 @@ func PodMatchesNodeSelectorAndAffinityTerms(pod *v1.Pod, node *v1.Node) bool {
 
 // nodeMatchesNodeSelectorTerms checks if a node's labels satisfy a list of node selector terms,
 // terms are ORed, and an empty list of terms will match nothing.
+// node匹配其中一个nodeSelectorTerm就返回true，（支持MatchExpressions或MatchFields（匹配"metadata.name"字段））
 func nodeMatchesNodeSelectorTerms(node *v1.Node, nodeSelectorTerms []v1.NodeSelectorTerm) bool {
 	return v1helper.MatchNodeSelectorTerms(nodeSelectorTerms, node.Labels, fields.Set{
 		"metadata.name": node.Name,

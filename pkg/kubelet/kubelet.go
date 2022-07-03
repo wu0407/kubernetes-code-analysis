@@ -2038,8 +2038,15 @@ func (kl *Kubelet) canAdmitPod(pods []*v1.Pod, pod *v1.Pod) (bool, string, strin
 	//   policy为"best-effort"，则admit通过
 	//   policy为"restricted"、"single-numa-node"，则为最合适TopologyHint的Preferred的值
 	//
-	// 通过lifecycle.NewPredicateAdmitHandler admit条件
-	
+	// 通过lifecycle.NewPredicateAdmitHandler admit条件（且的关系）
+	//
+	// 1. node可以分配的资源可以满足，pod的request资源里的cpu、memory、EphemeralStorage、ScalarResources
+	// 2. node匹配pod的Spec.NodeSelector和pod.Spec.Affinity
+	// 3. pod.Spec.NodeName等于Node Name
+	// 4. 检查pod里的host port与node上已经存在的host port不冲突
+	//
+	// 5. 只有node资源不满足，且pod是static pod、或mirror pod，或pod优先级大于等于2000000000
+	//   根据最优抢占算法和pod qos筛选出被抢占的pod，这些被抢占pod的资源，能够满足admit pod需要
 	for _, podAdmitHandler := range kl.admitHandlers {
 		if result := podAdmitHandler.Admit(attrs); !result.Admit {
 			return false, result.Reason, result.Message
@@ -2394,7 +2401,39 @@ func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 			// 2. pod是static pod或mirror pod，或pod设置了优先级且优先级大于2000000000，则直接通过admit
 			// 3. 只有一个"MemoryPressure" condition，qos不为"BestEffort"的pod，则直接通过admit
 			// 4. 只有一个"MemoryPressure" condition，如果"BestEffort"的pod能够容忍taint "node.kubernetes.io/memory-pressure"、effect为"NoSchedule"，则直接通过admit
+
+			// 通过sysctlsWhitelist admit条件
+			// 不是这三种情况
+			// 1. sysctl的namespace group为"ipc"且设置了hostIPC共享
+			// 2. sysctl的namespace group为"net"且设置了hostNet共享
+			// 3. sysctl不在白名单里
+			//
+			// 通过AllocateResourcesPodAdmitHandler admit条件
+			// 实现为containerManagerImpl.resourceAllocator
+			// 1. 成功为pod里所有普通container和init container，分配container的limit中所有需要device plugins的资源，且成功分配cpu（如果policy为static policy，成功为Guaranteed的pod且container request的cpu为整数的container，分配cpu）
+			// 实现为containerManagerImpl.topologyManager
+			// 1. policy为"none"，行为跟pkg\kubelet\cm\container_manager_linux.go里的resourceAllocator一样
+			//   成功为pod里所有普通container和init container，分配container的limit中所有需要device plugins的资源，且成功分配cpu（如果policy为static policy，成功为Guaranteed的pod且container request的cpu为整数的container，分配cpu），则admit通过
+			// 2. policy为"best-effort"、"restricted"、"single-numa-node"
+			//   遍历所有的hintProviders（cpu manager和device manager）生成container的各个资源的TopologyHint列表
+			//   从各个资源的TopologyHint列表中挑出一个TopologyHint，进行组合成[]TopologyHint，然后跟default Affinity（亲和所有numaNode）进行与计算。
+			//   在所有组合中，根据各个policy类型，挑选出最合适的TopologyHint。
+			//   admit结果：
+			//   policy为"best-effort"，则admit通过
+			//   policy为"restricted"、"single-numa-node"，则为最合适TopologyHint的Preferred的值
+			//
+			// 通过lifecycle.NewPredicateAdmitHandler admit条件（且的关系）
+			//
+			// 1. node可以分配的资源可以满足，pod的request资源里的cpu、memory、EphemeralStorage、ScalarResources
+			// 2. node匹配pod的Spec.NodeSelector和pod.Spec.Affinity
+			// 3. pod.Spec.NodeName等于Node Name
+			// 4. 检查pod里的host port与node上已经存在的host port不冲突
+			//
+			// 5. 只有node资源不满足，且pod是static pod、或mirror pod，或pod优先级大于等于2000000000
+			//   根据最优抢占算法和pod qos筛选出被抢占的pod，这些被抢占pod的资源，能够满足admit pod需要
 			if ok, reason, message := kl.canAdmitPod(activePods, pod); !ok {
+				// 发送pod admit失败 event
+				// 更新pod在status manager的status
 				kl.rejectPod(pod, reason, message)
 				continue
 			}

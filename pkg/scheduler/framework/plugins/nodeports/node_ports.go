@@ -58,6 +58,7 @@ func (pl *NodePorts) Name() string {
 
 // getContainerPorts returns the used host ports of Pods: if 'port' was used, a 'port:true' pair
 // will be in the result; but it does not resolve port conflict.
+// 获得pod里所有普通container定义的container port
 func getContainerPorts(pods ...*v1.Pod) []*v1.ContainerPort {
 	ports := []*v1.ContainerPort{}
 	for _, pod := range pods {
@@ -113,14 +114,19 @@ func (pl *NodePorts) Filter(ctx context.Context, cycleState *framework.CycleStat
 }
 
 // Fits checks if the pod fits the node.
+// 检查pod里的host port与node上已经存在的host port是否冲突
 func Fits(pod *v1.Pod, nodeInfo *nodeinfo.NodeInfo) bool {
+	// getContainerPorts(pod) 获得pod里所有普通container定义的container port
+	// 检查pod里的host port与node上已经存在的host port是否冲突
 	return fitsPorts(getContainerPorts(pod), nodeInfo)
 }
 
+// 检查wantPorts里的host port与node上已经存在的host port是否冲突
 func fitsPorts(wantPorts []*v1.ContainerPort, nodeInfo *nodeinfo.NodeInfo) bool {
 	// try to see whether existingPorts and wantPorts will conflict or not
 	existingPorts := nodeInfo.UsedPorts()
 	for _, cp := range wantPorts {
+		// 检查host port与已经存在的host port是否冲突
 		if existingPorts.CheckConflict(cp.HostIP, string(cp.Protocol), cp.HostPort) {
 			return false
 		}

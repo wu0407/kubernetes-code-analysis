@@ -141,11 +141,15 @@ func GetResourceRequestQuantity(pod *v1.Pod, resourceName v1.ResourceName) resou
 }
 
 // GetResourceRequest finds and returns the request value for a specific resource.
+// 返回pod里的resource资源的request值，如果resource是"pods"，则返回1
 func GetResourceRequest(pod *v1.Pod, resource v1.ResourceName) int64 {
 	if resource == v1.ResourcePods {
 		return 1
 	}
 
+	// 所有container的resourceName资源的request总的大小
+	// 如果所有container的resourceName资源的总request小于所有init container里的request的最大值，则使用init container的request
+	// pod定义了Overhead且启用了"PodOverhead"，resourceName资源的request总的大小（pod里container的资源request）不为0，则resourceName资源的request总的大小加上podOverhead
 	requestQuantity := GetResourceRequestQuantity(pod, resource)
 
 	if resource == v1.ResourceCPU {

@@ -97,16 +97,21 @@ func (h HostPortInfo) Len() int {
 
 // CheckConflict checks if the input (ip, protocol, port) conflicts with the existing
 // ones in HostPortInfo.
+// 检查host port与已经存在的host port是否冲突
 func (h HostPortInfo) CheckConflict(ip, protocol string, port int32) bool {
+	// 没有定义host port的端口号，则返回false，代表没有冲突
 	if port <= 0 {
 		return false
 	}
 
+	// 如果ip为空，则设置默认的"0.0.0.0"
+	// 如果protocol为空，则设置默认的"TCP"
 	h.sanitize(&ip, &protocol)
 
 	pp := NewProtocolPort(protocol, port)
 
 	// If ip is 0.0.0.0 check all IP's (protocol, port) pair
+	// 如果host ip是0.0.0.0，则遍历所有已经存在的host port
 	if ip == DefaultBindAllHostIP {
 		for _, m := range h {
 			if _, ok := m[*pp]; ok {
@@ -117,6 +122,7 @@ func (h HostPortInfo) CheckConflict(ip, protocol string, port int32) bool {
 	}
 
 	// If ip isn't 0.0.0.0, only check IP and 0.0.0.0's (protocol, port) pair
+	// 如果host ip不上0.0.0.0，则检查它的ip和0.0.0.0（因为0.0.0.0匹配任何ip）
 	for _, key := range []string{DefaultBindAllHostIP, ip} {
 		if m, ok := h[key]; ok {
 			if _, ok2 := m[*pp]; ok2 {

@@ -95,7 +95,7 @@ type ManagerImpl struct {
 	unhealthyDevices map[string]sets.String
 
 	// allocatedDevices contains allocated deviceIds, keyed by resourceName.
-	// 资源名和对应的deviceIds
+	// 已经分配的devices，资源名和对应的deviceIds
 	allocatedDevices map[string]sets.String
 
 	// podDevices contains pod to allocated device mapping.
@@ -423,6 +423,7 @@ func (m *ManagerImpl) Allocate(pod *v1.Pod, container *v1.Container) error {
 }
 
 // UpdatePluginResources updates node resources based on devices already allocated to pods.
+// 让所有已经分配的device resource，在node的allocatableResource里的resource数量等于已经分配的数量
 func (m *ManagerImpl) UpdatePluginResources(node *schedulernodeinfo.NodeInfo, attrs *lifecycle.PodAdmitAttributes) error {
 	pod := attrs.Pod
 
@@ -430,10 +431,12 @@ func (m *ManagerImpl) UpdatePluginResources(node *schedulernodeinfo.NodeInfo, at
 	defer m.mutex.Unlock()
 
 	// quick return if no pluginResources requested
+	// pod里的所有container都没有请求device resource，直接返回
 	if _, podRequireDevicePluginResource := m.podDevices[string(pod.UID)]; !podRequireDevicePluginResource {
 		return nil
 	}
 
+	// 让所有已经分配的device resource，在node的allocatableResource里的resource数量等于已经分配的数量
 	m.sanitizeNodeAllocatable(node)
 	return nil
 }
@@ -1064,26 +1067,35 @@ func (m *ManagerImpl) callPreStartContainerIfNeeded(podUID, contName, resource s
 // and if necessary, updates allocatableResource in nodeInfo to at least equal to
 // the allocated capacity. This allows pods that have already been scheduled on
 // the node to pass GeneralPredicates admission checking even upon device plugin failure.
+// 让所有已经分配的device resource，在node的allocatableResource里的resource数量等于已经分配的数量
 func (m *ManagerImpl) sanitizeNodeAllocatable(node *schedulernodeinfo.NodeInfo) {
 	var newAllocatableResource *schedulernodeinfo.Resource
+	// node可分配的资源列表
 	allocatableResource := node.AllocatableResource()
 	if allocatableResource.ScalarResources == nil {
 		allocatableResource.ScalarResources = make(map[v1.ResourceName]int64)
 	}
+	// 遍历已经分配的device
 	for resource, devices := range m.allocatedDevices {
 		needed := devices.Len()
+		// node可分配的resource资源数量大于等于已分配数量，则跳过
 		quant, ok := allocatableResource.ScalarResources[v1.ResourceName(resource)]
 		if ok && int(quant) >= needed {
 			continue
 		}
+
+		// node可分配的resource资源数量小于已分配数量
+
 		// Needs to update nodeInfo.AllocatableResource to make sure
 		// NodeInfo.allocatableResource at least equal to the capacity already allocated.
 		if newAllocatableResource == nil {
 			newAllocatableResource = allocatableResource.Clone()
 		}
+		// 让node的allocatableResource里的resource数量等于需要的数量
 		newAllocatableResource.ScalarResources[v1.ResourceName(resource)] = int64(needed)
 	}
 	if newAllocatableResource != nil {
+		// 更新node.allocatableResource为allocatableResource，并让node.generation加一
 		node.SetAllocatableResource(newAllocatableResource)
 	}
 }

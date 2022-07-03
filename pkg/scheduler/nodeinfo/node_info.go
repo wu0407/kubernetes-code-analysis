@@ -152,6 +152,7 @@ type Resource struct {
 }
 
 // NewResource creates a Resource from ResourceList
+// 将v1.ResourceList转成*Resource
 func NewResource(rl v1.ResourceList) *Resource {
 	r := &Resource{}
 	r.Add(rl)
@@ -299,6 +300,7 @@ func NewNodeInfo(pods ...*v1.Pod) *NodeInfo {
 		imageStates:         make(map[string]*ImageStateSummary),
 	}
 	for _, pod := range pods {
+		// 统计所有pod的资源配置信息
 		ni.AddPod(pod)
 	}
 	return ni
@@ -415,6 +417,7 @@ func (n *NodeInfo) AllocatableResource() Resource {
 }
 
 // SetAllocatableResource sets the allocatableResource information of given node.
+// 更新n.allocatableResource为allocatableResource，并让n.generation加一
 func (n *NodeInfo) SetAllocatableResource(allocatableResource *Resource) {
 	n.allocatableResource = allocatableResource
 	n.generation = nextGeneration()
@@ -499,10 +502,12 @@ func hasPodAffinityConstraints(pod *v1.Pod) bool {
 }
 
 // AddPod adds pod information to this NodeInfo.
+// 统计所有pod的资源配置信息
 func (n *NodeInfo) AddPod(pod *v1.Pod) {
 	// res为各个init container的cpu request、所有普通container的总cpu request中的最大值，加上Overhead的cpu
-	// non0CPU为各个init container的cpu request（没有设置request，则为默认值100）、所有普通container的总cpu request（没有设置request，则为默认值100）中的最大值，加上Overhead的cpu
-	// non0Mem为各个init container的memory request（没有设置request，则为默认200Mi）、所有普通container的总memory request（没有设置request，则为默认200Mi）中的最大值，加上Overhead的Memory
+	// non0CPU为各个init container的cpu request（没有设置request，则为默认值100）与所有普通container的总cpu request（没有设置request，则为默认值100）中的最大值，加上Overhead的cpu
+	// non0Mem为各个init container的memory request（没有设置request，则为默认200Mi）与所有普通container的总memory request（没有设置request，则为默认200Mi）中的最大值，加上Overhead的Memory
+	// 公式resourceRequest = max(sum(podSpec.Containers), podSpec.InitContainers) + overHead
 	res, non0CPU, non0Mem := calculateResource(pod)
 	n.requestedResource.MilliCPU += res.MilliCPU
 	n.requestedResource.Memory += res.Memory
@@ -597,8 +602,8 @@ func (n *NodeInfo) resetSlicesIfEmpty() {
 
 // resourceRequest = max(sum(podSpec.Containers), podSpec.InitContainers) + overHead
 // res为各个init container的cpu request、所有普通container的总cpu request中的最大值，加上Overhead的cpu
-// non0CPU为各个init container的cpu request（没有设置request，则为默认值100）、所有普通container的总cpu request（没有设置request，则为默认值100）中的最大值，加上Overhead的cpu
-// non0Mem为各个init container的memory request（没有设置request，则为默认200Mi）、所有普通container的总memory request（没有设置request，则为默认200Mi）中的最大值，加上Overhead的Memory
+// non0CPU为各个init container的cpu request（没有设置request，则为默认值100）与所有普通container的总cpu request（没有设置request，则为默认值100）中的最大值，加上Overhead的cpu
+// non0Mem为各个init container的memory request（没有设置request，则为默认200Mi）与所有普通container的总memory request（没有设置request，则为默认200Mi）中的最大值，加上Overhead的Memory
 func calculateResource(pod *v1.Pod) (res Resource, non0CPU int64, non0Mem int64) {
 	resPtr := &res
 	for _, c := range pod.Spec.Containers {
@@ -620,12 +625,12 @@ func calculateResource(pod *v1.Pod) (res Resource, non0CPU int64, non0Mem int64)
 		// init container的request中的各个资源值，大于resPtr中的对应资源值，则更新resPtr中的值。（resPtr里保存了各个资源的request的最大值）
 		resPtr.SetMaxResource(ic.Resources.Requests)
 		non0CPUReq, non0MemReq := schedutil.GetNonzeroRequests(&ic.Resources.Requests)
-		// non0CPU为各个init container的cpu request、所有普通container的总cpu request中的最大值
+		// non0CPU为各个init container的cpu request与所有普通container的总cpu request中的最大值
 		if non0CPU < non0CPUReq {
 			non0CPU = non0CPUReq
 		}
 
-		// non0Mem为各个init container的memory request、所有普通container的总memory request中的最大值
+		// non0Mem为各个init container的memory request与所有普通container的总memory request中的最大值
 		if non0Mem < non0MemReq {
 			non0Mem = non0MemReq
 		}
@@ -672,9 +677,18 @@ func (n *NodeInfo) UpdateUsedPorts(pod *v1.Pod, add bool) {
 }
 
 // SetNode sets the overall node information.
+// 设置n.node为node
+// 设置n.allocatableResource为node.Status.Allocatable
+// 设置n.taints为node.Spec.Taints
+// 设置n.memoryPressureCondition为node里的"MemoryPressure" condition
+// 设置n.diskPressureCondition为node里的"DiskPressure" condition
+// 设置n.pidPressureCondition为node里的"PIDPressure" condition
+// 设置n.TransientInfo为空的TransientSchedulerInfo
+// 设置n.generation为初始值
 func (n *NodeInfo) SetNode(node *v1.Node) error {
 	n.node = node
 
+	// 将node.Status.Allocatable（v1.ResourceList）转成n.allocatableResource（*Resource）
 	n.allocatableResource = NewResource(node.Status.Allocatable)
 
 	n.taints = node.Spec.Taints

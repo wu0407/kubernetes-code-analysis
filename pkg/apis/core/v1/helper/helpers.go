@@ -245,6 +245,7 @@ func containsAccessMode(modes []v1.PersistentVolumeAccessMode, mode v1.Persisten
 
 // NodeSelectorRequirementsAsSelector converts the []NodeSelectorRequirement api type into a struct that implements
 // labels.Selector.
+// 转换[]v1.NodeSelectorRequirement为labels.Selector
 func NodeSelectorRequirementsAsSelector(nsm []v1.NodeSelectorRequirement) (labels.Selector, error) {
 	if len(nsm) == 0 {
 		return labels.Nothing(), nil
@@ -279,6 +280,7 @@ func NodeSelectorRequirementsAsSelector(nsm []v1.NodeSelectorRequirement) (label
 
 // NodeSelectorRequirementsAsFieldSelector converts the []NodeSelectorRequirement core type into a struct that implements
 // fields.Selector.
+// 将[]NodeSelectorRequirement转成fields.Selector
 func NodeSelectorRequirementsAsFieldSelector(nsm []v1.NodeSelectorRequirement) (fields.Selector, error) {
 	if len(nsm) == 0 {
 		return fields.Nothing(), nil
@@ -286,6 +288,7 @@ func NodeSelectorRequirementsAsFieldSelector(nsm []v1.NodeSelectorRequirement) (
 
 	selectors := []fields.Selector{}
 	for _, expr := range nsm {
+		// 只支持"In"和"NotIn"，且只支持一个值
 		switch expr.Operator {
 		case v1.NodeSelectorOpIn:
 			if len(expr.Values) != 1 {
@@ -337,6 +340,7 @@ func MatchNodeSelectorTerms(
 		}
 
 		if len(req.MatchExpressions) != 0 {
+			// 转换req.MatchExpressions为labels.Selector
 			labelSelector, err := NodeSelectorRequirementsAsSelector(req.MatchExpressions)
 			if err != nil || !labelSelector.Matches(nodeLabels) {
 				continue
@@ -344,6 +348,7 @@ func MatchNodeSelectorTerms(
 		}
 
 		if len(req.MatchFields) != 0 {
+			// 将req.MatchFields转成fields.Selector
 			fieldSelector, err := NodeSelectorRequirementsAsFieldSelector(req.MatchFields)
 			if err != nil || !fieldSelector.Matches(nodeFields) {
 				continue

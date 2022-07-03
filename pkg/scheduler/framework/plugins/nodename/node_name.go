@@ -55,6 +55,7 @@ func (pl *NodeName) Filter(ctx context.Context, _ *framework.CycleState, pod *v1
 }
 
 // Fits actually checks if the pod fits the node.
+// 检测pod.Spec.NodeName是否等于nodeInfo.Node().Name。pod.Spec.NodeName为空，返回true，说明不需要匹配NodeName
 func Fits(pod *v1.Pod, nodeInfo *nodeinfo.NodeInfo) bool {
 	return len(pod.Spec.NodeName) == 0 || pod.Spec.NodeName == nodeInfo.Node().Name
 }

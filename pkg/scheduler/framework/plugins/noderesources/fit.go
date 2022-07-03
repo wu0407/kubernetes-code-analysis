@@ -96,18 +96,25 @@ func (f *Fit) Name() string {
 //       Memory: 1G
 //
 // Result: CPU: 3, Memory: 3G
+// 返回的结果为
+// 首先，pod中普通container的request资源进行累加
+// 然后，普通container总的request资源与所有initContainer中最大的request资源
+// 最后，如果启用"PodOverhead"功能，overhead资源进行累加
 func computePodResourceRequest(pod *v1.Pod) *preFilterState {
 	result := &preFilterState{}
+	// pod中普通container的request资源进行累加
 	for _, container := range pod.Spec.Containers {
 		result.Add(container.Resources.Requests)
 	}
 
 	// take max_resource(sum_pod, any_init_container)
+	// 普通container总的request资源与所有initContainer中最大的request资源
 	for _, container := range pod.Spec.InitContainers {
 		result.SetMaxResource(container.Resources.Requests)
 	}
 
 	// If Overhead is being utilized, add to the total requests for the pod
+	// 如果启用"PodOverhead"功能，overhead资源进行累加
 	if pod.Spec.Overhead != nil && utilfeature.DefaultFeatureGate.Enabled(features.PodOverhead) {
 		result.Add(pod.Spec.Overhead)
 	}
@@ -174,14 +181,23 @@ type InsufficientResource struct {
 }
 
 // Fits checks if node have enough resources to host the pod.
+// 检测node可以分配的资源是否可以满足，pod的request资源里的cpu、memory、EphemeralStorage、ScalarResources
 func Fits(pod *v1.Pod, nodeInfo *schedulernodeinfo.NodeInfo, ignoredExtendedResources sets.String) []InsufficientResource {
+	// computePodResourceRequest(pod)返回的结果为
+	// 首先，pod中普通container的request资源进行累加
+	// 然后，普通container总的request资源与所有initContainer中最大的request资源
+	// 最后，如果启用"PodOverhead"功能，overhead资源进行累加
+	//
+	// 检测node可以分配的资源是否可以满足，pod的request资源里的cpu、memory、EphemeralStorage、ScalarResources
 	return fitsRequest(computePodResourceRequest(pod), nodeInfo, ignoredExtendedResources)
 }
 
+// 检测node可以分配的资源是否可以满足，pod的request资源里的cpu、memory、EphemeralStorage、ScalarResources
 func fitsRequest(podRequest *preFilterState, nodeInfo *schedulernodeinfo.NodeInfo, ignoredExtendedResources sets.String) []InsufficientResource {
 	insufficientResources := make([]InsufficientResource, 0, 4)
 
 	allowedPodNumber := nodeInfo.AllowedPodNumber()
+	// node上已经有的pod数量加上1（待分配的pod）大于node最大允许的pod数量，则不满足原因是pod数量
 	if len(nodeInfo.Pods())+1 > allowedPodNumber {
 		insufficientResources = append(insufficientResources, InsufficientResource{
 			v1.ResourcePods,
@@ -196,6 +212,7 @@ func fitsRequest(podRequest *preFilterState, nodeInfo *schedulernodeinfo.NodeInf
 		ignoredExtendedResources = sets.NewString()
 	}
 
+	// 如果pod总的request资源里的cpu、memory、EphemeralStorage、ScalarResources（扩展资源和非扩展资源）都为0，则直接返回
 	if podRequest.MilliCPU == 0 &&
 		podRequest.Memory == 0 &&
 		podRequest.EphemeralStorage == 0 &&
@@ -204,6 +221,7 @@ func fitsRequest(podRequest *preFilterState, nodeInfo *schedulernodeinfo.NodeInf
 	}
 
 	allocatable := nodeInfo.AllocatableResource()
+	// node里的allocatable（可以分配）的cpu，小于pod总的request cpu加上已经分配的cpu数量，说明cpu资源不满足
 	if allocatable.MilliCPU < podRequest.MilliCPU+nodeInfo.RequestedResource().MilliCPU {
 		insufficientResources = append(insufficientResources, InsufficientResource{
 			v1.ResourceCPU,
@@ -213,6 +231,7 @@ func fitsRequest(podRequest *preFilterState, nodeInfo *schedulernodeinfo.NodeInf
 			allocatable.MilliCPU,
 		})
 	}
+	// node里的allocatable（可以分配）的memory，小于pod总的request memory加上已经分配的memory数量，说明memory资源不满足
 	if allocatable.Memory < podRequest.Memory+nodeInfo.RequestedResource().Memory {
 		insufficientResources = append(insufficientResources, InsufficientResource{
 			v1.ResourceMemory,
@@ -222,6 +241,7 @@ func fitsRequest(podRequest *preFilterState, nodeInfo *schedulernodeinfo.NodeInf
 			allocatable.Memory,
 		})
 	}
+	// node里的allocatable（可以分配）的ephemeral-storage，小于pod总的request ephemeral-storage加上已经分配的ephemeral-storage数量，说明ephemeral-storage资源不满足
 	if allocatable.EphemeralStorage < podRequest.EphemeralStorage+nodeInfo.RequestedResource().EphemeralStorage {
 		insufficientResources = append(insufficientResources, InsufficientResource{
 			v1.ResourceEphemeralStorage,
@@ -236,10 +256,12 @@ func fitsRequest(podRequest *preFilterState, nodeInfo *schedulernodeinfo.NodeInf
 		if v1helper.IsExtendedResourceName(rName) {
 			// If this resource is one of the extended resources that should be
 			// ignored, we will skip checking it.
+			// 如果request资源是扩展资源，且在ignoredExtendedResources里，则跳过
 			if ignoredExtendedResources.Has(string(rName)) {
 				continue
 			}
 		}
+		// node里的allocatable（可以分配）的ScalarResources里的资源类型数量，小于pod总的request ScalarResources里的资源类型数量，加上已经分配的ScalarResources里的资源类型数量，说明这个ScalarResources里的资源不满足
 		if allocatable.ScalarResources[rName] < rQuant+nodeInfo.RequestedResource().ScalarResources[rName] {
 			insufficientResources = append(insufficientResources, InsufficientResource{
 				rName,
