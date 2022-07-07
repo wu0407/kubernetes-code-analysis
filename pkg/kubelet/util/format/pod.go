@@ -29,12 +29,14 @@ type podHandler func(*v1.Pod) string
 
 // Pod returns a string representing a pod in a consistent human readable format,
 // with pod UID as part of the string.
+// {podName}_{podNamespace}({podUID})
 func Pod(pod *v1.Pod) string {
 	return PodDesc(pod.Name, pod.Namespace, pod.UID)
 }
 
 // PodDesc returns a string representing a pod in a consistent human readable format,
 // with pod UID as part of the string.
+// {podName}_{podNamespace}({podUID})
 func PodDesc(podName, podNamespace string, podUID types.UID) string {
 	// Use underscore as the delimiter because it is not allowed in pod name
 	// (DNS subdomain format), while allowed in the container name format.

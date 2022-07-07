@@ -111,6 +111,7 @@ func (m *manager) Get(id kubecontainer.ContainerID) (Result, bool) {
 }
 
 func (m *manager) Set(id kubecontainer.ContainerID, result Result, pod *v1.Pod) {
+	// id在m.cache中的result与现在result不一样，或id在m.cache中的没有result，则发送Update消息到m.updates通道
 	if m.setInternal(id, result) {
 		m.updates <- Update{id, result, pod.UID}
 	}
@@ -120,14 +121,18 @@ func (m *manager) Set(id kubecontainer.ContainerID, result Result, pod *v1.Pod) 
 func (m *manager) setInternal(id kubecontainer.ContainerID, result Result) bool {
 	m.Lock()
 	defer m.Unlock()
+	// 从m.cache获得之前的result
 	prev, exists := m.cache[id]
+	// 之前没有result，或现在result与m.cache中不一样，则更新m.cache为现在的result，返回true
 	if !exists || prev != result {
 		m.cache[id] = result
 		return true
 	}
+	// 现在result与m.cache中一样，返回false
 	return false
 }
 
+// 从m.cache中移除这个containerID
 func (m *manager) Remove(id kubecontainer.ContainerID) {
 	m.Lock()
 	defer m.Unlock()

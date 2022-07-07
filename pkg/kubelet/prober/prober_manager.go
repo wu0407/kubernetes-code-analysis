@@ -122,9 +122,16 @@ func NewManager(
 // Start syncing probe status. This should only be called once.
 func (m *manager) Start() {
 	// Start syncing readiness.
+	// m.readinessManager.updates通道中读取消息
+	// 消息中（readiness是否成功结果）跟m.statusManager里的container status里的Ready字段值一样，则不做任何东西
+	// 否则，同步readiness结果到m.statusManager.podStatuses，并更新apiserver中pod status
 	go wait.Forever(m.updateReadiness, 0)
 	// Start syncing startup.
+	// 从m.startupManager.updates通道中读取消息
+	// 消息中startup probe是否成功结果，跟m.statusManager里的container status里的Started字段值一样，则不做任何东西
+	// 否则，更改container status里Started字段的值（同步startup probe结果）到m.statusManager.podStatuses，并更新apiserver中pod status
 	go wait.Forever(m.updateStartup, 0)
+	// livenessManager.Updates()在kl.syncLoopIteration里被消费
 }
 
 // Key uniquely identifying container probes
@@ -161,14 +168,20 @@ func (t probeType) String() string {
 	}
 }
 
+// pod里所有有定义的probe的container，每个container添加一个worker到m.workers，
+// 并启动一个goroutine，周期性执行probe
+// 执行结果有变化，则写入worker.resultsManager.cache中，则发送Update消息到worker.resultsManager.updates通道
+// worker.resultsManager，是对应类型probe的manager，即m.readinessManager、m.livenessManager、m.startupManager
 func (m *manager) AddPod(pod *v1.Pod) {
 	m.workerLock.Lock()
 	defer m.workerLock.Unlock()
 
 	key := probeKey{podUID: pod.UID}
+	// 遍历pod里所有普通container
 	for _, c := range pod.Spec.Containers {
 		key.containerName = c.Name
 
+		// container定义了StartupProbe且启用"StartupProbe"功能
 		if c.StartupProbe != nil && utilfeature.DefaultFeatureGate.Enabled(features.StartupProbe) {
 			key.probeType = startup
 			if _, ok := m.workers[key]; ok {
@@ -177,7 +190,11 @@ func (m *manager) AddPod(pod *v1.Pod) {
 				return
 			}
 			w := newWorker(m, startup, pod, c)
+			// 添加一个worker到m.workers
 			m.workers[key] = w
+			// 周期性执行probe，直到w.stopCh收到消息或w.doProbe()返回false（停止执行probe）
+			// 执行结果有变化，则写入w.resultsManager.cache中，则发送Update消息到w.resultsManager.updates通道
+			// w.resultsManager，是m.readinessManager
 			go w.run()
 		}
 
@@ -292,6 +309,7 @@ func (m *manager) getWorker(podUID types.UID, containerName string, probeType pr
 }
 
 // Called by the worker after exiting.
+// 从m.workers中移除这个worker
 func (m *manager) removeWorker(podUID types.UID, containerName string, probeType probeType) {
 	m.workerLock.Lock()
 	defer m.workerLock.Unlock()
@@ -306,15 +324,21 @@ func (m *manager) workerCount() int {
 }
 
 func (m *manager) updateReadiness() {
+	// m.readinessManager.updates通道中读取消息
 	update := <-m.readinessManager.Updates()
 
 	ready := update.Result == results.Success
+	// ready（readiness结果）跟m.statusManager里的container status里的Ready字段值一样，则不做任何东西
+	// 否则，同步readiness结果到m.statusManager.podStatuses，并更新apiserver中pod status
 	m.statusManager.SetContainerReadiness(update.PodUID, update.ContainerID, ready)
 }
 
 func (m *manager) updateStartup() {
+	// 从m.startupManager.updates通道中读取消息
 	update := <-m.startupManager.Updates()
 
 	started := update.Result == results.Success
+	// started（startup probe结果）跟m.statusManager里的container status里的Started字段值一样，则不做任何东西
+	// 否则，更改container status里Started字段的值（同步startup probe结果）到m.statusManager.podStatuses，并更新apiserver中pod status
 	m.statusManager.SetContainerStartup(update.PodUID, update.ContainerID, started)
 }

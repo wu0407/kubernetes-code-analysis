@@ -228,6 +228,8 @@ func (m *manager) SetPodStatus(pod *v1.Pod, status v1.PodStatus) {
 	m.updateStatusInternal(pod, status, pod.DeletionTimestamp != nil)
 }
 
+// readiness结果跟之前的status里的一样，则不做任何东西
+// 否则，同步readiness结果到m.podStatuses，并更新apiserver中pod status
 func (m *manager) SetContainerReadiness(podUID types.UID, containerID kubecontainer.ContainerID, ready bool) {
 	m.podStatusesLock.Lock()
 	defer m.podStatusesLock.Unlock()
@@ -239,6 +241,7 @@ func (m *manager) SetContainerReadiness(podUID types.UID, containerID kubecontai
 	}
 
 	oldStatus, found := m.podStatuses[pod.UID]
+	// 在m.podStatuses，没有状态，则直接返回
 	if !found {
 		klog.Warningf("Container readiness changed before pod has synced: %q - %q",
 			format.Pod(pod), containerID.String())
@@ -246,6 +249,7 @@ func (m *manager) SetContainerReadiness(podUID types.UID, containerID kubecontai
 	}
 
 	// Find the container to update.
+	// 从oldStatus.status中发现containerID的ContainerStatus，返回ContainerStatus、是否是init container，是否找到
 	containerStatus, _, ok := findContainerStatus(&oldStatus.status, containerID.String())
 	if !ok {
 		klog.Warningf("Container readiness changed for unknown container: %q - %q",
@@ -253,6 +257,7 @@ func (m *manager) SetContainerReadiness(podUID types.UID, containerID kubecontai
 		return
 	}
 
+	// readiness结果跟之前的status里的一样，则直接返回
 	if containerStatus.Ready == ready {
 		klog.V(4).Infof("Container readiness unchanged (%v): %q - %q", ready,
 			format.Pod(pod), containerID.String())
@@ -260,11 +265,13 @@ func (m *manager) SetContainerReadiness(podUID types.UID, containerID kubecontai
 	}
 
 	// Make sure we're not updating the cached version.
+	// 从oldStatus.status中复制出containerID的containerStatus，并将Ready值修改readiness结果
 	status := *oldStatus.status.DeepCopy()
 	containerStatus, _, _ = findContainerStatus(&status, containerID.String())
 	containerStatus.Ready = ready
 
 	// updateConditionFunc updates the corresponding type of condition
+	// 更新conditionType类型的PodCondition
 	updateConditionFunc := func(conditionType v1.PodConditionType, condition v1.PodCondition) {
 		conditionIndex := -1
 		for i, condition := range status.Conditions {
@@ -273,29 +280,40 @@ func (m *manager) SetContainerReadiness(podUID types.UID, containerID kubecontai
 				break
 			}
 		}
+		// 如果找到这个condition，则进行修改
 		if conditionIndex != -1 {
 			status.Conditions[conditionIndex] = condition
 		} else {
+			// 没有找到这个condition，则append到status.Conditions
 			klog.Warningf("PodStatus missing %s type condition: %+v", conditionType, status)
 			status.Conditions = append(status.Conditions, condition)
 		}
 	}
+	// 更新"Ready"类型的PodCondition
 	updateConditionFunc(v1.PodReady, GeneratePodReadyCondition(&pod.Spec, status.Conditions, status.ContainerStatuses, status.Phase))
+	// 更新"ContainersReady"类型的PodCondition
 	updateConditionFunc(v1.ContainersReady, GenerateContainersReadyCondition(&pod.Spec, status.ContainerStatuses, status.Phase))
+	// 更新m.podStatuses，如果发生了改变，则更新apiserver中pod status
 	m.updateStatusInternal(pod, status, false)
 }
 
+// started（startup probe结果是否成功）跟m.statusManager里的container status里的Started字段值一样，则不做任何东西
+// 否则，更改container status里Started字段的值（同步startup probe结果）到m.podStatuses，并更新apiserver中pod status
 func (m *manager) SetContainerStartup(podUID types.UID, containerID kubecontainer.ContainerID, started bool) {
 	m.podStatusesLock.Lock()
 	defer m.podStatusesLock.Unlock()
 
 	pod, ok := m.podManager.GetPodByUID(podUID)
+	// pod不存在，直接返回
 	if !ok {
 		klog.V(4).Infof("Pod %q has been deleted, no need to update startup", string(podUID))
 		return
 	}
 
 	oldStatus, found := m.podStatuses[pod.UID]
+	// 正常在执行kl.syncPod-->m.SetPodStatus(添加pod status)-->kl.ProbeManager.AddPod（启动probe，发生probe结果变化发送消息到通道kl.ProbeManager.startupManager.updates通道）
+	// 另一个goroutine会消费这个通道，执行m.SetContainerStartup
+	// pod之前没有status，说明这个不是正常情况，在probe结果变化前，没有status
 	if !found {
 		klog.Warningf("Container startup changed before pod has synced: %q - %q",
 			format.Pod(pod), containerID.String())
@@ -303,6 +321,7 @@ func (m *manager) SetContainerStartup(podUID types.UID, containerID kubecontaine
 	}
 
 	// Find the container to update.
+	// 从oldStatus.status中发现containerID的ContainerStatus，返回ContainerStatus、是否是init container，是否找到
 	containerStatus, _, ok := findContainerStatus(&oldStatus.status, containerID.String())
 	if !ok {
 		klog.Warningf("Container startup changed for unknown container: %q - %q",
@@ -310,6 +329,7 @@ func (m *manager) SetContainerStartup(podUID types.UID, containerID kubecontaine
 		return
 	}
 
+	// container status里的Started没有发生变化，则直接返回
 	if containerStatus.Started != nil && *containerStatus.Started == started {
 		klog.V(4).Infof("Container startup unchanged (%v): %q - %q", started,
 			format.Pod(pod), containerID.String())
@@ -321,9 +341,11 @@ func (m *manager) SetContainerStartup(podUID types.UID, containerID kubecontaine
 	containerStatus, _, _ = findContainerStatus(&status, containerID.String())
 	containerStatus.Started = &started
 
+	// container status里的Started发生变化，更新m.podStatuses，如果发生了改变，则更新apiserver中pod status
 	m.updateStatusInternal(pod, status, false)
 }
 
+// 从status中发现containerID的ContainerStatus，返回ContainerStatus、是否是init container，是否找到
 func findContainerStatus(status *v1.PodStatus, containerID string) (containerStatus *v1.ContainerStatus, init bool, ok bool) {
 	// Find the container to update.
 	for i, c := range status.ContainerStatuses {

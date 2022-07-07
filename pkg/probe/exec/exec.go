@@ -45,12 +45,15 @@ type execProber struct{}
 // Probe executes a command to check the liveness/readiness of container
 // from executing a command. Returns the Result status, command output, and
 // errors if any.
+// 执行命令的probe，返回probe结果、输出（最大输出10k）、错误
 func (pr execProber) Probe(e exec.Cmd) (probe.Result, string, error) {
 	var dataBuffer bytes.Buffer
+	// 最大输出10k
 	writer := ioutils.LimitWriter(&dataBuffer, maxReadLength)
 
 	e.SetStderr(writer)
 	e.SetStdout(writer)
+	// 执行命令
 	err := e.Start()
 	if err == nil {
 		err = e.Wait()
@@ -61,11 +64,14 @@ func (pr execProber) Probe(e exec.Cmd) (probe.Result, string, error) {
 	if err != nil {
 		exit, ok := err.(exec.ExitError)
 		if ok {
+			// 退出码为0，则返回probe成功、输出、nil
 			if exit.ExitStatus() == 0 {
 				return probe.Success, string(data), nil
 			}
+			// 退出码不为0，则返回probe失败、输出、nil
 			return probe.Failure, string(data), nil
 		}
+		// 其他错误，返回probe.Unknown、""、nil
 		return probe.Unknown, "", err
 	}
 	return probe.Success, string(data), nil

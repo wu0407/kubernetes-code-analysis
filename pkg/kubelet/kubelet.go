@@ -1609,7 +1609,17 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 
 	// Start component sync loops.
 	kl.statusManager.Start()
-	// todo read
+	// 启动一个goroutine，监听所有readiness probe的结果发生变化
+	// kl.probeManager.readinessManager.updates通道中读取消息
+	// 消息中（readiness是否成功结果）跟kl.probeManager.statusManager里的container status里的Ready字段值一样，则不做任何东西
+	// 否则，同步readiness结果到kl.statusManager.podStatuses，并更新apiserver中pod status
+
+	// 启动一个goroutine，监听所有start probe的结果发生变化
+	// 从kl.probeManager.startupManager.updates通道中读取消息
+	// 消息中startup probe是否成功结果，跟kl.statusManager里的container status里的Started字段值一样，则不做任何东西
+	// 否则，更改container status里Started字段的值（同步startup probe结果）到kl.statusManager.podStatuses，并更新apiserver中pod status
+
+	// liveness probe结果在在kl.syncLoopIteration里被消费
 	kl.probeManager.Start()
 
 	// Start syncing RuntimeClasses if enabled.
@@ -2439,7 +2449,12 @@ func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 			}
 		}
 		mirrorPod, _ := kl.podManager.GetMirrorPodByPod(pod)
+		// 利用podworker机制进行启动pod，pod被reject（不会启动）
 		kl.dispatchWork(pod, kubetypes.SyncPodCreate, mirrorPod, start)
+		// pod里所有有定义的probe的container，每个container添加一个worker到m.workers，
+		// 并启动一个goroutine，周期性执行probe
+		// 执行结果有变化，则写入worker.resultsManager.cache中，则发送Update消息到worker.resultsManager.updates通道
+		// worker.resultsManager，是对应类型probe的manager，即kl.probeManage.readinessManager、kl.probeManage.livenessManager、kl.probeManage.startupManager
 		kl.probeManager.AddPod(pod)
 	}
 }

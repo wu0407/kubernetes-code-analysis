@@ -123,6 +123,7 @@ func EnvVarsToMap(envs []EnvVar) map[string]string {
 
 // V1EnvVarsToMap constructs a map of environment name to value from a slice
 // of env vars.
+// []v1.EnvVar转成map[string]string
 func V1EnvVarsToMap(envs []v1.EnvVar) map[string]string {
 	result := map[string]string{}
 	for _, env := range envs {
@@ -135,10 +136,14 @@ func V1EnvVarsToMap(envs []v1.EnvVar) map[string]string {
 // ExpandContainerCommandOnlyStatic substitutes only static environment variable values from the
 // container environment definitions. This does *not* include valueFrom substitutions.
 // TODO: callers should use ExpandContainerCommandAndArgs with a fully resolved list of environment.
+// containerCommand里有类似"$(var)"格式，则从envs查找对应的环境变量进行替换var，找不到对应的变量则为替换成空。
+// 如果有"$$"格式转义成"$"
 func ExpandContainerCommandOnlyStatic(containerCommand []string, envs []v1.EnvVar) (command []string) {
+	// 返回函数，在V1EnvVarsToMap(envs)列表里每个map查找input（输入参数），找到就返回，否则返回"$({input})"，比如"$(var)"
 	mapping := expansion.MappingFuncFor(V1EnvVarsToMap(envs))
 	if len(containerCommand) != 0 {
 		for _, cmd := range containerCommand {
+			// expansion.Expand，cmd中如果有类似"$(var)"格式，执行mapping替换var，如果有"$$"格式转义成"$"
 			command = append(command, expansion.Expand(cmd, mapping))
 		}
 	}
