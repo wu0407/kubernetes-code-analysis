@@ -554,6 +554,7 @@ func (p *Pod) FindContainerByName(containerName string) *Container {
 	return nil
 }
 
+// 返回pod中container id为id的container
 func (p *Pod) FindContainerByID(id ContainerID) *Container {
 	for _, c := range p.Containers {
 		if c.ID == id {

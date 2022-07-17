@@ -1049,7 +1049,7 @@ func (m *kubeGenericRuntimeManager) killPodWithSyncResult(pod *v1.Pod, runningPo
 
 // GetPodStatus retrieves the status of the pod, including the
 // information of all containers in the pod that are visible in Runtime.
-// 返回pod的uid、name、namespace、以及所有sanbox状态、ips、所有容器状态
+// 返回pod的uid、name、namespace、以及所有sandbox状态、ips、所有容器状态
 func (m *kubeGenericRuntimeManager) GetPodStatus(uid kubetypes.UID, name, namespace string) (*kubecontainer.PodStatus, error) {
 	// Now we retain restart count of container as a container label. Each time a container
 	// restarts, pod will read the restart count from the registered dead container, increment

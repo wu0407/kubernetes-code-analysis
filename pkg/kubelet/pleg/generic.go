@@ -83,6 +83,7 @@ const (
 	relistThreshold = 3 * time.Minute
 )
 
+// 转换kubecontainer.ContainerState为plegContainerState
 func convertState(state kubecontainer.ContainerState) plegContainerState {
 	switch state {
 	case kubecontainer.ContainerStateCreated:
@@ -122,12 +123,23 @@ func NewGenericPLEG(runtime kubecontainer.Runtime, channelCapacity int,
 // Watch returns a channel from which the subscriber can receive PodLifecycleEvent
 // events.
 // TODO: support multiple subscribers.
+// 返回g.eventChannel
 func (g *GenericPLEG) Watch() chan *PodLifecycleEvent {
 	return g.eventChannel
 }
 
 // Start spawns a goroutine to relist periodically.
 func (g *GenericPLEG) Start() {
+	// 从runtime中获得所有运行和不在运行的pod
+	// 将pods更新到g.podRecords里每个uid的current
+	// 遍历g.podRecords里的pod，遍历pod里的普通container和sandbox，根据老的和新的container状态生成PodLifecycleEvent
+	// 遍历所有PodLifecycleEvent：
+	//    如果启用podStatus缓存，则更新pod的podStatus缓存
+	//    更新pid的g.podRecords：
+	//       id不在podRecords中，直接返回
+	//       如果r.current为nil，则从podRecords中移除这个id（因为pod已经被删除了），直接返回
+	//       否则，将r.old设置成r.current，r.current置为nil
+	//   发送event到g.eventChannel，如果g.eventChannel满了，则丢弃这个event
 	go wait.Until(g.relist, g.relistPeriod, wait.NeverStop)
 }
 
@@ -147,19 +159,27 @@ func (g *GenericPLEG) Healthy() (bool, error) {
 	return true, nil
 }
 
+// 根据老的和新的container状态生成PodLifecycleEvent
 func generateEvents(podID types.UID, cid string, oldState, newState plegContainerState) []*PodLifecycleEvent {
+	// 状态没有变化，直接返回nil
 	if newState == oldState {
 		return nil
 	}
 
 	klog.V(4).Infof("GenericPLEG: %v/%v: %v -> %v", podID, cid, oldState, newState)
 	switch newState {
+	//新状态为"running"，则生成"ContainerStarted"的PodLifecycleEvent
 	case plegContainerRunning:
 		return []*PodLifecycleEvent{{ID: podID, Type: ContainerStarted, Data: cid}}
+	// 新状态为"exited"，则生成"ContainerDied"的PodLifecycleEvent
 	case plegContainerExited:
 		return []*PodLifecycleEvent{{ID: podID, Type: ContainerDied, Data: cid}}
+	// 新状态为"unknown"，则生成"ContainerChanged"的PodLifecycleEvent
 	case plegContainerUnknown:
 		return []*PodLifecycleEvent{{ID: podID, Type: ContainerChanged, Data: cid}}
+	// 新状态为"non-existent"
+	// 如果老的状态为"exited"，则生成"ContainerRemoved"的PodLifecycleEvent
+	// 否则生成"ContainerDied"和"ContainerRemoved"的PodLifecycleEvent（说明container莫名其妙的消失，有可能被手动移除，也有可能瞬间停止移除，中间状态没有捕获到）
 	case plegContainerNonExistent:
 		switch oldState {
 		case plegContainerExited:
@@ -173,6 +193,7 @@ func generateEvents(podID types.UID, cid string, oldState, newState plegContaine
 	}
 }
 
+// 获得g.relistTime中的时间
 func (g *GenericPLEG) getRelistTime() time.Time {
 	val := g.relistTime.Load()
 	if val == nil {
@@ -181,12 +202,23 @@ func (g *GenericPLEG) getRelistTime() time.Time {
 	return val.(time.Time)
 }
 
+// 更新g.relistTime中的时间
 func (g *GenericPLEG) updateRelistTime(timestamp time.Time) {
 	g.relistTime.Store(timestamp)
 }
 
 // relist queries the container runtime for list of pods/containers, compare
 // with the internal pods/containers, and generates events accordingly.
+// 从runtime中获得所有运行和不在运行的pod
+// 将pods更新到g.podRecords里每个uid的current
+// 遍历g.podRecords里的pod，遍历pod里的普通container和sandbox，根据老的和新的container状态生成PodLifecycleEvent
+// 遍历所有PodLifecycleEvent：
+//    如果启用podStatus缓存，则更新pod的podStatus缓存
+//    更新pid的g.podRecords：
+//       id不在podRecords中，直接返回
+//       如果r.current为nil，则从podRecords中移除这个id（因为pod已经被删除了），直接返回
+//       否则，将r.old设置成r.current，r.current置为nil
+//   发送event到g.eventChannel，如果g.eventChannel满了，则丢弃这个event
 func (g *GenericPLEG) relist() {
 	klog.V(5).Infof("GenericPLEG: Relisting")
 
@@ -200,43 +232,58 @@ func (g *GenericPLEG) relist() {
 	}()
 
 	// Get all the pods.
+	// 从runtime中获得所有运行和不在运行的pod
 	podList, err := g.runtime.GetPods(true)
 	if err != nil {
 		klog.Errorf("GenericPLEG: Unable to retrieve pods: %v", err)
 		return
 	}
 
+	// 更新g.relistTime中的时间
 	g.updateRelistTime(timestamp)
 
 	pods := kubecontainer.Pods(podList)
 	// update running pod and container count
 	updateRunningPodAndContainerMetrics(pods)
+	// 将pods更新到g.podRecords里每个uid的current
 	g.podRecords.setCurrent(pods)
 
 	// Compare the old and the current pods, and generate events.
 	eventsByPodID := map[types.UID][]*PodLifecycleEvent{}
 	for pid := range g.podRecords {
+		// 返回id的old字段值（记录）
 		oldPod := g.podRecords.getOld(pid)
+		// 返回id的current字段值（记录）
 		pod := g.podRecords.getCurrent(pid)
 		// Get all containers in the old and the new pod.
+		// 返回oldPod和新pod里所有container包括普通container和sandbox
 		allContainers := getContainersFromPods(oldPod, pod)
+
 		for _, container := range allContainers {
+			// 根据老的和新的container状态生成PodLifecycleEvent
 			events := computeEvents(oldPod, pod, &container.ID)
 			for _, e := range events {
+				// 将e append到eventsByPodID[e.ID]
 				updateEvents(eventsByPodID, e)
 			}
 		}
 	}
 
 	var needsReinspection map[types.UID]*kubecontainer.Pod
+	// g.cache不为nil返回true
+	// 默认启用
 	if g.cacheEnabled() {
 		needsReinspection = make(map[types.UID]*kubecontainer.Pod)
 	}
 
 	// If there are events associated with a pod, we should update the
 	// podCache.
+	// 遍历所有event
 	for pid, events := range eventsByPodID {
+		// 返回g.podRecords里pid的current字段值（记录）
 		pod := g.podRecords.getCurrent(pid)
+		// g.cache不为nil返回true
+		// 默认启用
 		if g.cacheEnabled() {
 			// updateCache() will inspect the pod and update the cache. If an
 			// error occurs during the inspection, we want PLEG to retry again
@@ -247,25 +294,36 @@ func (g *GenericPLEG) relist() {
 			// inspecting the pod and getting the PodStatus to update the cache
 			// serially may take a while. We should be aware of this and
 			// parallelize if needed.
+			// pod为nil，从g.cache.pods删除这个id记录。（pod不在podRecord的current字段里，说明pod消失了）
+			// pod不为nil，则从runtime中获得podStatus，并更新podStatus缓存
+			// 添加id的data到添加到g.cache.pods中，并通知关注这个id的订阅者，发送缓存（g.cache.pods）中的id的data，到订阅者的chan中。
 			if err := g.updateCache(pod, pid); err != nil {
 				// Rely on updateCache calling GetPodStatus to log the actual error.
 				klog.V(4).Infof("PLEG: Ignoring events for pod %s/%s: %v", pod.Name, pod.Namespace, err)
 
 				// make sure we try to reinspect the pod during the next relisting
+				// 更新podStatus缓存发生错误，将pod写入needsReinspection名单里
 				needsReinspection[pid] = pod
 
+				// 更新podStatus缓存发生错误，则继续下一个pod event
 				continue
 			} else {
 				// this pod was in the list to reinspect and we did so because it had events, so remove it
 				// from the list (we don't want the reinspection code below to inspect it a second time in
 				// this relist execution)
+				// 成功更新podStatus缓存，从g.podsToReinspect中移除这个pod
 				delete(g.podsToReinspect, pid)
 			}
 		}
 		// Update the internal storage and send out the events.
+		// id不在podRecords中，直接返回
+		// 如果r.current为nil，则从podRecords中移除这个id（因为pod已经被删除了），直接返回
+		// 否则，将r.old设置成r.current，r.current置为nil
 		g.podRecords.update(pid)
+		// 发送event到g.eventChannel，如果g.eventChannel满了，则丢弃这个event
 		for i := range events {
 			// Filter out events that are not reliable and no other components use yet.
+			// 忽略"ContainerChanged"类型的event（container status变为unknown）
 			if events[i].Type == ContainerChanged {
 				continue
 			}
@@ -278,14 +336,21 @@ func (g *GenericPLEG) relist() {
 		}
 	}
 
+	// g.cache不为nil返回true
+	// 默认启用
 	if g.cacheEnabled() {
 		// reinspect any pods that failed inspection during the previous relist
+		// 需要重新inspect列表不为空，则重新从runtime中获得podStatus，更新podStatus缓存
 		if len(g.podsToReinspect) > 0 {
 			klog.V(5).Infof("GenericPLEG: Reinspecting pods that previously failed inspection")
 			for pid, pod := range g.podsToReinspect {
+				// pod为nil，从g.cache.pods删除这个id记录
+				// pod不为nil，则从runtime中获得podStatus，并更新podStatus缓存
+				// 添加id的data到添加到g.cache.pods中，并通知关注这个id的订阅者，发送缓存（g.cache.pods）中的id的data，到订阅者的chan中。
 				if err := g.updateCache(pod, pid); err != nil {
 					// Rely on updateCache calling GetPodStatus to log the actual error.
 					klog.V(5).Infof("PLEG: pod %s/%s failed reinspection: %v", pod.Name, pod.Namespace, err)
+					// 还是更新缓存中发生错误，则添加pod到needsReinspection
 					needsReinspection[pid] = pod
 				}
 			}
@@ -293,13 +358,16 @@ func (g *GenericPLEG) relist() {
 
 		// Update the cache timestamp.  This needs to happen *after*
 		// all pods have been properly updated in the cache.
+		// 更新g.cache.timestamp为timestamp，并发生data到timestamp满足订阅者需要（还未过期）的订阅者的chan中
 		g.cache.UpdateTime(timestamp)
 	}
 
 	// make sure we retain the list of pods that need reinspecting the next time relist is called
+	// 更新g.podsToReinspect为needsReinspection
 	g.podsToReinspect = needsReinspection
 }
 
+// 返回pods里所有container包括普通container和sandbox
 func getContainersFromPods(pods ...*kubecontainer.Pod) []*kubecontainer.Container {
 	cidSet := sets.NewString()
 	var containers []*kubecontainer.Container
@@ -330,34 +398,52 @@ func getContainersFromPods(pods ...*kubecontainer.Pod) []*kubecontainer.Containe
 	return containers
 }
 
+// 根据老的和新的container状态生成PodLifecycleEvent
 func computeEvents(oldPod, newPod *kubecontainer.Pod, cid *kubecontainer.ContainerID) []*PodLifecycleEvent {
 	var pid types.UID
+	// pod的uid优先选择oldPod
 	if oldPod != nil {
 		pid = oldPod.ID
 	} else if newPod != nil {
 		pid = newPod.ID
 	}
+	// 依次从oldPod中的container和sandbox中找到container id为cid的container，并将kubecontainer.ContainerState转换为plegContainerState
 	oldState := getContainerState(oldPod, cid)
+	// 依次从newPod中的container和sandbox中找到container id为cid的container，并将kubecontainer.ContainerState转换为plegContainerState
 	newState := getContainerState(newPod, cid)
+	// 根据老的和新的container状态生成PodLifecycleEvent
 	return generateEvents(pid, cid.ID, oldState, newState)
 }
 
+// g.cache不为nil返回true
 func (g *GenericPLEG) cacheEnabled() bool {
 	return g.cache != nil
 }
 
 // getPodIP preserves an older cached status' pod IP if the new status has no pod IPs
 // and its sandboxes have exited
+// 如果status中有ip，则返回status中的ip
+// status中没有ip，如果从缓存（g.cache.pods）中的获取podStatus发生错误，或缓存中的status里没有ip，则返回nil
+// 没有发生错误，且缓存中oldStatus里有ip，如果status.SandboxStatuses中有ready的sandbox，则返回status的ip列表（为空）
+// status中没有ready的sandbox，返回缓存中oldStatus里的ip列表
 func (g *GenericPLEG) getPodIPs(pid types.UID, status *kubecontainer.PodStatus) []string {
+	// 如果status中有ip，则返回status中的ip
 	if len(status.IPs) != 0 {
 		return status.IPs
 	}
 
+	// status中没有ip
+
+	// 返回缓存（g.cache.pods）中的id的data里status，如果不在缓存中，则返回空的数据（只有pod id）
 	oldStatus, err := g.cache.Get(pid)
+	// 如果发生错误，或缓存中的status里没有ip，则返回nil
 	if err != nil || len(oldStatus.IPs) == 0 {
 		return nil
 	}
 
+	// 没有发生错误，且缓存中oldStatus里有ip
+
+	// 如果status.SandboxStatuses中有ready的sandbox，则返回status的ip列表（为空）
 	for _, sandboxStatus := range status.SandboxStatuses {
 		// If at least one sandbox is ready, then use this status update's pod IP
 		if sandboxStatus.State == runtimeapi.PodSandboxState_SANDBOX_READY {
@@ -367,14 +453,20 @@ func (g *GenericPLEG) getPodIPs(pid types.UID, status *kubecontainer.PodStatus) 
 
 	// For pods with no ready containers or sandboxes (like exited pods)
 	// use the old status' pod IP
+	// status中没有ready的sandbox，返回缓存中oldStatus里的ip列表
 	return oldStatus.IPs
 }
 
+// pod为nil，从g.cache.pods删除这个id记录
+// pod不为nil，则从runtime中获得podStatus，并更新podStatus缓存
+// 添加id的data到添加到g.cache.pods中，并通知关注这个id的订阅者，发送缓存（g.cache.pods）中的id的data，到订阅者的chan中。
 func (g *GenericPLEG) updateCache(pod *kubecontainer.Pod, pid types.UID) error {
+	// pod不在podRecord的current字段里，说明pod消失了
 	if pod == nil {
 		// The pod is missing in the current relist. This means that
 		// the pod has no visible (active or inactive) containers.
 		klog.V(4).Infof("PLEG: Delete status for pod %q", string(pid))
+		// 从g.cache.pods删除这个id记录
 		g.cache.Delete(pid)
 		return nil
 	}
@@ -382,6 +474,7 @@ func (g *GenericPLEG) updateCache(pod *kubecontainer.Pod, pid types.UID) error {
 	// TODO: Consider adding a new runtime method
 	// GetPodStatus(pod *kubecontainer.Pod) so that Docker can avoid listing
 	// all containers again.
+	// 返回pod的uid、name、namespace、以及所有sandbox状态、ips、所有容器状态
 	status, err := g.runtime.GetPodStatus(pod.ID, pod.Name, pod.Namespace)
 	klog.V(4).Infof("PLEG: Write status for %s/%s: %#v (err: %v)", pod.Name, pod.Namespace, status, err)
 	if err == nil {
@@ -389,9 +482,16 @@ func (g *GenericPLEG) updateCache(pod *kubecontainer.Pod, pid types.UID) error {
 		// When a pod is torn down, kubelet may race with PLEG and retrieve
 		// a pod status after network teardown, but the kubernetes API expects
 		// the completed pod's IP to be available after the pod is dead.
+		//
+		// 如果status中有ip，则返回status中的ip（status.IPs没有变化）
+		// status中没有ip，如果从缓存（g.cache.pods）中的获取podStatus发生错误，或缓存中的status里没有ip，则返回nil（status.IPs没有变化）
+		// 没有发生错误，且缓存中oldStatus里有ip，如果status.SandboxStatuses中有ready的sandbox，则返回status的ip列表（为空）（status.IPs没有变化）
+		// status中没有ready的sandbox，返回缓存中oldStatus里的ip列表（说明PLEG从runtime中获取pod列表，到runtime中GetPodStatus，之间pod被删除了）（status.IPs有变化）
 		status.IPs = g.getPodIPs(pid, status)
 	}
 
+	// 更新podStatus缓存
+	// 添加id的data到添加到g.cache.pods中，并通知关注这个id的订阅者，发送缓存（g.cache.pods）中的id的data，到订阅者的chan中。
 	g.cache.Set(pod.ID, status, err, timestamp)
 	return err
 }
@@ -403,19 +503,24 @@ func updateEvents(eventsByPodID map[types.UID][]*PodLifecycleEvent, e *PodLifecy
 	eventsByPodID[e.ID] = append(eventsByPodID[e.ID], e)
 }
 
+// 依次从pod中的container和sandbox中找到container id为cid的container，并将kubecontainer.ContainerState转换为plegContainerState
 func getContainerState(pod *kubecontainer.Pod, cid *kubecontainer.ContainerID) plegContainerState {
 	// Default to the non-existent state.
 	state := plegContainerNonExistent
 	if pod == nil {
 		return state
 	}
+	// pod中container id为cid的container
 	c := pod.FindContainerByID(*cid)
 	if c != nil {
+		// 转换kubecontainer.ContainerState为plegContainerState
 		return convertState(c.State)
 	}
 	// Search through sandboxes too.
+	// 在pod中的container没有找到container，尝试从pod中的sandbox里找到container
 	c = pod.FindSandboxByID(*cid)
 	if c != nil {
+		// 转换kubecontainer.ContainerState为plegContainerState
 		return convertState(c.State)
 	}
 
@@ -424,6 +529,7 @@ func getContainerState(pod *kubecontainer.Pod, cid *kubecontainer.ContainerID) p
 
 func updateRunningPodAndContainerMetrics(pods []*kubecontainer.Pod) {
 	// Set the number of running pods in the parameter
+	// 更新多少个pod在runtime中的metrics
 	metrics.RunningPodCount.Set(float64(len(pods)))
 	// intermediate map to store the count of each "container_state"
 	containerStateCount := make(map[string]int)
@@ -435,11 +541,13 @@ func updateRunningPodAndContainerMetrics(pods []*kubecontainer.Pod) {
 			containerStateCount[string(container.State)]++
 		}
 	}
+	// 更新各种container运行状态的container数量metrics
 	for key, value := range containerStateCount {
 		metrics.RunningContainerCount.WithLabelValues(key).Set(float64(value))
 	}
 }
 
+// 返回id的old字段值（记录）
 func (pr podRecords) getOld(id types.UID) *kubecontainer.Pod {
 	r, ok := pr[id]
 	if !ok {
@@ -448,6 +556,7 @@ func (pr podRecords) getOld(id types.UID) *kubecontainer.Pod {
 	return r.old
 }
 
+// 返回id的current字段值（记录）
 func (pr podRecords) getCurrent(id types.UID) *kubecontainer.Pod {
 	r, ok := pr[id]
 	if !ok {
@@ -456,10 +565,13 @@ func (pr podRecords) getCurrent(id types.UID) *kubecontainer.Pod {
 	return r.current
 }
 
+// 将pods更新到pr里每个uid的current
 func (pr podRecords) setCurrent(pods []*kubecontainer.Pod) {
+	// 重置每个uid的current记录为nil
 	for i := range pr {
 		pr[i].current = nil
 	}
+	// 将pods更新为current记录
 	for _, pod := range pods {
 		if r, ok := pr[pod.ID]; ok {
 			r.current = pod
@@ -469,20 +581,29 @@ func (pr podRecords) setCurrent(pods []*kubecontainer.Pod) {
 	}
 }
 
+// id不在podRecords中，直接返回
+// 如果r.current为nil，则从podRecords中移除这个id（因为pod已经被删除了），直接返回
+// 否则，将r.old设置成r.current，r.current置为nil
 func (pr podRecords) update(id types.UID) {
 	r, ok := pr[id]
+	// 不在podRecords中，直接返回
 	if !ok {
 		return
 	}
 	pr.updateInternal(id, r)
 }
 
+// 如果r.current为nil，则从podRecords中移除这个id（因为pod已经被删除了），直接返回
+// 否则，将r.old设置成r.current，r.current置为nil
 func (pr podRecords) updateInternal(id types.UID, r *podRecord) {
+	// 如果r.current为nil，则从podRecords中移除这个id（因为pod已经被删除了），直接返回
 	if r.current == nil {
 		// Pod no longer exists; delete the entry.
 		delete(pr, id)
 		return
 	}
+	// 将r.old设置成r.current
 	r.old = r.current
+	// r.current置为nil
 	r.current = nil
 }

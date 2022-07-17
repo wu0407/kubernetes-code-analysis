@@ -99,7 +99,7 @@ func (c *cache) GetNewerThan(id types.UID, minTime time.Time) (*PodStatus, error
 }
 
 // Set sets the PodStatus for the pod.
-// 由pelg调用set，添加pod status缓存
+// 由PLEG调用set，添加pod status缓存
 // 添加id的data到添加到c.pods中，并通知关注这个id的订阅者，发送缓存（c.pods）中的id的data，到订阅者的chan中。
 func (c *cache) Set(id types.UID, status *PodStatus, err error, timestamp time.Time) {
 	c.lock.Lock()
@@ -112,6 +112,7 @@ func (c *cache) Set(id types.UID, status *PodStatus, err error, timestamp time.T
 }
 
 // Delete removes the entry of the pod.
+// 从c.pods删除这个id记录
 func (c *cache) Delete(id types.UID) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -120,6 +121,7 @@ func (c *cache) Delete(id types.UID) {
 
 //  UpdateTime modifies the global timestamp of the cache and notify
 //  subscribers if needed.
+// 更新c.timestamp为timestamp，并发生data到timestamp满足订阅者需要（还未过期）的订阅者的chan中
 func (c *cache) UpdateTime(timestamp time.Time) {
 	c.lock.Lock()
 	defer c.lock.Unlock()

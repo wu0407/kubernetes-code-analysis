@@ -1629,6 +1629,16 @@ func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 	}
 
 	// Start the pod lifecycle event generator.
+	// 从runtime中获得所有运行和不在运行的pod
+	// 将pods更新到kl.pleg.podRecords里每个uid的current
+	// 遍历kl.pleg.podRecords里的pod，遍历pod里的普通container和sandbox，根据老的和新的container状态生成PodLifecycleEvent
+	// 遍历所有PodLifecycleEvent：
+	//    如果启用podStatus缓存，则更新pod的podStatus缓存
+	//    更新pid的kl.pleg.podRecords：
+	//       id不在podRecords中，直接返回
+	//       如果kl.pleg.podRecords.current为nil，则从podRecords中移除这个id（因为pod已经被删除了），直接返回
+	//       否则，将kl.pleg.podRecords.old设置成kl.pleg.podRecords.current，kl.pleg.podRecords.current置为nil
+	//   发送event到kl.pleg.eventChannel，如果kl.pleg.eventChannel满了，则丢弃这个event
 	kl.pleg.Start()
 	kl.syncLoop(updates, kl)
 }
@@ -2135,6 +2145,7 @@ func (kl *Kubelet) syncLoop(updates <-chan kubetypes.PodUpdate, handler SyncHand
 	defer syncTicker.Stop()
 	housekeepingTicker := time.NewTicker(housekeepingPeriod)
 	defer housekeepingTicker.Stop()
+	// 返回kl.pleg.eventChannel（接收PodLifecycleEvent）
 	plegCh := kl.pleg.Watch()
 	const (
 		base   = 100 * time.Millisecond
@@ -2297,19 +2308,30 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 			kl.sourcesReady.AddSource(u.Source)
 		}
 	case e := <-plegCh:
+		// 这个event类型，"ContainerStarted"、"ContainerDied"、"ContainerRemoved"的PodLifecycleEvent
+		// event类型不是"ContainerRemoved"，则返回true
 		if isSyncPodWorthy(e) {
 			// PLEG event for a pod; sync it.
+			// 根据uid返回非mirror pod（普通pod和static pod）
 			if pod, ok := kl.podManager.GetPodByUID(e.ID); ok {
 				klog.V(2).Infof("SyncLoop (PLEG): %q, event: %#v", format.Pod(pod), e)
+				// 让pod的pod worker处理这些pod，执行kl.syncPod
 				handler.HandlePodSyncs([]*v1.Pod{pod})
 			} else {
 				// If the pod no longer exists, ignore the event.
+				// pod不存在，只记录这个event
 				klog.V(4).Infof("SyncLoop (PLEG): ignore irrelevant event: %#v", e)
 			}
 		}
 
+		// event类型是"ContainerDied"
 		if e.Type == pleg.ContainerDied {
 			if containerID, ok := e.Data.(string); ok {
+				// pod在runtime中，也在apiserver中（或kubelet中static pod），且pod被evicted，或pod被删除且所有container的state都处于Terminated或Waiting，则removeAll为true
+				// 从runtime中获得podStatus
+				// 找到podStatus里所有exitedContainerID的container status里的status为"exited"的container status
+				// 如果removeAll为true，则移除所有退出的container。否则保留最近kl.containerDeletor.containersToKeep个退出的容器
+				// 发送所有需要移除的container给p.worker通道，让kl.containerDeletor里的goroutine消费这个通道进行移除这个container 
 				kl.cleanUpContainersInPod(e.ID, containerID)
 			}
 		}
@@ -2327,7 +2349,7 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 			break
 		}
 		klog.V(4).Infof("SyncLoop (SYNC): %d pods; %s", len(podsToSync), format.Pods(podsToSync))
-		// 让所有podsToSync，立即让pod worker进行处理
+		// 让所有podsToSync的pod worker处理这些pod，执行kl.syncPod
 		handler.HandlePodSyncs(podsToSync)
 	case update := <-kl.livenessManager.Updates():
 		// liveness probe发生失败
@@ -2343,7 +2365,7 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 				break
 			}
 			klog.V(1).Infof("SyncLoop (container unhealthy): %q", format.Pod(pod))
-			// 让所有podsToSync，立即让pod worker进行处理，在kl.syncPod里kl.containerRuntime.SyncPod，会停止现有unhealthy container
+			// 让pod的pod worker处理pod，在kl.syncPod里kl.containerRuntime.SyncPod，会停止现有unhealthy container
 			handler.HandlePodSyncs([]*v1.Pod{pod})
 		}
 	case <-housekeepingCh:
@@ -2675,7 +2697,7 @@ func (kl *Kubelet) HandlePodReconcile(pods []*v1.Pod) {
 
 // HandlePodSyncs is the callback in the syncHandler interface for pods
 // that should be dispatched to pod workers for sync.
-// 让所有pods，立即让pod worker进行处理
+// 让所有pods的pod worker处理这些pods，执行kl.syncPod
 func (kl *Kubelet) HandlePodSyncs(pods []*v1.Pod) {
 	start := kl.clock.Now()
 	for _, pod := range pods {
@@ -2778,15 +2800,28 @@ func (kl *Kubelet) ListenAndServePodResources() {
 }
 
 // Delete the eligible dead container instances in a pod. Depending on the configuration, the latest dead containers may be kept around.
+// pod在runtime中，也在apiserver中（或kubelet中static pod），且pod被evicted，或pod被删除且所有container的state都处于Terminated或Waiting，则removeAll为true
+// 找到podStatus里所有exitedContainerID的container status里的status为"exited"的container status
+// 如果removeAll为true，则移除所有退出的container。否则保留最近kl.containerDeletor.containersToKeep个退出的容器
+// 发送所有需要移除的container给p.worker通道，让kl.containerDeletor里的goroutine消费这个通道进行移除这个container 
 func (kl *Kubelet) cleanUpContainersInPod(podID types.UID, exitedContainerID string) {
+	// 返回缓存（kl.podCache.pods）中的id的data里status，如果不在缓存中，则返回空的数据（只有pod id）
 	if podStatus, err := kl.podCache.Get(podID); err == nil {
 		removeAll := false
+		// 根据uid返回非mirror pod（普通pod和static pod）
 		if syncedPod, ok := kl.podManager.GetPodByUID(podID); ok {
+			// pod在runtime中，也在apiserver中（或kubelet中static pod）
+
 			// generate the api status using the cached runtime status to get up-to-date ContainerStatuses
+			// 根据runtime的status生成pod status
 			apiPodStatus := kl.generateAPIPodStatus(syncedPod, podStatus)
 			// When an evicted or deleted pod has already synced, all containers can be removed.
+			// pod被evicted，或pod被删除且所有container的state都处于Terminated或Waiting，则removeAll为true
 			removeAll = eviction.PodIsEvicted(syncedPod.Status) || (syncedPod.DeletionTimestamp != nil && notRunning(apiPodStatus.ContainerStatuses))
 		}
+		// 找到podStatus里所有exitedContainerID的container status里的status为"exited"的container status
+		// 如果removeAll为true，则移除所有退出的container。否则保留最近kl.containerDeletor.containersToKeep个退出的容器
+		// 发送所有需要移除的container给kl.containerDeletor.worker通道，让goroutine消费这个通道进行移除这个container
 		kl.containerDeletor.deleteContainersInPod(exitedContainerID, podStatus, removeAll)
 	}
 }
@@ -2818,6 +2853,7 @@ func (kl *Kubelet) fastStatusUpdateOnce() {
 }
 
 // isSyncPodWorthy filters out events that are not worthy of pod syncing
+// event类型不是"ContainerRemoved"，则返回true
 func isSyncPodWorthy(event *pleg.PodLifecycleEvent) bool {
 	// ContainerRemoved doesn't affect pod state
 	return event.Type != pleg.ContainerRemoved

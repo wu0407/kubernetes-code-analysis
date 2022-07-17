@@ -113,6 +113,7 @@ func getContainersToDeleteInPod(filterContainerID string, podStatus *kubecontain
 // 返回保留最近containersToKeep个后剩余的container status（按照创建时间倒序排列）
 // 发送所有container给p.worker通道，让goroutine消费这个通道进行移除这个container
 func (p *podContainerDeletor) deleteContainersInPod(filterContainerID string, podStatus *kubecontainer.PodStatus, removeAll bool) {
+	// 默认为1
 	containersToKeep := p.containersToKeep
 	// 如果移除所有，则保留container数量为0
 	if removeAll {
