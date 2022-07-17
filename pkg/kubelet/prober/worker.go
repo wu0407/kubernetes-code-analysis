@@ -168,6 +168,7 @@ probeLoop:
 
 // stop stops the probe worker. The worker handles cleanup and removes itself from its manager.
 // It is safe to call stop multiple times.
+// 发送信号给w.stopCh，让周期执行的probe停止
 func (w *worker) stop() {
 	select {
 	case w.stopCh <- struct{}{}:

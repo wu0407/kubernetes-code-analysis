@@ -63,7 +63,7 @@ func GenerateContainersReadyCondition(spec *v1.PodSpec, containerStatuses []v1.C
 	}
 
 	// If all containers are known and succeeded, just return PodCompleted.
-	// pod处于"Succeeded"阶段且没有containerstatus为空的container，则设置设置Type为"ContainersReady"的condition为"False"，reason为"PodCompleted"
+	// pod处于"Succeeded"阶段且container status为空的container为0，则设置设置Type为"ContainersReady"的condition为"False"，reason为"PodCompleted"
 	if podPhase == v1.PodSucceeded && len(unknownContainers) == 0 {
 		return v1.PodCondition{
 			Type:   v1.ContainersReady,

@@ -314,16 +314,26 @@ func (m *LegacyManager) Apply(pid int) error {
 	return nil
 }
 
+// 调用systemd dbus停止unit
+// 删除m.paths里的所有路径（包括路径下所有文件和文件夹）
+// 重置m.Paths为空map[string]string
 func (m *LegacyManager) Destroy() error {
+	// 没有定义Paths，直接返回nil
 	if m.Cgroups.Paths != nil {
 		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// getUnitName(m.Cgroups)
+	// m.Cgroups.Name不为".slice"结尾，则返回{m.Cgroups.ScopePrefix}-{m.Cgroups.Name}+".scope"
+	// m.Cgroups.Name为".slice"结尾，则返回m.Cgroups.Name
+	// 使用systemd dbus停止unit
 	theConn.StopUnit(getUnitName(m.Cgroups), "replace", nil)
+	// 删除m.paths里的所有路径（包括路径下所有文件和文件夹）
 	if err := cgroups.RemovePaths(m.Paths); err != nil {
 		return err
 	}
+	// 重置m.Paths为空map[string]string
 	m.Paths = make(map[string]string)
 	return nil
 }

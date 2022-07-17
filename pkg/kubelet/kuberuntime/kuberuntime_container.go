@@ -1081,6 +1081,9 @@ func (m *kubeGenericRuntimeManager) removeContainerLog(containerID string) error
 }
 
 // DeleteContainer removes a container.
+// 先释放container ID在m.internalLifecycle.topologyManager.podTopologyHints分配资源
+// 移除runtime里返回的日志路径（/var/log/pods目录下，文件是软链）和/var/log/containers目录下的容器日志软链接
+// 调用runtime移除容器
 func (m *kubeGenericRuntimeManager) DeleteContainer(containerID kubecontainer.ContainerID) error {
 	return m.removeContainer(containerID.ID)
 }

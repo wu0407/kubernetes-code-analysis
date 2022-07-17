@@ -224,6 +224,7 @@ func (m *manager) AddPod(pod *v1.Pod) {
 	}
 }
 
+// 停止pod所有container（有定义probe）下的probe的worker
 func (m *manager) RemovePod(pod *v1.Pod) {
 	m.workerLock.RLock()
 	defer m.workerLock.RUnlock()
@@ -234,18 +235,21 @@ func (m *manager) RemovePod(pod *v1.Pod) {
 		for _, probeType := range [...]probeType{readiness, liveness, startup} {
 			key.probeType = probeType
 			if worker, ok := m.workers[key]; ok {
+				// 发送信号给w.stopCh，让周期执行的probe停止
 				worker.stop()
 			}
 		}
 	}
 }
 
+// m.workers中的key的pod uid不在desiredPods中，则发送信号给worker.stopCh，让周期执行的probe停止
 func (m *manager) CleanupPods(desiredPods map[types.UID]sets.Empty) {
 	m.workerLock.RLock()
 	defer m.workerLock.RUnlock()
 
 	for key, worker := range m.workers {
 		if _, ok := desiredPods[key.podUID]; !ok {
+			// 发送信号给w.stopCh，让周期执行的probe停止
 			worker.stop()
 		}
 	}

@@ -508,6 +508,7 @@ func EnterPid(cgroupPaths map[string]string, pid int) error {
 // We trying to remove all paths five times with increasing delay between tries.
 // If after all there are not removed cgroups - appropriate error will be
 // returned.
+// 删除paths里的所有路径（包括路径下的所有文件和文件夹），并从paths中移除成功的路径
 func RemovePaths(paths map[string]string) (err error) {
 	delay := 10 * time.Millisecond
 	for i := 0; i < 5; i++ {
@@ -522,6 +523,7 @@ func RemovePaths(paths map[string]string) (err error) {
 			// We need this strange way of checking cgroups existence because
 			// RemoveAll almost always returns error, even on already removed
 			// cgroups
+			// 如果不存在，则从paths中移除
 			if os.IsNotExist(err) {
 				delete(paths, s)
 			}

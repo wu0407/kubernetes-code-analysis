@@ -100,7 +100,7 @@ func (kl *Kubelet) GetPodDir(podUID types.UID) string {
 
 // getPodDir returns the full path to the per-pod directory for the pod with
 // the given UID.
-// 默认为"/var/lib/kubelet/pods"+{podUID}
+// 默认为"/var/lib/kubelet/pods/{podUID}"
 func (kl *Kubelet) getPodDir(podUID types.UID) string {
 	return filepath.Join(kl.getPodsDir(), string(podUID))
 }
@@ -108,6 +108,7 @@ func (kl *Kubelet) getPodDir(podUID types.UID) string {
 // getPodVolumesSubpathsDir returns the full path to the per-pod subpaths directory under
 // which subpath volumes are created for the specified pod.  This directory may not
 // exist if the pod does not exist or subpaths are not specified.
+// 默认返回"/var/lib/kubelet/pods/{podUID}/volume-subpaths"
 func (kl *Kubelet) getPodVolumeSubpathsDir(podUID types.UID) string {
 	return filepath.Join(kl.getPodDir(podUID), config.DefaultKubeletVolumeSubpathsDirName)
 }
@@ -312,14 +313,17 @@ func (kl *Kubelet) GetExtraSupplementalGroupsForPod(pod *v1.Pod) []int64 {
 
 // getPodVolumePathListFromDisk returns a list of the volume paths by reading the
 // volume directories for the given pod from the disk.
+// 返回pod volume目录下（两层）的所有（pod的）文件和文件夹
 func (kl *Kubelet) getPodVolumePathListFromDisk(podUID types.UID) ([]string, error) {
 	volumes := []string{}
 	// 默认为/var/lib/kubelet/pods/{poduid}/volumes
 	podVolDir := kl.getPodVolumesDir(podUID)
 
+	// 路径是坏的挂载点，则返回错误
 	if pathExists, pathErr := mount.PathExists(podVolDir); pathErr != nil {
 		return volumes, fmt.Errorf("error checking if path %q exists: %v", podVolDir, pathErr)
 	} else if !pathExists {
+		// 路径不存在，直接返回空列表
 		klog.Warningf("Path %q does not exist", podVolDir)
 		return volumes, nil
 	}
@@ -331,8 +335,11 @@ func (kl *Kubelet) getPodVolumePathListFromDisk(podUID types.UID) ([]string, err
 	}
 	for _, volumePluginDir := range volumePluginDirs {
 		volumePluginName := volumePluginDir.Name()
+		// 比如/var/lib/kubelet/pods/05245417-38cd-4dea-be61-cfe597cb730d/volumes/kubernetes.io~secret
 		volumePluginPath := filepath.Join(podVolDir, volumePluginName)
+		// 获取volumePluginPath下所有文件和文件夹
 		volumeDirs, err := utilpath.ReadDirNoStat(volumePluginPath)
+		// 获取volumePluginPath下所有文件和文件夹发生错误，直接返回错误
 		if err != nil {
 			return volumes, fmt.Errorf("could not read directory %s: %v", volumePluginPath, err)
 		}
@@ -343,15 +350,17 @@ func (kl *Kubelet) getPodVolumePathListFromDisk(podUID types.UID) ([]string, err
 	return volumes, nil
 }
 
-// 获取kubelet数据目录里pod的volumes目录下的所有有挂载的目录
+// 获取kubelet数据目录里pod的volumes目录下的所有有挂载的目录（并验证目录是挂载点）
 func (kl *Kubelet) getMountedVolumePathListFromDisk(podUID types.UID) ([]string, error) {
 	mountedVolumes := []string{}
 	// 默认为/var/lib/kubelet/pods/{poduid}/volumes/{volumePluginName}/{volume dir}
+	// 返回pod volume目录下（两层）的所有（pod的）文件和文件夹
 	volumePaths, err := kl.getPodVolumePathListFromDisk(podUID)
 	if err != nil {
 		return mountedVolumes, err
 	}
 	for _, volumePath := range volumePaths {
+		// 当volumePath的设备号与父目录的设备号不一样，则为volumePath为挂载点，返回false，否则返回true
 		isNotMount, err := kl.mounter.IsLikelyNotMountPoint(volumePath)
 		if err != nil {
 			return mountedVolumes, err
@@ -365,9 +374,13 @@ func (kl *Kubelet) getMountedVolumePathListFromDisk(podUID types.UID) ([]string,
 
 // podVolumesSubpathsDirExists returns true if the pod volume-subpaths directory for
 // a given pod exists
+// 返回"/var/lib/kubelet/pods/{podUID}/volume-subpaths"目录是否存在
+// 如果存在且路径是坏的挂载点，则返回true和错误
 func (kl *Kubelet) podVolumeSubpathsDirExists(podUID types.UID) (bool, error) {
+	// 默认返回"/var/lib/kubelet/pods/{podUID}/volume-subpaths"
 	podVolDir := kl.getPodVolumeSubpathsDir(podUID)
 
+	// 路径是坏的挂载点，则返回错误
 	if pathExists, pathErr := mount.PathExists(podVolDir); pathErr != nil {
 		return true, fmt.Errorf("error checking if path %q exists: %v", podVolDir, pathErr)
 	} else if !pathExists {

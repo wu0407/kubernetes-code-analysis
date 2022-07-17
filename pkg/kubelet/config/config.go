@@ -87,7 +87,7 @@ func NewPodConfig(mode PodConfigNotificationMode, recorder record.EventRecorder)
 // Channel creates or returns a config source channel.  The channel
 // only accepts PodUpdates
 // 
-// sources里添加source
+// c.sources里添加source
 // 创建或返回一个chan接收PodUpdates消息，这个chan保存在mux里sources
 // 启动一个goroutine消费这个chan里的PodUpdates消息--进行加工分类，然后发送给updates通道
 func (c *PodConfig) Channel(source string) chan<- interface{} {
@@ -100,6 +100,8 @@ func (c *PodConfig) Channel(source string) chan<- interface{} {
 // SeenAllSources returns true if seenSources contains all sources in the
 // config, and also this config has received a SET message from each source.
 // seenSources源已经注册且都提供了至少一个pod
+// seenSources里包含了c.sources里的所有source（调用c.Channel会添加source）
+// 且c.pods（保存各个源的pod集合）（每个源都发送至少一个SET消息）包含了c.sources里的所有source
 func (c *PodConfig) SeenAllSources(seenSources sets.String) bool {
 	if c.pods == nil {
 		return false
@@ -151,6 +153,7 @@ type podStorage struct {
 	// ensures that updates are delivered in strict order
 	// on the updates channel
 	updateLock sync.Mutex
+	// 输出通道
 	updates    chan<- kubetypes.PodUpdate
 
 	// contains the set of all sources that have sent at least one SET
@@ -181,13 +184,14 @@ func newPodStorage(updates chan<- kubetypes.PodUpdate, mode PodConfigNotificatio
 // 将输入source的PodUpdate的pod列表去重
 // 将PodUpdate与s.pods[source]的pod进行比对，加工出各个OP类型PodUpdate，发送到s.updates通道中
 // 输入PodUpdate的OP可能与输出PodUpdate的OP不一样
+// "api"的source的kubetypes.PodUpdate的Op是SET
 func (s *podStorage) Merge(source string, change interface{}) error {
 	s.updateLock.Lock()
 	defer s.updateLock.Unlock()
 
 	seenBefore := s.sourcesSeen.Has(source)
 	adds, updates, deletes, removes, reconciles, restores := s.merge(source, change)
-	// 当PodUpdate的op为SET时候，firstSet为true
+	// 当PodUpdate的op为SET时候，第一次执行merge（seenBefore为false，s.merge里会添加到s.sourcesSeen，所以s.sourcesSeen.Has(source)为true），firstSet为true
 	firstSet := !seenBefore && s.sourcesSeen.Has(source)
 
 	// deliver update notifications
@@ -221,6 +225,7 @@ func (s *podStorage) Merge(source string, change interface{}) error {
 
 	case PodConfigNotificationSnapshotAndUpdates:
 		if len(removes.Pods) > 0 || len(adds.Pods) > 0 || firstSet {
+			// kl.syncLoopIteration不支持kubetypes.SET
 			s.updates <- kubetypes.PodUpdate{Pods: s.MergedState().([]*v1.Pod), Op: kubetypes.SET, Source: source}
 		}
 		if len(updates.Pods) > 0 {
@@ -232,6 +237,7 @@ func (s *podStorage) Merge(source string, change interface{}) error {
 
 	case PodConfigNotificationSnapshot:
 		if len(updates.Pods) > 0 || len(deletes.Pods) > 0 || len(adds.Pods) > 0 || len(removes.Pods) > 0 || firstSet {
+			// kl.syncLoopIteration不支持kubetypes.SET
 			s.updates <- kubetypes.PodUpdate{Pods: s.MergedState().([]*v1.Pod), Op: kubetypes.SET, Source: source}
 		}
 
@@ -246,6 +252,7 @@ func (s *podStorage) Merge(source string, change interface{}) error {
 
 // 将传进来的change--PodUpdate里的pod，与记录中s.pods[source]的pod进行比对，分类出adds, updates, deletes, removes, reconciles, restores
 // 返回各类PodUpdate--包含最终pod信息（有修改过或未修改--对于s.pods[source]的pod来说）
+// removes和deletes区别：removes是pod资源已经不存在了，而deletes是pod的DeletionTimestamp不为nil（pod资源是存在的）
 func (s *podStorage) merge(source string, change interface{}) (adds, updates, deletes, removes, reconciles, restores *kubetypes.PodUpdate) {
 	s.podLock.Lock()
 	defer s.podLock.Unlock()
@@ -278,7 +285,7 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 			if existing, found := oldPods[ref.UID]; found {
 				pods[ref.UID] = existing
 				//  如果status以外属性相同且status也相同，则不需要任何操作，返回都是false。status以外属性相同，但是status不同则更新existing.status为ref.status、返回needReconcile为true
-				//  如果属性不同，则更新existing属性=ref属性，如果ref.DeletionTimestamp存在，则返回needGracefulDelete为true。否则needUpdate为true
+				//  如果status之外的属性不同，则更新existing属性=ref属性，如果ref.DeletionTimestamp存在，则返回needGracefulDelete为true。否则needUpdate为true
 				needUpdate, needReconcile, needGracefulDelete := checkAndUpdatePod(existing, ref)
 				if needUpdate {
 					updatePods = append(updatePods, existing)
@@ -289,6 +296,7 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 				}
 				continue
 			}
+			// 发现新的pod（ref.UID不在oldPods里）
 			// 添加kubernetes.io/config.seen的annotation
 			recordFirstSeenTime(ref)
 			pods[ref.UID] = ref
@@ -322,6 +330,7 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 			// this is a no-op
 		}
 
+	// "api"、"file"、"http"的source的kubetypes.PodUpdate的Op是SET
 	case kubetypes.SET:
 		klog.V(4).Infof("Setting pods for source %s", source)
 		//添加source到已经发现的sourceSet
@@ -338,6 +347,7 @@ func (s *podStorage) merge(source string, change interface{}) (adds, updates, de
 				removePods = append(removePods, existing)
 			}
 		}
+	// bootstrapCheckpoint的kubetypes.PodUpdate的Op是RESTORE，source为"api"
 	case kubetypes.RESTORE:
 		klog.V(4).Infof("Restoring pods for source %s", source)
 		restorePods = append(restorePods, update.Pods...)

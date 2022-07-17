@@ -152,7 +152,9 @@ func newPodWorkers(syncPodFn syncPodFnType, recorder record.EventRecorder, workQ
 		syncPodFn:                 syncPodFn,
 		recorder:                  recorder,
 		workQueue:                 workQueue,
+		// 默认为1分钟
 		resyncInterval:            resyncInterval,
+		// 默认为10s
 		backOffPeriod:             backOffPeriod,
 		podCache:                  podCache,
 	}
@@ -267,25 +269,30 @@ func (p *podWorkers) UpdatePod(options *UpdatePodOptions) {
 }
 
 func (p *podWorkers) removeWorker(uid types.UID) {
+	// 如果pod在p.podUpdates有UpdatePodOptions chan，则关闭这个chan，并从p.podUpdates中移除。在p.lastUndeliveredWorkUpdate里有pod未处理的事件，直接删除
 	if ch, ok := p.podUpdates[uid]; ok {
 		close(ch)
 		delete(p.podUpdates, uid)
 		// If there is an undelivered work update for this pod we need to remove it
 		// since per-pod goroutine won't be able to put it to the already closed
 		// channel when it finishes processing the current work update.
+		// 如果pod在p.lastUndeliveredWorkUpdate里还有未处理的pod update事件，则从p.lastUndeliveredWorkUpdate
 		delete(p.lastUndeliveredWorkUpdate, uid)
 	}
 }
+// 如果pod在p.podUpdates有UpdatePodOptions chan，则关闭这个chan，并从p.podUpdates中移除。在p.lastUndeliveredWorkUpdate里有pod未处理的事件，直接删除
 func (p *podWorkers) ForgetWorker(uid types.UID) {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
 	p.removeWorker(uid)
 }
 
+// p.podUpdates（UpdatePodOptions chan）里的pod uid不在desiredPods，则关闭这个chan，并从p.podUpdates中移除。在p.lastUndeliveredWorkUpdate里有pod未处理的事件，直接删除
 func (p *podWorkers) ForgetNonExistingPodWorkers(desiredPods map[types.UID]sets.Empty) {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
 	for key := range p.podUpdates {
+		// UpdatePodOptions chan里的pod uid不在desiredPods，则关闭这个chan，并从p.podUpdates中移除。在p.lastUndeliveredWorkUpdate里有pod未处理的事件，直接删除
 		if _, exists := desiredPods[key]; !exists {
 			p.removeWorker(key)
 		}

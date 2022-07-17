@@ -234,6 +234,7 @@ func GetCgroupSubsystems() (*CgroupSubsystems, error) {
 // getCgroupProcs takes a cgroup directory name as an argument
 // reads through the cgroup's procs file and returns a list of tgid's.
 // It returns an empty list if a procs file doesn't exists
+// 获取"{dir}/cgroup.procs"里的文件内容里的所有pid
 func getCgroupProcs(dir string) ([]int, error) {
 	procsFile := filepath.Join(dir, "cgroup.procs")
 	f, err := os.Open(procsFile)

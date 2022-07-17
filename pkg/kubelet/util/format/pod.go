@@ -45,6 +45,8 @@ func PodDesc(podName, podNamespace string, podUID types.UID) string {
 
 // PodWithDeletionTimestamp is the same as Pod. In addition, it prints the
 // deletion timestamp of the pod if it's not nil.
+// pod被删除，输出"{podName}_{podNamespace}({podUID}):DeletionTimestamp=2006-01-02T15:04:05Z07:00"
+// 否则输出"{podName}_{podNamespace}({podUID})"
 func PodWithDeletionTimestamp(pod *v1.Pod) string {
 	var deletionTimestamp string
 	if pod.DeletionTimestamp != nil {

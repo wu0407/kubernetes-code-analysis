@@ -80,6 +80,7 @@ func NewCache() Cache {
 
 // Get returns the PodStatus for the pod; callers are expected not to
 // modify the objects returned.
+// 返回缓存（c.pods）中的id的data里status，如果不在缓存中，则返回空的数据（只有pod id）
 func (c *cache) Get(id types.UID) (*PodStatus, error) {
 	c.lock.RLock()
 	defer c.lock.RUnlock()
@@ -98,10 +99,15 @@ func (c *cache) GetNewerThan(id types.UID, minTime time.Time) (*PodStatus, error
 }
 
 // Set sets the PodStatus for the pod.
+// 由pelg调用set，添加pod status缓存
+// 添加id的data到添加到c.pods中，并通知关注这个id的订阅者，发送缓存（c.pods）中的id的data，到订阅者的chan中。
 func (c *cache) Set(id types.UID, status *PodStatus, err error, timestamp time.Time) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
+	// 通知关注这个id的订阅者，如果timestamp在订阅者需要的时间之后（满足订阅者需要），则发送缓存（c.pods）中的id的data，到订阅者的chan中。并从c.subscribers[id]的订阅者列表中移除这个订阅者
+	// 否则，不通知订阅者
 	defer c.notify(id, timestamp)
+	// 添加到c.pods
 	c.pods[id] = &data{status: status, err: err, modified: timestamp}
 }
 
@@ -120,6 +126,8 @@ func (c *cache) UpdateTime(timestamp time.Time) {
 	c.timestamp = &timestamp
 	// Notify all the subscribers if the condition is met.
 	for id := range c.subscribers {
+		// 通知关注这个id的订阅者，如果timestamp在订阅者需要的时间之后（满足订阅者需要），则发送缓存（c.pods）中的id的data，到订阅者的chan中。并从c.subscribers[id]的订阅者列表中移除这个订阅者
+		// 否则，不通知订阅者
 		c.notify(id, *c.timestamp)
 	}
 }
@@ -128,7 +136,9 @@ func makeDefaultData(id types.UID) *data {
 	return &data{status: &PodStatus{ID: id}, err: nil}
 }
 
+// 返回缓存（c.pods）中的id的data，如果不在缓存中，则返回空的数据
 func (c *cache) get(id types.UID) *data {
+	// id不在c.pods中，则返回空的数据
 	d, ok := c.pods[id]
 	if !ok {
 		// Cache should store *all* pod/container information known by the
@@ -166,30 +176,40 @@ func (c *cache) getIfNewerThan(id types.UID, minTime time.Time) *data {
 	}
 	// The pod status is not ready.
 	// 其他情况，pod runtime status都是未知状态
+	// 缓存中不存在pod的runtime status且缓存生产时间在minTime的之前，或缓存中存在pod runtime status且pod runtime status生成时间在miniTime之前且在缓存生产时间在minTime的之前
 	return nil
 }
 
 // notify sends notifications for pod with the given id, if the requirements
 // are met. Note that the caller should acquire the lock.
+// 通知关注这个id的订阅者，如果timestamp在订阅者需要的时间之后（满足订阅者需要），则发送缓存（c.pods）中的id的data，到订阅者的chan中。并从c.subscribers[id]的订阅者列表中移除这个订阅者
+// 否则，不通知订阅者
 func (c *cache) notify(id types.UID, timestamp time.Time) {
+	// 根据id查找订阅者
 	list, ok := c.subscribers[id]
+	// 如果没有订阅者，直接返回
 	if !ok {
 		// No one to notify.
 		return
 	}
 	newList := []*subRecord{}
 	for i, r := range list {
+		// 提供的timestamp在订阅者需要的时间之前（不满足订阅者需要），则append到newList
 		if timestamp.Before(r.time) {
 			// Doesn't meet the time requirement; keep the record.
 			newList = append(newList, list[i])
 			continue
 		}
+		// 返回缓存（c.pods）中的id的data，如果不在缓存中，则返回空的数据
+		// 发送到订阅者的chan中，这个订阅者是c.GetNewerThan方法中
 		r.ch <- c.get(id)
 		close(r.ch)
 	}
+	// 满足所有订阅者需要，则从c.subscribers移除这个id
 	if len(newList) == 0 {
 		delete(c.subscribers, id)
 	} else {
+		// 还有不满足的订阅者，更新不满足的订阅者到c.subscribers[id]
 		c.subscribers[id] = newList
 	}
 }
@@ -209,6 +229,7 @@ func (c *cache) subscribe(id types.UID, timestamp time.Time) chan *data {
 		return ch
 	}
 	// Add the subscription record.
+	// 缓存中未找到且缓存中数据是过期的，或缓存中找到且是过期的
 	c.subscribers[id] = append(c.subscribers[id], &subRecord{time: timestamp, ch: ch})
 	return ch
 }

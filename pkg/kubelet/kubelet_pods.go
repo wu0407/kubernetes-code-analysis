@@ -73,6 +73,7 @@ const (
 )
 
 // Get a list of pods that have data directories.
+// 从pod目录（默认为"/var/lib/kubelet/pods"）中遍历出所有pod uid
 func (kl *Kubelet) listPodsFromDisk() ([]types.UID, error) {
 	podInfos, err := ioutil.ReadDir(kl.getPodsDir())
 	if err != nil {
@@ -1239,6 +1240,7 @@ func (kl *Kubelet) filterOutTerminatedPods(pods []*v1.Pod) []*v1.Pod {
 
 // removeOrphanedPodStatuses removes obsolete entries in podStatus where
 // the pod is no longer considered bound to this node.
+// kl.statusManager.podStatuses里的uid不在podUIDs（所有mirror pod和static pod和普通pod）里，则从kl.statusManager.podStatuses删除这个uid
 func (kl *Kubelet) removeOrphanedPodStatuses(pods []*v1.Pod, mirrorPods []*v1.Pod) {
 	podUIDs := make(map[types.UID]bool)
 	for _, pod := range pods {
@@ -1255,9 +1257,14 @@ func (kl *Kubelet) removeOrphanedPodStatuses(pods []*v1.Pod, mirrorPods []*v1.Po
 // directories.
 // NOTE: This function is executed by the main sync loop, so it
 // should not contain any blocking calls.
-// 停止不存在的pod的pod worker
-// 移除不存在pod的容器
-// 移除不存在pod的volume和pod目录
+// 停止不存在的pod的pod worker，并停止周期性执行container的readniess、liveness、start probe的worker
+// 移除不存在pod的容器（容器还在运行，但是不在apiserver中）
+// 移除不存在pod的volume和pod目录，当"/var/lib/kubelet/pods/{podUID}/volume"或volume-subpaths目录都不存在
+// 从apiserver中删除所有没有对应static pod的mirror pod
+// 启用cgroupsPerQOS，则处理cgroup路径下不存在的pod
+//   如果pod还存在volume，且不启用keepTerminatedPodVolumes，则pod的cpu cgroup里的cpu share的值为2
+//   否则启动一个goroutine 移除所有cgroup子系统里的cgroup路径
+// 容器重启的回退周期清理，清理开始回退时间离现在已经超过2倍最大回收周期的item
 func (kl *Kubelet) HandlePodCleanups() error {
 	// The kubelet lacks checkpointing, so we need to introspect the set of pods
 	// in the cgroup tree prior to inspecting the set of pods in our pod manager.
@@ -1267,14 +1274,18 @@ func (kl *Kubelet) HandlePodCleanups() error {
 		cgroupPods map[types.UID]cm.CgroupName
 		err        error
 	)
+	// kl.cgroupsPerQOS默认为true
 	if kl.cgroupsPerQOS {
 		pcm := kl.containerManager.NewPodContainerManager()
+		// 遍历所有pod的cgroup目录，获得pod uid与对应的CgroupName
+		// 比如"ec7bb47a-07ef-48ff-9201-687474994eab"对应["kubepods", "besteffort", "podec7bb47a-07ef-48ff-9201-687474994eab"]
 		cgroupPods, err = pcm.GetAllPodsFromCgroups()
 		if err != nil {
 			return fmt.Errorf("failed to get list of pods that still exist on cgroup mounts: %v", err)
 		}
 	}
 
+	// 返回普通pod和static pod、mirror pod
 	allPods, mirrorPods := kl.podManager.GetPodsAndMirrorPods()
 	// Pod phase progresses monotonically. Once a pod has reached a final state,
 	// it should never leave regardless of the restart policy. The statuses
@@ -1286,6 +1297,7 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	//      to the apiserver, it could still restart the terminated pod (even
 	//      though the pod was not considered terminated by the apiserver).
 	// These two conditions could be alleviated by checkpointing kubelet.
+	// 返回所有pods中，pod的Phase不是"Failed"和"Succeeded"，或pod没有被删除或pod被删除且至少一个container为running
 	activePods := kl.filterOutTerminatedPods(allPods)
 
 	desiredPods := make(map[types.UID]sets.Empty)
@@ -1294,26 +1306,33 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	}
 	// Stop the workers for no-longer existing pods.
 	// TODO: is here the best place to forget pod workers?
+	// kl.podWorkers.podUpdates（UpdatePodOptions chan）里的pod uid不在desiredPods，则关闭这个chan，并从p.podUpdates中移除。在kl.podWorkers.lastUndeliveredWorkUpdate里有pod未处理的事件，直接删除
 	kl.podWorkers.ForgetNonExistingPodWorkers(desiredPods)
+	// kl.probeManager.workers中的key的pod uid不在desiredPods中，则发送信号给worker.stopCh，让周期执行的probe停止 
 	kl.probeManager.CleanupPods(desiredPods)
 
+	// 缓存未过期，则返回缓存中（r.pods）的pod
+	// 缓存过期了，则从runtime中获得所有的running pod，并更新r.pods和r.cacheTime
 	runningPods, err := kl.runtimeCache.GetPods()
 	if err != nil {
 		klog.Errorf("Error listing containers: %#v", err)
 		return err
 	}
-	// 移除不存在的pod（容器还在运行）
+	// 移除不存在的pod（容器还在运行，但是不在apiserver中）
+	// 发送PodPair消息给kl.podKillingCh，让kl.podkiller进行移除pod
 	for _, pod := range runningPods {
 		if _, found := desiredPods[pod.ID]; !found {
 			kl.podKillingCh <- &kubecontainer.PodPair{APIPod: nil, RunningPod: pod}
 		}
 	}
 
+	// kl.statusManager.podStatuses里的uid不在podUIDs（所有mirror pod和static pod和普通pod）里，则从kl.statusManager.podStatuses删除这个uid
 	kl.removeOrphanedPodStatuses(allPods, mirrorPods)
 	// Note that we just killed the unwanted pods. This may not have reflected
 	// in the cache. We need to bypass the cache to get the latest set of
 	// running pods to clean up the volumes.
 	// TODO: Evaluate the performance impact of bypassing the runtime cache.
+	// 直接通过runtime获取所有在运行的pods
 	runningPods, err = kl.containerRuntime.GetPods(false)
 	if err != nil {
 		klog.Errorf("Error listing containers: %#v", err)
@@ -1324,6 +1343,9 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	// Note that we pass all pods (including terminated pods) to the function,
 	// so that we don't remove volumes associated with terminated but not yet
 	// deleted pods.
+	// pod目录下的pod文件夹的pod（不在在运行的pod或apiserver中的普通pod和static pod）
+	// 如果"/var/lib/kubelet/pods/{podUID}/volume"或volume-subpaths目录存在，则记录错误日志，提示“pod不存在，但是pod目录下volume目录存在或还存在挂载”
+	// 否则，移除目录"/var/lib/kubelet/pods/{podUID}"
 	err = kl.cleanupOrphanedPodDirs(allPods, runningPods)
 	if err != nil {
 		// We want all cleanup tasks to be run even if one of them failed. So
@@ -1333,13 +1355,20 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	}
 
 	// Remove any orphaned mirror pods.
+	// 从apiserver中删除所有没有对应static pod的mirror pod
 	kl.podManager.DeleteOrphanedMirrorPods()
 
 	// Remove any cgroups in the hierarchy for pods that are no longer running.
+	// 默认cgroupsPerQOS为true
 	if kl.cgroupsPerQOS {
+		// cgroup路径下的pod不在activePods中
+		// 如果pod还存在volume，且不启用keepTerminatedPodVolumes，则pod的cpu cgroup里的cpu share的值为2
+		// 否则启动一个goroutine 移除所有cgroup子系统里的cgroup路径
 		kl.cleanupOrphanedPodCgroups(cgroupPods, activePods)
 	}
 
+	// 清理开始回退时间离现在已经超过2倍最大回收周期的item（格式{pod name}_{pod namespace}_{pod uid}_{container name}_{container hash）
+	// 容器重启的回退周期清理
 	kl.backOff.GC()
 	return nil
 }
@@ -2015,6 +2044,9 @@ func (kl *Kubelet) GetPortForward(podName, podNamespace string, podUID types.UID
 
 // cleanupOrphanedPodCgroups removes cgroups that should no longer exist.
 // it reconciles the cached state of cgroupPods with the specified list of runningPods
+// cgroup路径下的pod不在activePods中
+// 如果pod还存在volume，且不启用keepTerminatedPodVolumes，则pod的cpu cgroup里的cpu share的值为2
+// 否则启动一个goroutine 移除所有cgroup子系统里的cgroup路径
 func (kl *Kubelet) cleanupOrphanedPodCgroups(cgroupPods map[types.UID]cm.CgroupName, activePods []*v1.Pod) {
 	// Add all running pods to the set that we want to preserve
 	podSet := sets.NewString()
@@ -2024,19 +2056,26 @@ func (kl *Kubelet) cleanupOrphanedPodCgroups(cgroupPods map[types.UID]cm.CgroupN
 	pcm := kl.containerManager.NewPodContainerManager()
 
 	// Iterate over all the found pods to verify if they should be running
+	// 遍历所有cgroup下的pod
 	for uid, val := range cgroupPods {
 		// if the pod is in the running set, its not a candidate for cleanup
 		if podSet.Has(string(uid)) {
 			continue
 		}
 
+		// cgroup下的pod不在activePods中
 		// If volumes have not been unmounted/detached, do not delete the cgroup
 		// so any memory backed volumes don't have their charges propagated to the
 		// parent croup.  If the volumes still exist, reduce the cpu shares for any
 		// process in the cgroup to the minimum value while we wait.  if the kubelet
 		// is configured to keep terminated volumes, we will delete the cgroup and not block.
+		// kl.podVolumesExist：
+		//   在kl.volumeManager里获取到pod的已经挂载的volume，返回true
+		//   kubelet数据目录里pod的volumes目录下存在挂载的目录，或获取pod的volumes目录下存在挂载的目录出现错误，返回true
+		// 如果pod还存在volume，且不启用keepTerminatedPodVolumes，则pod的cpu cgroup里的cpu share的值为2，然后继续下一个pod
 		if podVolumesExist := kl.podVolumesExist(uid); podVolumesExist && !kl.keepTerminatedPodVolumes {
 			klog.V(3).Infof("Orphaned pod %q found, but volumes not yet removed.  Reducing cpu to minimum", uid)
+			// 设置cgroup name的cpu share的值为2
 			if err := pcm.ReduceCPULimits(val); err != nil {
 				klog.Warningf("Failed to reduce cpu time for pod %q pending volume cleanup due to %v", uid, err)
 			}
@@ -2047,6 +2086,8 @@ func (kl *Kubelet) cleanupOrphanedPodCgroups(cgroupPods map[types.UID]cm.CgroupN
 		// by first killing all the attached processes to these cgroups.
 		// We ignore errors thrown by the method, as the housekeeping loop would
 		// again try to delete these unwanted pod cgroups
+		// kill podCgroup的cgroup子系统的cgroup路径下，所有attached pid（包括子cgroup下attached pid）
+		// 移除所有cgroup子系统里的cgroup路径
 		go pcm.Destroy(val)
 	}
 }

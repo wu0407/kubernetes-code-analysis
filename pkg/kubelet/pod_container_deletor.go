@@ -48,6 +48,7 @@ func newPodContainerDeletor(runtime kubecontainer.Runtime, containersToKeep int)
 	go wait.Until(func() {
 		for {
 			id := <-buffer
+			// 调用runtime manager，pkg\kubelet\kuberuntime\kuberuntime_container.go里的kubeGenericRuntimeManager，删除container
 			runtime.DeleteContainer(id)
 		}
 	}, 0, wait.NeverStop)
@@ -60,7 +61,11 @@ func newPodContainerDeletor(runtime kubecontainer.Runtime, containersToKeep int)
 
 // getContainersToDeleteInPod returns the exited containers in a pod whose name matches the name inferred from filterContainerId (if not empty), ordered by the creation time from the latest to the earliest.
 // If filterContainerID is empty, all dead containers in the pod are returned.
+// 找到podStatus里所有container status里的status为"exited"的container status
+// 如果有filterContainerID过滤的container，则还要匹配过滤的container
+// 返回保留最近containersToKeep个后剩余的container status（按照创建时间倒序排列）
 func getContainersToDeleteInPod(filterContainerID string, podStatus *kubecontainer.PodStatus, containersToKeep int) containerStatusbyCreatedList {
+	// 从podStatus.ContainerStatuses里找到filterContainerId的container status
 	matchedContainer := func(filterContainerId string, podStatus *kubecontainer.PodStatus) *kubecontainer.ContainerStatus {
 		if filterContainerId == "" {
 			return nil
@@ -73,6 +78,7 @@ func getContainersToDeleteInPod(filterContainerID string, podStatus *kubecontain
 		return nil
 	}(filterContainerID, podStatus)
 
+	// filterContainerID不为空，但是matchedContainer为nil，说明没有找到这个filterContainerID的container status，直接返回空的containerStatusbyCreatedList
 	if filterContainerID != "" && matchedContainer == nil {
 		klog.Warningf("Container %q not found in pod's containers", filterContainerID)
 		return containerStatusbyCreatedList{}
@@ -80,6 +86,8 @@ func getContainersToDeleteInPod(filterContainerID string, podStatus *kubecontain
 
 	// Find the exited containers whose name matches the name of the container with id being filterContainerId
 	var candidates containerStatusbyCreatedList
+	// 找到所有container status里的status为"exited"的container status
+	// 如果有过滤的container，则还要匹配过滤的container
 	for _, containerStatus := range podStatus.ContainerStatuses {
 		if containerStatus.State != kubecontainer.ContainerStateExited {
 			continue
@@ -89,21 +97,32 @@ func getContainersToDeleteInPod(filterContainerID string, podStatus *kubecontain
 		}
 	}
 
+	// 筛选处理的container status的数量小于containersToKeep，则直接返回空的containerStatusbyCreatedList
 	if len(candidates) <= containersToKeep {
 		return containerStatusbyCreatedList{}
 	}
+	// 根据container的创建时间倒序排
 	sort.Sort(candidates)
+	// 返回保留最近containersToKeep个后剩余的container status
 	return candidates[containersToKeep:]
 }
 
 // deleteContainersInPod issues container deletion requests for containers selected by getContainersToDeleteInPod.
+// 找到podStatus里所有container status里的status为"exited"的container status
+// 如果有filterContainerID过滤的container，则还要匹配过滤的container
+// 返回保留最近containersToKeep个后剩余的container status（按照创建时间倒序排列）
+// 发送所有container给p.worker通道，让goroutine消费这个通道进行移除这个container
 func (p *podContainerDeletor) deleteContainersInPod(filterContainerID string, podStatus *kubecontainer.PodStatus, removeAll bool) {
 	containersToKeep := p.containersToKeep
+	// 如果移除所有，则保留container数量为0
 	if removeAll {
 		containersToKeep = 0
 		filterContainerID = ""
 	}
 
+	// 找到podStatus里所有container status里的status为"exited"的container status
+	// 如果有filterContainerID过滤的container，则还要匹配过滤的container
+	// 返回保留最近containersToKeep个后剩余的container status（按照创建时间倒序排列）
 	for _, candidate := range getContainersToDeleteInPod(filterContainerID, podStatus, containersToKeep) {
 		select {
 		case p.worker <- candidate.ID:

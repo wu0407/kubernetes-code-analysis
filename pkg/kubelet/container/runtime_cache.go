@@ -58,9 +58,14 @@ type runtimeCache struct {
 
 // GetPods returns the cached pods if they are not outdated; otherwise, it
 // retrieves the latest pods and return them.
+// 缓存未过期，则返回缓存中（r.pods）的pod
+// 缓存过期了，则从runtime中获得所有的running pod，并更新r.pods和r.cacheTime
 func (r *runtimeCache) GetPods() ([]*Pod, error) {
 	r.Lock()
 	defer r.Unlock()
+	// 如果之前从runtime获取的所有pods的时间，已经过去2秒
+	// 从runtime中获得所有的running pod
+	// 更新r.pods和r.cacheTime
 	if time.Since(r.cacheTime) > defaultCachePeriod {
 		if err := r.updateCache(); err != nil {
 			return nil, err
@@ -78,19 +83,26 @@ func (r *runtimeCache) ForceUpdateIfOlder(minExpectedCacheTime time.Time) error 
 	return nil
 }
 
+// 从runtime中获得所有的running pod，返回所有pods、当前时间、错误
+// 更新r.pods和r.cacheTime
 func (r *runtimeCache) updateCache() error {
+	// 从runtime中获得所有的running pod，返回所有pods、当前时间、错误
 	pods, timestamp, err := r.getPodsWithTimestamp()
 	if err != nil {
 		return err
 	}
+	// 更新r.pods和r.cacheTime
 	r.pods, r.cacheTime = pods, timestamp
 	return nil
 }
 
 // getPodsWithTimestamp records a timestamp and retrieves pods from the getter.
+// 从runtime中获得所有的running pod，返回所有pods、当前时间、错误
 func (r *runtimeCache) getPodsWithTimestamp() ([]*Pod, time.Time, error) {
 	// Always record the timestamp before getting the pods to avoid stale pods.
 	timestamp := time.Now()
+	// r.getter在pkg\kubelet\kuberuntime\kuberuntime_manager.go里的kubeGenericRuntimeManager
+	// 从runtime中获得所有的running pod
 	pods, err := r.getter.GetPods(false)
 	return pods, timestamp, err
 }

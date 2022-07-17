@@ -680,11 +680,11 @@ func (m *kubeGenericRuntimeManager) computePodActions(pod *v1.Pod, podStatus *ku
 			// Restart regardless of the restart policy because the container
 			// spec changed.
 			restart = true
-		// liveness probe结果是失败
+		// liveness probe结果是失败，从m.livenessManager.cache获得最后生效的probe结果
 		} else if liveness, found := m.livenessManager.Get(containerStatus.ID); found && liveness == proberesults.Failure {
 			// If the container failed the liveness probe, we should kill it.
 			message = fmt.Sprintf("Container %s failed liveness probe", container.Name)
-		// startup probe结果是失败
+		// startup probe结果是失败，从m.startupManager.cache获得最后生效的probe结果
 		} else if startup, found := m.startupManager.Get(containerStatus.ID); found && startup == proberesults.Failure {
 			// If the container failed the startup probe, we should kill it.
 			message = fmt.Sprintf("Container %s failed startup probe", container.Name)

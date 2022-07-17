@@ -53,6 +53,7 @@ type sourcesImpl struct {
 }
 
 // Add adds the specified source to the set of sources managed.
+// 这个在kl.syncLoopIteration里会添加（只要kl.run(updates)里update通道收到PodUpdate消息（PodUpdate的op类型不是kubetypes.RESTORE））
 func (s *sourcesImpl) AddSource(source string) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -60,6 +61,9 @@ func (s *sourcesImpl) AddSource(source string) {
 }
 
 // AllReady returns true if each configured source is ready.
+// s.seenSources里的所有源已经注册且都提供了至少一个pod
+// s.seenSources里包含了kubeDeps.PodConfig.sources里的所有source（调用kubeDeps.PodConfig.Channel方法会添加source）
+// 且kubeDeps.PodConfig.pods（保存各个源的pod集合）（每个源都发送至少一个SET消息）包含了kubeDeps.PodConfig.sources里的所有source
 func (s *sourcesImpl) AllReady() bool {
 	s.lock.RLock()
 	defer s.lock.RUnlock()

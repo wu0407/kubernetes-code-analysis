@@ -231,12 +231,15 @@ func (m *Manager) Apply(pid int) (err error) {
 	return nil
 }
 
+// 删除m.paths里的所有路径（包括路径下的所有文件和文件夹）
+// 重置m.Paths为空map[string]string
 func (m *Manager) Destroy() error {
 	if m.Cgroups == nil || m.Cgroups.Paths != nil {
 		return nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// 删除m.paths里的所有路径（包括路径下的所有文件和文件夹）
 	if err := cgroups.RemovePaths(m.Paths); err != nil {
 		return err
 	}

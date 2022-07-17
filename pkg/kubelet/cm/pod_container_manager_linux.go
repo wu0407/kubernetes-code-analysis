@@ -149,6 +149,7 @@ func (m *podContainerManagerImpl) GetPodContainerName(pod *v1.Pod) (CgroupName, 
 }
 
 // Kill one process ID
+// kill pid进程
 func (m *podContainerManagerImpl) killOnePid(pid int) error {
 	// os.FindProcess never returns an error on POSIX
 	// https://go-review.googlesource.com/c/go/+/19093
@@ -169,7 +170,10 @@ func (m *podContainerManagerImpl) killOnePid(pid int) error {
 
 // Scan through the whole cgroup directory and kill all processes either
 // attached to the pod cgroup or to a container cgroup under the pod cgroup
+// kill podCgroup的cgroup子系统的cgroup路径下，所有attached pid（包括子cgroup下attached pid）
+// 如果kill失败，最多进行5次重试
 func (m *podContainerManagerImpl) tryKillingCgroupProcesses(podCgroup CgroupName) error {
+	// 获得所有cgroup子系统的cgroup路径下，所有attached pid（包括子cgroup下attached pid）
 	pidsToKill := m.cgroupManager.Pids(podCgroup)
 	// No pids charged to the terminated pod cgroup return
 	if len(pidsToKill) == 0 {
@@ -186,10 +190,12 @@ func (m *podContainerManagerImpl) tryKillingCgroupProcesses(podCgroup CgroupName
 		}
 		errlist = []error{}
 		for _, pid := range pidsToKill {
+			// 过滤掉pidsToKill中已经被kill的pid
 			if _, ok := removed[pid]; ok {
 				continue
 			}
 			klog.V(3).Infof("Attempt to kill process with pid: %v from cgroup: %v", pid, podCgroup)
+			// kill pid进程
 			if err := m.killOnePid(pid); err != nil {
 				klog.V(3).Infof("failed to kill process with pid: %v from cgroup: %v", pid, podCgroup)
 				errlist = append(errlist, err)
@@ -206,8 +212,11 @@ func (m *podContainerManagerImpl) tryKillingCgroupProcesses(podCgroup CgroupName
 }
 
 // Destroy destroys the pod container cgroup paths
+// kill podCgroup的cgroup子系统的cgroup路径下，所有attached pid（包括子cgroup下attached pid）
+// 移除所有cgroup子系统里的cgroup路径
 func (m *podContainerManagerImpl) Destroy(podCgroup CgroupName) error {
 	// Try killing all the processes attached to the pod cgroup
+	// kill podCgroup的cgroup子系统的cgroup路径下，所有attached pid（包括子cgroup下attached pid）
 	if err := m.tryKillingCgroupProcesses(podCgroup); err != nil {
 		klog.V(3).Infof("failed to kill all the processes attached to the %v cgroups", podCgroup)
 		return fmt.Errorf("failed to kill all the processes attached to the %v cgroups : %v", podCgroup, err)
@@ -218,6 +227,7 @@ func (m *podContainerManagerImpl) Destroy(podCgroup CgroupName) error {
 		Name:               podCgroup,
 		ResourceParameters: &ResourceConfig{},
 	}
+	// 移除所有cgroup子系统里的cgroup路径
 	if err := m.cgroupManager.Destroy(containerConfig); err != nil {
 		return fmt.Errorf("failed to delete cgroup paths for %v : %v", podCgroup, err)
 	}
@@ -225,6 +235,7 @@ func (m *podContainerManagerImpl) Destroy(podCgroup CgroupName) error {
 }
 
 // ReduceCPULimits reduces the CPU CFS values to the minimum amount of shares.
+// 设置cgroup name的cpu share的值为2
 func (m *podContainerManagerImpl) ReduceCPULimits(podCgroup CgroupName) error {
 	return m.cgroupManager.ReduceCPULimits(podCgroup)
 }
@@ -256,6 +267,7 @@ func (m *podContainerManagerImpl) IsPodCgroup(cgroupfs string) (bool, types.UID)
 
 // GetAllPodsFromCgroups scans through all the subsystems of pod cgroups
 // Get list of pods whose cgroup still exist on the cgroup mounts
+// 遍历所有pod的cgroup目录，获得pod uid与对应的CgroupName，比如"ec7bb47a-07ef-48ff-9201-687474994eab"对应["kubepods", "besteffort", "podec7bb47a-07ef-48ff-9201-687474994eab"]
 func (m *podContainerManagerImpl) GetAllPodsFromCgroups() (map[types.UID]CgroupName, error) {
 	// Map for storing all the found pods on the disk
 	foundPods := make(map[types.UID]CgroupName)
@@ -264,10 +276,14 @@ func (m *podContainerManagerImpl) GetAllPodsFromCgroups() (map[types.UID]CgroupN
 	// and through each QoS cgroup directory for each subsystem mount
 	// If a pod cgroup exists in even a single subsystem mount
 	// we will attempt to delete it
+	// 遍历系统所有cgroup子系统的在主机的挂载点，比如cpu在/sys/fs/cgroup/cpu,cpuacct
 	for _, val := range m.subsystems.MountPoints {
+		// 遍历cgroup子目录下的qos路径, 比如["kubepods", "besteffort"]对应/kubepods.slice/kubepods-burstable.slice
 		for _, qosContainerName := range qosContainersList {
 			// get the subsystems QoS cgroup absolute name
+			// 比如["kubepods", "besteffort"]对应/kubepods.slice/kubepods-burstable.slice
 			qcConversion := m.cgroupManager.Name(qosContainerName)
+			// 路径为/sys/fs/cgroup/cpu,cpuacct/kubepods.slice/kubepods-burstable.slice
 			qc := path.Join(val, qcConversion)
 			dirInfo, err := ioutil.ReadDir(qc)
 			if err != nil {
@@ -276,6 +292,7 @@ func (m *podContainerManagerImpl) GetAllPodsFromCgroups() (map[types.UID]CgroupN
 				}
 				return nil, fmt.Errorf("failed to read the cgroup directory %v : %v", qc, err)
 			}
+			// 遍历所有下面的cgroup目录
 			for i := range dirInfo {
 				// its not a directory, so continue on...
 				if !dirInfo[i].IsDir() {
@@ -285,11 +302,15 @@ func (m *podContainerManagerImpl) GetAllPodsFromCgroups() (map[types.UID]CgroupN
 				// this is needed to handle path conversion for systemd environments.
 				// we pass the fully qualified path so decoding can work as expected
 				// since systemd encodes the path in each segment.
+				// 路径是/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-podec7bb47a_07ef_48ff_9201_687474994eab.slice
 				cgroupfsPath := path.Join(qcConversion, dirInfo[i].Name())
+				// 解析成["kubepods", "besteffort", "podec7bb47a-07ef-48ff-9201-687474994eab"]
 				internalPath := m.cgroupManager.CgroupName(cgroupfsPath)
 				// we only care about base segment of the converted path since that
 				// is what we are reading currently to know if it is a pod or not.
+				// basePath为"podec7bb47a-07ef-48ff-9201-687474994eab"
 				basePath := internalPath[len(internalPath)-1]
+				// basePath不包含"pod"前缀，则继续（说明不是pod cgroup）
 				if !strings.Contains(basePath, podCgroupNamePrefix) {
 					continue
 				}
@@ -300,7 +321,9 @@ func (m *podContainerManagerImpl) GetAllPodsFromCgroups() (map[types.UID]CgroupN
 					klog.Errorf("pod cgroup manager ignoring unexpected cgroup %v because it is not a pod", cgroupfsPath)
 					continue
 				}
+				// "ec7bb47a-07ef-48ff-9201-687474994eab"
 				podUID := parts[1]
+				// pod uid "ec7bb47a-07ef-48ff-9201-687474994eab"对应["kubepods", "besteffort", "podec7bb47a-07ef-48ff-9201-687474994eab"]
 				foundPods[types.UID(podUID)] = internalPath
 			}
 		}

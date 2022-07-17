@@ -53,6 +53,8 @@ func (kl *Kubelet) ListVolumesForPod(podUID types.UID) (map[string]volume.Volume
 
 // podVolumesExist checks with the volume manager and returns true any of the
 // pods for the specified volume are mounted.
+// 在kl.volumeManager里获取到pod的已经挂载的volume，返回true
+// kubelet数据目录里pod的volumes目录下存在挂载的目录，或获取pod的volumes目录下存在挂载的目录出现错误，返回true
 func (kl *Kubelet) podVolumesExist(podUID types.UID) bool {
 	if mountedVolumes :=
 		// 获取pod的已经挂载的volume
@@ -96,6 +98,9 @@ func (kl *Kubelet) newVolumeMounterFromPlugins(spec *volume.Spec, pod *v1.Pod, o
 
 // cleanupOrphanedPodDirs removes the volumes of pods that should not be
 // running and that have no containers running.  Note that we roll up logs here since it runs in the main loop.
+// pod目录下的pod文件夹的pod（不在在运行的pod或apiserver中的普通pod和static pod）
+// 如果目录"/var/lib/kubelet/pods/{podUID}/volume"或volume-subpaths目录存在，则记录错误日志，提示“pod不存在，但是pod目录下volume目录存在或还存在挂载”
+// 否则，移除目录"/var/lib/kubelet/pods/{podUID}"
 func (kl *Kubelet) cleanupOrphanedPodDirs(pods []*v1.Pod, runningPods []*kubecontainer.Pod) error {
 	allPods := sets.NewString()
 	for _, pod := range pods {
@@ -105,6 +110,7 @@ func (kl *Kubelet) cleanupOrphanedPodDirs(pods []*v1.Pod, runningPods []*kubecon
 		allPods.Insert(string(pod.ID))
 	}
 
+	// 从pod目录（默认为"/var/lib/kubelet/pods"）中遍历出所有pod uid
 	found, err := kl.listPodsFromDisk()
 	if err != nil {
 		return err
@@ -113,43 +119,62 @@ func (kl *Kubelet) cleanupOrphanedPodDirs(pods []*v1.Pod, runningPods []*kubecon
 	orphanRemovalErrors := []error{}
 	orphanVolumeErrors := []error{}
 
+	// 遍历pod目录下所有pod
 	for _, uid := range found {
+		// 跳过在运行的pod或apiserver中的普通pod和static pod
 		if allPods.Has(string(uid)) {
 			continue
 		}
+		// pod不在在运行的pod和apiserver中的普通pod和static pod
+
 		// If volumes have not been unmounted/detached, do not delete directory.
 		// Doing so may result in corruption of data.
 		// TODO: getMountedVolumePathListFromDisk() call may be redundant with
 		// kl.getPodVolumePathListFromDisk(). Can this be cleaned up?
+		// 在kl.volumeManager里获取到pod的已经挂载的volume，返回true
+		// kubelet数据目录里pod的volumes目录下存在挂载的目录，或获取pod的volumes目录下存在挂载的目录出现错误，返回true
+		// 跳过kl.volumeManager里获取到pod的已经挂载的volume，或kubelet数据目录里pod的volumes目录下存在挂载的目录
 		if podVolumesExist := kl.podVolumesExist(uid); podVolumesExist {
 			klog.V(3).Infof("Orphaned pod %q found, but volumes are not cleaned up", uid)
 			continue
 		}
+
+		// volumes目录下不存在挂载的目录（有可能存在目录或不存在目录）
 		// If there are still volume directories, do not delete directory
+		// 返回pod volume目录下（两层）的所有（pod的）文件和文件夹
 		volumePaths, err := kl.getPodVolumePathListFromDisk(uid)
+		// 发生错误，append错误到orphanVolumeErrors，继续下一个pod
 		if err != nil {
 			orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but error %v occurred during reading volume dir from disk", uid, err))
 			continue
 		}
+		// pod volume下有文件或文件夹，append 存在孤儿volume错误到orphanVolumeErrors，继续下一个pod
 		if len(volumePaths) > 0 {
 			orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but volume paths are still present on disk", uid))
 			continue
 		}
 
 		// If there are any volume-subpaths, do not cleanup directories
+		// 返回"/var/lib/kubelet/pods/{podUID}/volume-subpaths"目录是否存在
+		// 如果存在且路径是坏的挂载点，则返回true和错误
 		volumeSubpathExists, err := kl.podVolumeSubpathsDirExists(uid)
 		if err != nil {
+			// 如果"/var/lib/kubelet/pods/{podUID}/volume-subpaths"目录存在且路径是坏的挂载点，则append 存在孤儿volume-subpaths且volume-subpaths读取错误，继续下一个pod
 			orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but error %v occurred during reading of volume-subpaths dir from disk", uid, err))
 			continue
 		}
+		// 如果"/var/lib/kubelet/pods/{podUID}/volume-subpaths"目录存在，则存在孤儿volume-subpaths且volume-subpaths读取错误，继续下一个pod
 		if volumeSubpathExists {
 			orphanVolumeErrors = append(orphanVolumeErrors, fmt.Errorf("orphaned pod %q found, but volume subpaths are still present on disk", uid))
 			continue
 		}
 
+		// pod不存在"/var/lib/kubelet/pods/{podUID}/volume"和volume-subpaths目录
 		klog.V(3).Infof("Orphaned pod %q found, removing", uid)
+		// 删除目录"/var/lib/kubelet/pods/{podUID}"，等同于执行rm -rf --one-file-system "/var/lib/kubelet/pods/{podUID}"
 		if err := removeall.RemoveAllOneFilesystem(kl.mounter, kl.getPodDir(uid)); err != nil {
 			klog.Errorf("Failed to remove orphaned pod %q dir; err: %v", uid, err)
+			// 如果删除出错，则append错误到orphanRemovalErrors
 			orphanRemovalErrors = append(orphanRemovalErrors, err)
 		}
 	}

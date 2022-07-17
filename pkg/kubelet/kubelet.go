@@ -1668,6 +1668,7 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	updateType := o.updateType
 
 	// if we want to kill a pod, do it now!
+	// evictionManager进行驱逐pod的类型为kubetypes.SyncPodKill
 	if updateType == kubetypes.SyncPodKill {
 		killPodOptions := o.killPodOptions
 		if killPodOptions == nil || killPodOptions.PodStatusFunc == nil {
@@ -1763,7 +1764,7 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 	kl.statusManager.SetPodStatus(pod, apiPodStatus)
 
 	// Kill pod if it should not be running
-	// admit不通过或pod被删除或pod的phase为"Failed"，则执行pod的停止操作，然后返回syncErr错误
+	// admit不通过或pod被删除或pod的phase为"Failed"（包括在kl.generateAPIPodStatus里，处理超过pod.Spec.ActiveDeadlineSeconds，将Phase改为"Failed"），则执行pod的停止操作，然后返回syncErr错误
 	if !runnable.Admit || pod.DeletionTimestamp != nil || apiPodStatus.Phase == v1.PodFailed {
 		var syncErr error
 		// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container）
@@ -1830,7 +1831,8 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		// expected to run only once and if the kubelet is restarted then
 		// they are not expected to run again.
 		// We don't create and apply updates to cgroup if its a run once pod and was killed above
-		// pod没有被停止（说明是第一次执行），或pod的RestartPolicy不为"Never"，则创建cgroup目录和设置cgroup属性
+		// pod没有被停止（第一次执行，或不是第一次执行且cgroup至少一个存在），或pod的RestartPolicy不为"Never"
+		// 且至少有一个cgroup子系统中，pod的cgroup路径不存在，则创建cgroup目录和设置cgroup属性
 		if !(podKilled && pod.Spec.RestartPolicy == v1.RestartPolicyNever) {
 			// 至少有一个cgroup子系统中，pod的cgroup路径不存在
 			if !pcm.Exists(pod) {
@@ -1939,8 +1941,17 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 // Get pods which should be resynchronized. Currently, the following pod should be resynchronized:
 //   * pod whose work is ready.
 //   * internal modules that request sync of a pod.
+// 返回的pod包含
+// 1. 这个pod uid是在pod worker中处理过的uid
+// 2. pod中还未被pod worker处理完，让kl.podSyncLoopHandler决定（返回true的）加入podsToSync返回列表里
+// kl.podSyncLoopHandler只有一个pkg\kubelet\active_deadline.go activeDeadlineHandler
+// activeDeadlineHandler
+// 检测pod status中StartTime距现在时间长度，超出pod.Spec.ActiveDeadlineSeconds，返回true
+// 即pod的active时间长度是否超过pod.Spec.ActiveDeadlineSeconds
 func (kl *Kubelet) getPodsToSync() []*v1.Pod {
+	// 返回所有普通pod和static pod
 	allPods := kl.podManager.GetPods()
+	// 获得worker queue中过期的uid列表，worker queue中uid列表是在pod worker执行完之后加入的（无论是否执行出现错误）
 	podUIDs := kl.workQueue.GetWork()
 	podUIDSet := sets.NewString()
 	for _, podUID := range podUIDs {
@@ -1954,6 +1965,11 @@ func (kl *Kubelet) getPodsToSync() []*v1.Pod {
 			podsToSync = append(podsToSync, pod)
 			continue
 		}
+		// pod中还未被pod worker处理完，让kl.podSyncLoopHandler决定是否
+		// kl.podSyncLoopHandler只有一个pkg\kubelet\active_deadline.go activeDeadlineHandler
+		// activeDeadlineHandler
+		// 检测pod status中StartTime距现在时间长度，超出pod.Spec.ActiveDeadlineSeconds，返回true
+		// 即pod的active时间长度是否超过pod.Spec.ActiveDeadlineSeconds
 		for _, podSyncLoopHandler := range kl.PodSyncLoopHandlers {
 			if podSyncLoopHandler.ShouldSync(pod) {
 				podsToSync = append(podsToSync, pod)
@@ -1970,29 +1986,38 @@ func (kl *Kubelet) getPodsToSync() []*v1.Pod {
 //
 // deletePod returns an error if not all sources are ready or the pod is not
 // found in the runtime cache.
+// kl.sourcesReady.seenSources里的所有源已经注册且都提供了至少一个pod
+// 如果pod在kl.podWorkers.podUpdates有UpdatePodOptions chan，则关闭这个chan，并从kl.podWorkers.podUpdates中移除。在kl.podWorkers.lastUndeliveredWorkUpdate里有pod未处理的事件，直接删除
+// 发送podPair消息给kl.podKillingCh，让kl.podKiller消费，进行pod删除（停止所有container）
 func (kl *Kubelet) deletePod(pod *v1.Pod) error {
 	if pod == nil {
 		return fmt.Errorf("deletePod does not allow nil pod")
 	}
+	// kl.sourcesReady.seenSources里的不是所有源已经注册且都提供了至少一个pod
 	if !kl.sourcesReady.AllReady() {
 		// If the sources aren't ready, skip deletion, as we may accidentally delete pods
 		// for sources that haven't reported yet.
 		return fmt.Errorf("skipping delete because sources aren't ready yet")
 	}
+	// 如果pod在kl.podWorkers.podUpdates有UpdatePodOptions chan，则关闭这个chan，并从kl.podWorkers.podUpdates中移除。在kl.podWorkers.lastUndeliveredWorkUpdate里有pod未处理的事件，直接删除
 	kl.podWorkers.ForgetWorker(pod.UID)
 
 	// Runtime cache may not have been updated to with the pod, but it's okay
 	// because the periodic cleanup routine will attempt to delete again later.
+	// 缓存未过期，则返回缓存中（kl.runtimeCache.pods）的pod
+	// 缓存过期了，则从runtime中获得所有的running pod，并更新kl.runtimeCache.pods和kl.runtimeCache.cacheTime
 	runningPods, err := kl.runtimeCache.GetPods()
 	if err != nil {
 		return fmt.Errorf("error listing containers: %v", err)
 	}
+	// 从runningPods中，根据pod uid查找pod
 	runningPod := kubecontainer.Pods(runningPods).FindPod("", pod.UID)
 	if runningPod.IsEmpty() {
 		return fmt.Errorf("pod not found")
 	}
 	podPair := kubecontainer.PodPair{APIPod: pod, RunningPod: &runningPod}
 
+	// 发送给kl.podKillingCh，让kl.podKiller消费，进行pod删除（停止所有container）
 	kl.podKillingCh <- &podPair
 	// TODO: delete the mirror pod here?
 
@@ -2202,24 +2227,56 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 			// ADD as if they are new pods. These pods will then go through the
 			// admission process and *may* be rejected. This can be resolved
 			// once we have checkpointing.
+			// 让kubelet更新secret和configmap的reflector，将pod添加到kl.podManage
+			// 如果设置了bootstrapCheckpointPath，则将pod信息保存到pod的checkpoint文件中
+			// 如果pod是mirror pod
+			// 让podworker启动一个goroutine，调用kl.syncPod来
+			//   创建mirror pod，更新pod.Status状态，创建podsandbox和有init container则启动第一个init container，没有init container，则启动所有container
+			//   删除mirror pod，并创建一个新的mirror pod
+			//   更新mirror pod status
+			// pod的Phase不为"Failed"和"Succeeded"，且（pod未被删除或pod被删除且不是所有container都处于Terminated或Waiting）
+			//   进行 pod admit，包括evictionAdmitHandler、sysctlsWhitelist、AllocateResourcesPodAdmitHandler admit、PredicateAdmitHandler
+			// admit通过后，利用podworker机制进行启动pod
+			// pod里所有有定义的probe的container，每个container里probe配置，启动一个goroutine进行probe，probe结果发生变化，则更新pod status
 			handler.HandlePodAdditions(u.Pods)
 		case kubetypes.UPDATE:
+			// format.PodsWithDeletionTimestamps(u.Pods)
+			// pod被删除，输出"{podName}_{podNamespace}({podUID}):DeletionTimestamp=2006-01-02T15:04:05Z07:00"
+			// 否则输出"{podName}_{podNamespace}({podUID})"
 			klog.V(2).Infof("SyncLoop (UPDATE, %q): %q", u.Source, format.PodsWithDeletionTimestamps(u.Pods))
 			handler.HandlePodUpdates(u.Pods)
 		case kubetypes.REMOVE:
 			klog.V(2).Infof("SyncLoop (REMOVE, %q): %q", u.Source, format.Pods(u.Pods))
+			// 在kl.podManager.secretManager.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
+			// 在kl.podManager.configMapManager.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
+			// 如果是mirror pod，则从kl.podManager.mirrorPodByUID、kl.podManager.mirrorPodByFullName、kl.podManager.translationByUID删除对应的pod
+			// 不是mirror pod，则从kl.podManager.podByUID、kl.podManager.podByFullName中删除这个pod
+			// 如果启用pod checkpoint manager，则删除pod的checkpoint文件
+			// 如果是mirror pod， 让podworker启动一个goroutine，调用kl.syncPod来
+			//   创建mirror pod，更新pod.Status状态，创建podsandbox和有init container则启动第一个init container，没有init container，则启动所有container
+			//   删除mirror pod，并创建一个新的mirror pod
+			//   更新mirror pod status
+			// 普通pod
+			// kl.sourcesReady.seenSources里的所有源已经注册且都提供了至少一个pod
+			// 如果pod在kl.podWorkers.podUpdates有UpdatePodOptions chan，则关闭这个chan，并从kl.podWorkers.podUpdates中移除。在kl.podWorkers.lastUndeliveredWorkUpdate里有pod未处理的事件，直接删除
+			// 发送podPair消息给kl.podKillingCh，让kl.podKiller消费，进行pod删除（停止所有container）
+			// 停止pod所有container（有定义probe）下的probe的worker
 			handler.HandlePodRemoves(u.Pods)
 		case kubetypes.RECONCILE:
 			klog.V(4).Infof("SyncLoop (RECONCILE, %q): %q", u.Source, format.Pods(u.Pods))
+			// 处理pod status更新
 			handler.HandlePodReconcile(u.Pods)
 		case kubetypes.DELETE:
+			// REMOVE和DELETE区别：REMOVE是pod资源已经不存在了，而DELETE是pod的DeletionTimestamp不为nil（pod资源是存在的）
 			klog.V(2).Infof("SyncLoop (DELETE, %q): %q", u.Source, format.Pods(u.Pods))
 			// DELETE is treated as a UPDATE because of graceful deletion.
+			// 只进行停止pod里所有container和sandbox，其他操作（比如从kl.podManager、处理mirror pod、从kl.probeManager和kl.podWorkers移除）在DELETE中操作
 			handler.HandlePodUpdates(u.Pods)
 		case kubetypes.RESTORE:
 			klog.V(2).Infof("SyncLoop (RESTORE, %q): %q", u.Source, format.Pods(u.Pods))
 			// These are pods restored from the checkpoint. Treat them as new
 			// pods.
+			// 从checkpoints restore则认为所有的pod都是新添加的pod
 			handler.HandlePodAdditions(u.Pods)
 		case kubetypes.SET:
 			// TODO: Do we want to support this?
@@ -2236,6 +2293,7 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 			// routines will start reclaiming resources. It is important that this
 			// takes place only after kubelet calls the update handler to process
 			// the update to ensure the internal pod cache is up-to-date.
+			// 将u.Source添加到kl.sourcesReady.sourcesSeen
 			kl.sourcesReady.AddSource(u.Source)
 		}
 	case e := <-plegCh:
@@ -2257,13 +2315,22 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 		}
 	case <-syncCh:
 		// Sync pods waiting for sync
+		// 返回的pod包含
+		// 1. 这个pod uid是在pod worker中处理过的uid
+		// 2. pod中还未被pod worker处理完，让kl.podSyncLoopHandler决定（返回true的）加入podsToSync返回列表里
+		// kl.podSyncLoopHandler只有一个pkg\kubelet\active_deadline.go activeDeadlineHandler
+		// activeDeadlineHandler
+		// 检测pod status中StartTime距现在时间长度，超出pod.Spec.ActiveDeadlineSeconds，返回true
+		// 即pod的active时间长度是否超过pod.Spec.ActiveDeadlineSeconds
 		podsToSync := kl.getPodsToSync()
 		if len(podsToSync) == 0 {
 			break
 		}
 		klog.V(4).Infof("SyncLoop (SYNC): %d pods; %s", len(podsToSync), format.Pods(podsToSync))
+		// 让所有podsToSync，立即让pod worker进行处理
 		handler.HandlePodSyncs(podsToSync)
 	case update := <-kl.livenessManager.Updates():
+		// liveness probe发生失败
 		if update.Result == proberesults.Failure {
 			// The liveness manager detected a failure; sync the pod.
 
@@ -2276,18 +2343,25 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 				break
 			}
 			klog.V(1).Infof("SyncLoop (container unhealthy): %q", format.Pod(pod))
+			// 让所有podsToSync，立即让pod worker进行处理，在kl.syncPod里kl.containerRuntime.SyncPod，会停止现有unhealthy container
 			handler.HandlePodSyncs([]*v1.Pod{pod})
 		}
 	case <-housekeepingCh:
+		// kl.sourcesReady.seenSources里的不是所有源已经注册且都提供了至少一个pod
 		if !kl.sourcesReady.AllReady() {
 			// If the sources aren't ready or volume manager has not yet synced the states,
 			// skip housekeeping, as we may accidentally delete pods from unready sources.
 			klog.V(4).Infof("SyncLoop (housekeeping, skipped): sources aren't ready yet.")
 		} else {
 			klog.V(4).Infof("SyncLoop (housekeeping)")
-			// 停止不存在的pod的pod worker
-			// 移除不存在pod的容器
-			// 移除不存在pod的volume和pod目录
+			// 停止不存在的pod的pod worker，并停止周期性执行container的readniess、liveness、start probe的worker
+			// 移除不存在pod的容器（容器还在运行，但是不在apiserver中）
+			// 移除不存在pod的volume和pod目录，当"/var/lib/kubelet/pods/{podUID}/volume"或volume-subpaths目录都不存在
+			// 从apiserver中删除所有没有对应static pod的mirror pod
+			// 启用cgroupsPerQOS，则处理cgroup路径下不存在的pod
+			//   如果pod还存在volume，且不启用keepTerminatedPodVolumes，则pod的cpu cgroup里的cpu share的值为2
+			//   否则启动一个goroutine 移除所有cgroup子系统里的cgroup路径
+			// 容器重启的回退周期清理，清理开始回退时间离现在已经超过2倍最大回收周期的item
 			if err := handler.HandlePodCleanups(); err != nil {
 				klog.Errorf("Failed cleaning pods: %v", err)
 			}
@@ -2351,23 +2425,36 @@ func (kl *Kubelet) dispatchWork(pod *v1.Pod, syncType kubetypes.SyncPodType, mir
 
 // TODO: handle mirror pods in a separate component (issue #17251)
 // 让podworker启动一个goroutine，调用kl.syncPod来
-// 创建mirror pod，更新pod.Status状态，创建podsandbox和有init container则启动第一个init container，没有init container，则启动所有container
-// 删除mirror pod，并创建一个新的mirror pod
 // 更新mirror pod status
+// 如果mirror pod被删除，则删除mirror pod，并创建一个新的mirror pod
+// 根据runtime种container和sandbox的状态，计算出需要采取的动作
+// 执行相关的动作，Kill pod sandbox、Kill any containers、 Create sandbox、Create ephemeral containers、Create init containers、Create normal containers
 func (kl *Kubelet) handleMirrorPod(mirrorPod *v1.Pod, start time.Time) {
 	// Mirror pod ADD/UPDATE/DELETE operations are considered an UPDATE to the
 	// corresponding static pod. Send update to the pod worker if the static
 	// pod exists.
 	// 根据mirror pod获取static pod
 	if pod, ok := kl.podManager.GetPodByMirrorPod(mirrorPod); ok {
-		// 让podworker启动一个goroutine，调用kl.syncPod来创建mirror pod、
+		// 让podworker启动一个goroutine，调用kl.syncPod来删除、创建mirror pod、更新mirror podstatus
+		// 根据runtime种container和sandbox的状态，计算出需要采取的动作
+		// 执行相关的动作，Kill pod sandbox、Kill any containers、 Create sandbox、Create ephemeral containers、Create init containers、Create normal containers
 		kl.dispatchWork(pod, kubetypes.SyncPodUpdate, mirrorPod, start)
 	}
 }
 
 // HandlePodAdditions is the callback in SyncHandler for pods being added from
 // a config source.
-// 
+// 让kubelet更新secret和configmap的reflector，将pod添加到kl.podManage
+// 如果设置了bootstrapCheckpointPath，则将pod信息保存到pod的checkpoint文件中
+// 如果pod是mirror pod
+// 让podworker启动一个goroutine，调用kl.syncPod来
+//   创建mirror pod，更新pod.Status状态，创建podsandbox和有init container则启动第一个init container，没有init container，则启动所有container
+//   删除mirror pod，并创建一个新的mirror pod
+//   更新mirror pod status
+// pod的Phase不为"Failed"和"Succeeded"，且（pod未被删除或pod被删除且不是所有container都处于Terminated或Waiting）
+//   进行 pod admit，包括evictionAdmitHandler、sysctlsWhitelist、AllocateResourcesPodAdmitHandler admit、PredicateAdmitHandler
+// admit通过后，利用podworker机制进行启动pod
+// pod里所有有定义的probe的container，每个container里probe配置，启动一个goroutine进行probe，probe结果发生变化，则更新pod status
 func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 	start := kl.clock.Now()
 	// 跟据pod的创建时间进行排序
@@ -2387,9 +2474,10 @@ func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 
 		if kubetypes.IsMirrorPod(pod) {
 			// 让podworker启动一个goroutine，调用kl.syncPod来
-			// 创建mirror pod，更新pod.Status状态，创建podsandbox和有init container则启动第一个init container，没有init container，则启动所有container
-			// 删除mirror pod，并创建一个新的mirror pod
 			// 更新mirror pod status
+			// 如果mirror pod被删除，则删除mirror pod，并创建一个新的mirror pod
+			// 根据runtime种container和sandbox的状态，计算出需要采取的动作
+			// 执行相关的动作，Kill pod sandbox、Kill any containers、 Create sandbox、Create ephemeral containers、Create init containers、Create normal containers
 			kl.handleMirrorPod(pod, start)
 			continue
 		}
@@ -2464,55 +2552,121 @@ func (kl *Kubelet) HandlePodAdditions(pods []*v1.Pod) {
 func (kl *Kubelet) HandlePodUpdates(pods []*v1.Pod) {
 	start := kl.clock.Now()
 	for _, pod := range pods {
+		// 让kubelet更新secret和configmap的manager里引用计数（已经记录的pod，不更新）（决定启动reflector或停止reflector，将pod添加到pm中对应的字段
+		// pod是普通pod，则添加到podByUID、podByFullName、mirrorPodByFullName
+		// pod是mirror pod，则添加到mirrorPodByUID、mirrorPodByFullName、mirrorPodByFullName
+		// 如果设置了bootstrapCheckpointPath，则将pod信息保存到pod的checkpoint文件中
 		kl.podManager.UpdatePod(pod)
+		// 如果pod是mirror pod
 		if kubetypes.IsMirrorPod(pod) {
+			// 让podworker启动一个goroutine，调用kl.syncPod来
+			// 更新mirror pod status
+			// 如果mirror pod被删除，则删除mirror pod，并创建一个新的mirror pod
+			// 根据runtime种container和sandbox的状态，计算出需要采取的动作
+			// 执行相关的动作，Kill pod sandbox、Kill any containers、 Create sandbox、Create ephemeral containers、Create init containers、Create normal containers
 			kl.handleMirrorPod(pod, start)
 			continue
 		}
 		// TODO: Evaluate if we need to validate and reject updates.
 
 		mirrorPod, _ := kl.podManager.GetMirrorPodByPod(pod)
+		// 利用pod worker机制，执行更新pod状态更新（流程跟pod add一样，只是没有记录启动处理时间metrics）
 		kl.dispatchWork(pod, kubetypes.SyncPodUpdate, mirrorPod, start)
 	}
 }
 
 // HandlePodRemoves is the callback in the SyncHandler interface for pods
 // being removed from a config source.
+// 在kl.podManager.secretManager.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
+// 在kl.podManager.configMapManager.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
+// 如果是mirror pod，则从kl.podManager.mirrorPodByUID、kl.podManager.mirrorPodByFullName、kl.podManager.translationByUID删除对应的pod
+// 不是mirror pod，则从kl.podManager.podByUID、kl.podManager.podByFullName中删除这个pod
+// 如果启用pod checkpoint manager，则删除pod的checkpoint文件
+// 如果是mirror pod， 让podworker启动一个goroutine，调用kl.syncPod来
+//   创建mirror pod，更新pod.Status状态，创建podsandbox和有init container则启动第一个init container，没有init container，则启动所有container
+//   删除mirror pod，并创建一个新的mirror pod
+//   更新mirror pod status
+// 普通pod
+// kl.sourcesReady.seenSources里的所有源已经注册且都提供了至少一个pod
+// 如果pod在kl.podWorkers.podUpdates有UpdatePodOptions chan，则关闭这个chan，并从kl.podWorkers.podUpdates中移除。在kl.podWorkers.lastUndeliveredWorkUpdate里有pod未处理的事件，直接删除
+// 发送podPair消息给kl.podKillingCh，让kl.podKiller消费，进行pod删除（停止所有container）
+// 停止pod所有container（有定义probe）下的probe的worker
+// 这里重复的执行kl.killPod（停止所有container），pod被删除会触发kubetypes.DELETE时间--在kl.HandlePodUpdates里执行了kl.killPod
 func (kl *Kubelet) HandlePodRemoves(pods []*v1.Pod) {
 	start := kl.clock.Now()
 	for _, pod := range pods {
+		// 在kl.podManager.secretManager.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
+		// 在kl.podManager.configMapManager.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
+		// 如果是mirror pod，则从kl.podManager.mirrorPodByUID、kl.podManager.mirrorPodByFullName、kl.podManager.translationByUID删除对应的pod
+		// 不是mirror pod，则从kl.podManager.podByUID、kl.podManager.podByFullName中删除这个pod
+		// 如果启用pod checkpoint manager，则删除pod的checkpoint文件
 		kl.podManager.DeletePod(pod)
 		if kubetypes.IsMirrorPod(pod) {
+			// 让podworker启动一个goroutine，调用kl.syncPod来
+			// 更新mirror pod status
+			// 如果mirror pod被删除，则删除mirror pod，并创建一个新的mirror pod
+			// 根据runtime种container和sandbox的状态，计算出需要采取的动作
+			// 执行相关的动作，Kill pod sandbox、Kill any containers、 Create sandbox、Create ephemeral containers、Create init containers、Create normal containers
 			kl.handleMirrorPod(pod, start)
 			continue
 		}
 		// Deletion is allowed to fail because the periodic cleanup routine
 		// will trigger deletion again.
+		// kl.sourcesReady.seenSources里的所有源已经注册且都提供了至少一个pod
+		// 如果pod在kl.podWorkers.podUpdates有UpdatePodOptions chan，则关闭这个chan，并从kl.podWorkers.podUpdates中移除。在kl.podWorkers.lastUndeliveredWorkUpdate里有pod未处理的事件，直接删除
+		// 发送podPair消息给kl.podKillingCh，让kl.podKiller消费，进行pod删除（停止所有container）
+		// 这里重复的执行kl.killPod（停止所有container），pod被删除会触发kubetypes.DELETE时间--在kl.HandlePodUpdates里执行了kl.killPod
 		if err := kl.deletePod(pod); err != nil {
 			klog.V(2).Infof("Failed to delete pod %q, err: %v", format.Pod(pod), err)
 		}
+		// 停止pod所有container（有定义probe）下的probe的worker
 		kl.probeManager.RemovePod(pod)
 	}
 }
 
 // HandlePodReconcile is the callback in the SyncHandler interface for pods
 // that should be reconciled.
+// 让kubelet更新secret和configmap的的manager里引用计数（已经记录的pod，不更新）（决定启动reflector或停止reflector），将pod添加到pm中对应的字段
+// pod是普通pod，则添加到podByUID、podByFullName、mirrorPodByFullName
+// pod是mirror pod，则添加到mirrorPodByUID、mirrorPodByFullName、mirrorPodByFullName
+// 如果设置了bootstrapCheckpointPath，则将pod信息保存到pod的checkpoint文件中
+// 现在pod里有type为"Ready"的condition。且status字段跟要更新的（type为"Ready"的condition）不一样或Message字段不一样
+//   则利用pod worker机制，执行更新pod状态更新（流程跟pod add一样，只是没有记录启动处理时间metrics），主要是为了更新pod status
+// pod的Phase为"Failed"且reason为"Evicted"
+//   获得缓存（kl.podCache.pods）中的id的data里status，如果不在缓存中，则返回空的数据（只有pod id）
+//   找到podStatus里所有container status里的status为"exited"的container status
+//   如果有filterContainerID过滤的container，则还要匹配过滤的container
+//   返回保留最近containersToKeep个后剩余的container status（按照创建时间倒序排列）
+//   发送所有container给kl.containerDeletor.worker通道，让goroutine消费这个通道进行移除这个container
 func (kl *Kubelet) HandlePodReconcile(pods []*v1.Pod) {
 	start := kl.clock.Now()
 	for _, pod := range pods {
 		// Update the pod in pod manager, status manager will do periodically reconcile according
 		// to the pod manager.
+		// 这里只更新pod manager，因为status manager会周期性的从pod manager中同步
+		// 让kubelet更新secret和configmap的的manager里引用计数（已经记录的pod，不更新）（决定启动reflector或停止reflector），将pod添加到pm中对应的字段
+		// pod是普通pod，则添加到podByUID、podByFullName、mirrorPodByFullName
+		// pod是mirror pod，则添加到mirrorPodByUID、mirrorPodByFullName、mirrorPodByFullName
+		// 如果设置了bootstrapCheckpointPath，则将pod信息保存到pod的checkpoint文件中
 		kl.podManager.UpdatePod(pod)
 
 		// Reconcile Pod "Ready" condition if necessary. Trigger sync pod for reconciliation.
+		// 现在pod里有type为"Ready"的condition。且status字段跟生成的（type为"Ready"的condition）不一样或Message字段不一样，则返回true
 		if status.NeedToReconcilePodReadiness(pod) {
 			mirrorPod, _ := kl.podManager.GetMirrorPodByPod(pod)
+			// 利用pod worker机制，执行更新pod状态更新（流程跟pod add一样，只是没有记录启动处理时间metrics），主要是为了更新pod status
 			kl.dispatchWork(pod, kubetypes.SyncPodSync, mirrorPod, start)
 		}
 
 		// After an evicted pod is synced, all dead containers in the pod can be removed.
+		// pod的Phase为"Failed"且reason为"Evicted"，返回true
 		if eviction.PodIsEvicted(pod.Status) {
+			// 获得缓存（kl.podCache.pods）中的id的data里status，如果不在缓存中，则返回空的数据（只有pod id）
 			if podStatus, err := kl.podCache.Get(pod.UID); err == nil {
+				// 找到podStatus里所有container status里的status为"exited"的container status
+				// 如果有filterContainerID过滤的container，则还要匹配过滤的container
+				// 返回保留最近containersToKeep个后剩余的container status（按照创建时间倒序排列）
+				// 发送所有container给kl.containerDeletor.worker通道，让goroutine消费这个通道进行移除这个container
 				kl.containerDeletor.deleteContainersInPod("", podStatus, true)
 			}
 		}
@@ -2521,6 +2675,7 @@ func (kl *Kubelet) HandlePodReconcile(pods []*v1.Pod) {
 
 // HandlePodSyncs is the callback in the syncHandler interface for pods
 // that should be dispatched to pod workers for sync.
+// 让所有pods，立即让pod worker进行处理
 func (kl *Kubelet) HandlePodSyncs(pods []*v1.Pod) {
 	start := kl.clock.Now()
 	for _, pod := range pods {

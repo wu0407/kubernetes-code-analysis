@@ -156,7 +156,7 @@ func (pm *basicManager) SetPods(newPods []*v1.Pod) {
 	pm.updatePodsInternal(newPods...)
 }
 
-// 让kubelet更新secret和configmap的reflector，将pod添加到pm对应的字段
+// 让kubelet更新secret和configmap的manager里引用计数（决定启动reflector或停止reflector），将pod添加到pm对应的字段
 // pod是普通pod，则添加到podByUID、podByFullName、mirrorPodByFullName
 // pod是mirror pod，则添加到mirrorPodByUID、mirrorPodByFullName、mirrorPodByFullName
 // 如果设置了bootstrapCheckpointPath，则将pod信息保存到pod的checkpoint文件中
@@ -164,7 +164,7 @@ func (pm *basicManager) AddPod(pod *v1.Pod) {
 	pm.UpdatePod(pod)
 }
 
-// 让kubelet更新secret和configmap的reflector，将pod添加到pm中对应的字段
+// 让kubelet更新secret和configmap的的manager里引用计数（决定启动reflector或停止reflector），将pod添加到pm中对应的字段
 // pod是普通pod，则添加到podByUID、podByFullName、mirrorPodByFullName
 // pod是mirror pod，则添加到mirrorPodByUID、mirrorPodByFullName、mirrorPodByFullName
 // 如果设置了bootstrapCheckpointPath，则将pod信息保存到pod的checkpoint文件中
@@ -188,7 +188,7 @@ func isPodInTerminatedState(pod *v1.Pod) bool {
 // updatePodsInternal replaces the given pods in the current state of the
 // manager, updating the various indices. The caller is assumed to hold the
 // lock.
-// 让kubelet更新secret和configmap的reflector，将添加pod到对应的字段
+// 让kubelet更新secret和configmap的manager里引用计数（决定启动reflector或停止reflector），将添加pod到对应的字段
 // pod是普通pod，则添加到podByUID、podByFullName、mirrorPodByFullName
 // pod是mirror pod，则添加到mirrorPodByUID、mirrorPodByFullName、mirrorPodByFullName
 func (pm *basicManager) updatePodsInternal(pods ...*v1.Pod) {
@@ -206,7 +206,7 @@ func (pm *basicManager) updatePodsInternal(pods ...*v1.Pod) {
 			} else {
 				// TODO: Consider detecting only status update and in such case do
 				// not register pod, as it doesn't really matter.
-				// 将pod添加到registeredPods字段中，增加相关secret或configmap的引用计数，如果这个对象不存在，则创建一个新的reflector（只watch和list这个资源）
+				// 将pod添加到registeredPods字段中，增加相关secret或configmap的引用计数（已经存在额pod不增加引用次数），如果这个对象不存在，则创建一个新的reflector（只watch和list这个资源）
 				pm.secretManager.RegisterPod(pod)
 			}
 		}
@@ -249,26 +249,37 @@ func (pm *basicManager) updatePodsInternal(pods ...*v1.Pod) {
 	}
 }
 
+// 在pm.secretManager.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
+// 在pm.configMapManager.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
+// 如果是mirror pod，则从pm.mirrorPodByUID、pm.mirrorPodByFullName、pm.translationByUID删除对应的pod
+// 不是mirror pod，则从pm.podByUID、pm.podByFullName中删除这个pod
+// 如果启用pod checkpoint manager，则删除pod的checkpoint文件
 func (pm *basicManager) DeletePod(pod *v1.Pod) {
 	pm.lock.Lock()
 	defer pm.lock.Unlock()
 	if pm.secretManager != nil {
+		// 在pm.secretManager.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
 		pm.secretManager.UnregisterPod(pod)
 	}
 	if pm.configMapManager != nil {
+		// 在pm.configMapManager.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
 		pm.configMapManager.UnregisterPod(pod)
 	}
+	// "{pod name}_{pod namespace}"
 	podFullName := kubecontainer.GetPodFullName(pod)
 	// It is safe to type convert here due to the IsMirrorPod guard.
+	// 如果是mirror pod，则pm.mirrorPodByUID、pm.mirrorPodByFullName、pm.translationByUID删除对应的pod
 	if kubetypes.IsMirrorPod(pod) {
 		mirrorPodUID := kubetypes.MirrorPodUID(pod.UID)
 		delete(pm.mirrorPodByUID, mirrorPodUID)
 		delete(pm.mirrorPodByFullName, podFullName)
 		delete(pm.translationByUID, mirrorPodUID)
 	} else {
+		// 不是mirror pod，则从pm.podByUID、pm.podByFullName中删除这个pod
 		delete(pm.podByUID, kubetypes.ResolvedPodUID(pod.UID))
 		delete(pm.podByFullName, podFullName)
 	}
+	// 如果启用pod checkpoint manager，则删除pod的checkpoint文件
 	if pm.checkpointManager != nil {
 		if err := checkpoint.DeletePod(pm.checkpointManager, pod); err != nil {
 			klog.Errorf("Error deleting checkpoint for pod: %v", pod.GetName())
@@ -283,6 +294,7 @@ func (pm *basicManager) GetPods() []*v1.Pod {
 	return podsMapToPods(pm.podByUID)
 }
 
+// 返回普通pod和static pod、mirror pod
 func (pm *basicManager) GetPodsAndMirrorPods() ([]*v1.Pod, []*v1.Pod) {
 	pm.lock.RLock()
 	defer pm.lock.RUnlock()
@@ -356,6 +368,7 @@ func (pm *basicManager) GetUIDTranslations() (podToMirror map[kubetypes.Resolved
 	return podToMirror, mirrorToPod
 }
 
+// 返回所有没有对应static pod的mirror pod
 func (pm *basicManager) getOrphanedMirrorPodNames() []string {
 	pm.lock.RLock()
 	defer pm.lock.RUnlock()
@@ -368,9 +381,12 @@ func (pm *basicManager) getOrphanedMirrorPodNames() []string {
 	return podFullNames
 }
 
+// 从apiserver中删除所有没有对应static pod的mirror pod
 func (pm *basicManager) DeleteOrphanedMirrorPods() {
+	// 返回所有没有对应static pod的mirror pod
 	podFullNames := pm.getOrphanedMirrorPodNames()
 	for _, podFullName := range podFullNames {
+		// 调用api删除mirror pod（从podFullName解析出name和namespace）
 		pm.MirrorClient.DeleteMirrorPod(podFullName, nil)
 	}
 }

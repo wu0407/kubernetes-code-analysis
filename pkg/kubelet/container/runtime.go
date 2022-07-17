@@ -522,6 +522,7 @@ func (p Pods) FindPodByID(podUID types.UID) Pod {
 // It will return an empty pod if not found.
 func (p Pods) FindPodByFullName(podFullName string) Pod {
 	for i := range p {
+		// BuildPodFullName返回"{pod name}_{pod namespace}"
 		if BuildPodFullName(p[i].Name, p[i].Namespace) == podFullName {
 			return *p[i]
 		}
@@ -532,6 +533,8 @@ func (p Pods) FindPodByFullName(podFullName string) Pod {
 // FindPod combines FindPodByID and FindPodByFullName, it finds and returns a pod in the
 // pod list either by the full name or the pod ID. It will return an empty pod
 // if not found.
+// podFullName不为空，则从根据podFullName查找pod
+// 否则，根据pod uid查找pod
 func (p Pods) FindPod(podFullName string, podUID types.UID) Pod {
 	if len(podFullName) > 0 {
 		return p.FindPodByFullName(podFullName)
@@ -592,6 +595,7 @@ func (p *Pod) IsEmpty() bool {
 }
 
 // GetPodFullName returns a name that uniquely identifies a pod.
+// 返回"{pod name}_{pod namespace}"
 func GetPodFullName(pod *v1.Pod) string {
 	// Use underscore as the delimiter because it is not allowed in pod name
 	// (DNS subdomain format), while allowed in the container name format.
@@ -599,6 +603,7 @@ func GetPodFullName(pod *v1.Pod) string {
 }
 
 // Build the pod full name from pod name and namespace.
+// 返回"{pod name}_{pod namespace}"
 func BuildPodFullName(name, namespace string) string {
 	return name + "_" + namespace
 }

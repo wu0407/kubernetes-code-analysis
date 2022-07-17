@@ -103,6 +103,7 @@ func NewManager() Manager {
 	}
 }
 
+// 从m.cache获得最后生效的probe结果
 func (m *manager) Get(id kubecontainer.ContainerID) (Result, bool) {
 	m.RLock()
 	defer m.RUnlock()

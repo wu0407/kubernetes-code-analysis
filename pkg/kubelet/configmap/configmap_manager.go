@@ -95,6 +95,7 @@ func (c *configMapManager) RegisterPod(pod *v1.Pod) {
 	c.manager.RegisterPod(pod)
 }
 
+// 在c.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
 func (c *configMapManager) UnregisterPod(pod *v1.Pod) {
 	c.manager.UnregisterPod(pod)
 }

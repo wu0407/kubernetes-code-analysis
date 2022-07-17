@@ -120,6 +120,7 @@ func ParseSystemdToCgroupName(name string) CgroupName {
 	return CgroupName(result)
 }
 
+// 返回类似"/{cgroup name[0]}/{cgroup name[1]}..."
 func (cgroupName CgroupName) ToCgroupfs() string {
 	return "/" + path.Join(cgroupName...)
 }
@@ -150,6 +151,8 @@ func newLibcontainerAdapter(cgroupManagerType libcontainerCgroupManagerType) *li
 }
 
 // newManager returns an implementation of cgroups.Manager
+// cgroup的driver为"cgroupfs"，则使用“runc/libcontainer/cgroups/fs”里的manager
+// cgroup的driver为"systemd", 则使用“runc/libcontainer/cgroups/systemd”里的manager
 func (l *libcontainerAdapter) newManager(cgroups *libcontainerconfigs.Cgroup, paths map[string]string) (libcontainercgroups.Manager, error) {
 	switch l.cgroupManagerType {
 	case libcontainerCgroupfs:
@@ -303,29 +306,46 @@ func (m *cgroupManagerImpl) Exists(name CgroupName) bool {
 }
 
 // Destroy destroys the specified cgroup
+// 移除所有cgroup子系统里的cgroup路径
 func (m *cgroupManagerImpl) Destroy(cgroupConfig *CgroupConfig) error {
 	start := time.Now()
 	defer func() {
 		metrics.CgroupManagerDuration.WithLabelValues("destroy").Observe(metrics.SinceInSeconds(start))
 	}()
 
+	// 在m.subsystems.MountPoints里每个cgroup子系统的路径都添加上转成cgroup driver的路径
 	cgroupPaths := m.buildCgroupPaths(cgroupConfig.Name)
 
 	libcontainerCgroupConfig := &libcontainerconfigs.Cgroup{}
 	// libcontainer consumes a different field and expects a different syntax
 	// depending on the cgroup driver in use, so we need this conditional here.
 	if m.adapter.cgroupManagerType == libcontainerSystemd {
+		// 设置cgroupConfig的Name（转成systemd路径的目录名）和Parent（转成systemd路径的父目录）
+		// 比如  cgroupConfig.Name为[]string["kubepods", "besteffort", "pod33affd6b_2117_4b1a_9b47_4d33869b6ea1"]
+		// libcontainerCgroupConfig.Name为"kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice"，libcontainerCgroupConfig.Parent为"/kubepods-besteffort.slice"
 		updateSystemdCgroupInfo(libcontainerCgroupConfig, cgroupConfig.Name)
 	} else {
+		// 返回类似"/{cgroup name[0]}/{cgroup name[1]}..."
+		// 比如 cgroupConfig.Name为[]string["kubepods", "besteffort", "pod33affd6b_2117_4b1a_9b47_4d33869b6ea1"]
+		// libcontainerCgroupConfig.Path为"/kubepods/besteffort/pod33affd6b_2117_4b1a_9b47_4d33869b6ea1"
 		libcontainerCgroupConfig.Path = cgroupConfig.Name.ToCgroupfs()
 	}
 
+	// 根据不同的cgroup driver类型，创建runc里的cgroup manager
 	manager, err := m.adapter.newManager(libcontainerCgroupConfig, cgroupPaths)
 	if err != nil {
 		return err
 	}
 
 	// Delete cgroups using libcontainers Managers Destroy() method
+	// systemd为driver
+	// 调用systemd dbus停止unit(比如"kubepods-besteffort-pod33affd6b_2117_4b1a_9b47_4d33869b6ea1.slice")
+	// 删除manager.paths里的所有路径（包括路径下所有文件和文件夹）
+	// 重置manager.Paths为空map[string]string
+	// 
+	// cgroupfs为driver
+	// 删除manager.paths里的所有路径（包括路径下的所有文件和文件夹）
+	// 重置manager.Paths为空map[string]string
 	if err = manager.Destroy(); err != nil {
 		return fmt.Errorf("unable to destroy cgroup paths for cgroup %v : %v", cgroupConfig.Name, err)
 	}
@@ -550,8 +570,11 @@ func (m *cgroupManagerImpl) Create(cgroupConfig *CgroupConfig) error {
 }
 
 // Scans through all subsystems to find pids associated with specified cgroup.
+// 获得所有cgroup子系统的cgroup路径下，所有attached pid（包括子cgroup下attached pid）
 func (m *cgroupManagerImpl) Pids(name CgroupName) []int {
 	// we need the driver specific name
+	// cgroup driver为systemd，比如{"kubepods", "burstable", "pod1234-abcd-5678-efgh"} becomes "/kubepods.slice/kubepods-burstable.slice/kubepods-burstable-pod1234_abcd_5678_efgh.slice"
+	// cgroup driver为cgroupfs ，则"/kubepods/burstable/pod1234_abcd_5678_efgh"
 	cgroupFsName := m.Name(name)
 
 	// Get a list of processes that we need to kill
@@ -566,6 +589,7 @@ func (m *cgroupManagerImpl) Pids(name CgroupName) []int {
 			continue
 		}
 		// Get a list of pids that are still charged to the pod's cgroup
+		// 获取"{dir}/cgroup.procs"里的文件内容里的所有pid
 		pids, err = getCgroupProcs(dir)
 		if err != nil {
 			continue
@@ -581,6 +605,7 @@ func (m *cgroupManagerImpl) Pids(name CgroupName) []int {
 			if !info.IsDir() {
 				return nil
 			}
+			// 获取"{path}/cgroup.procs"里的文件内容里的所有pid
 			pids, err = getCgroupProcs(path)
 			if err != nil {
 				klog.V(4).Infof("cgroup manager encountered error getting procs for cgroup path %q: %v", path, err)
@@ -592,6 +617,7 @@ func (m *cgroupManagerImpl) Pids(name CgroupName) []int {
 		// Walk through the pod cgroup directory to check if
 		// container cgroups haven't been GCed yet. Get attached processes to
 		// all such unwanted containers under the pod cgroup
+		// 遍历dir目录下所有的子cgroup，获得所有attached pid
 		if err = filepath.Walk(dir, visitor); err != nil {
 			klog.V(4).Infof("cgroup manager encountered error scanning pids for directory: %q: %v", dir, err)
 		}
@@ -600,6 +626,7 @@ func (m *cgroupManagerImpl) Pids(name CgroupName) []int {
 }
 
 // ReduceCPULimits reduces the cgroup's cpu shares to the lowest possible value
+// 设置cgroup name的cpu share的值为2
 func (m *cgroupManagerImpl) ReduceCPULimits(cgroupName CgroupName) error {
 	// Set lowest possible CpuShares value for the cgroup
 	minimumCPUShares := uint64(MinShares)
@@ -610,6 +637,7 @@ func (m *cgroupManagerImpl) ReduceCPULimits(cgroupName CgroupName) error {
 		Name:               cgroupName,
 		ResourceParameters: resources,
 	}
+	// 更新各个（cpu、memory、pid、hugepage）cgroup属性值
 	return m.Update(containerConfig)
 }
 

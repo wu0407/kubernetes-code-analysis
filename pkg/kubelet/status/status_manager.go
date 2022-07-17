@@ -562,6 +562,7 @@ func (m *manager) deletePodStatus(uid types.UID) {
 }
 
 // TODO(filipg): It'd be cleaner if we can do this without signal from user.
+// m.podStatuses里的uid不在podUIDs里，则从m.podStatuses删除这个uid
 func (m *manager) RemoveOrphanedStatuses(podUIDs map[types.UID]bool) {
 	m.podStatusesLock.Lock()
 	defer m.podStatusesLock.Unlock()
@@ -909,13 +910,17 @@ func mergePodStatus(oldPodStatus, newPodStatus v1.PodStatus) v1.PodStatus {
 }
 
 // NeedToReconcilePodReadiness returns if the pod "Ready" condition need to be reconcile
+// 现在pod里有type为"Ready"的condition。且status字段跟生成的（type为"Ready"的condition）不一样或Message字段不一样，则返回true
 func NeedToReconcilePodReadiness(pod *v1.Pod) bool {
 	if len(pod.Spec.ReadinessGates) == 0 {
 		return false
 	}
+	// 生成type为"Ready"的pod condition
 	podReadyCondition := GeneratePodReadyCondition(&pod.Spec, pod.Status.Conditions, pod.Status.ContainerStatuses, pod.Status.Phase)
+	// 从pod.Status.Conditions找到type为"Ready"的condition，的index和pod condition值
 	i, curCondition := podutil.GetPodConditionFromList(pod.Status.Conditions, v1.PodReady)
 	// Only reconcile if "Ready" condition is present and Status or Message is not expected
+	// 现在pod里有type为"Ready"的condition。且status字段跟生成不一样或Message字段不一样，则返回true
 	if i >= 0 && (curCondition.Status != podReadyCondition.Status || curCondition.Message != podReadyCondition.Message) {
 		return true
 	}
