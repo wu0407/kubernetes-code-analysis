@@ -197,7 +197,10 @@ func (kl *Kubelet) GetPods() []*v1.Pod {
 // container runtime cache. This function converts kubecontainer.Pod to
 // v1.Pod, so only the fields that exist in both kubecontainer.Pod and
 // v1.Pod are considered meaningful.
+// 从kl.runtimeCache获取所有运行的pod
 func (kl *Kubelet) GetRunningPods() ([]*v1.Pod, error) {
+	// 缓存未过期，则返回缓存中（r.pods）的pod
+	// 缓存过期了，则从runtime中获得所有的running pod，并更新r.pods和r.cacheTime
 	pods, err := kl.runtimeCache.GetPods()
 	if err != nil {
 		return nil, err
@@ -205,6 +208,7 @@ func (kl *Kubelet) GetRunningPods() ([]*v1.Pod, error) {
 
 	apiPods := make([]*v1.Pod, 0, len(pods))
 	for _, pod := range pods {
+		// 将pod转成对外的api pod，添加到apiPods
 		apiPods = append(apiPods, pod.ToAPIPod())
 	}
 	return apiPods, nil
@@ -218,15 +222,19 @@ func (kl *Kubelet) GetPodByFullName(podFullName string) (*v1.Pod, bool) {
 
 // GetPodByName provides the first pod that matches namespace and name, as well
 // as whether the pod was found.
+// 从kl.podManager中获得pod
 func (kl *Kubelet) GetPodByName(namespace, name string) (*v1.Pod, bool) {
 	return kl.podManager.GetPodByName(namespace, name)
 }
 
 // GetPodByCgroupfs provides the pod that maps to the specified cgroup, as well
 // as whether the pod was found.
+// 根据cgroupfs获得pod的uid，并从kl.podManager中根据uid返回非mirror pod（普通pod和static pod）
 func (kl *Kubelet) GetPodByCgroupfs(cgroupfs string) (*v1.Pod, bool) {
 	pcm := kl.containerManager.NewPodContainerManager()
+	// 验证cgroupfs是否为pod的cgroup路径
 	if result, podUID := pcm.IsPodCgroup(cgroupfs); result {
+		// 从kl.podManager中根据uid返回非mirror pod（普通pod和static pod）
 		return kl.podManager.GetPodByUID(podUID)
 	}
 	return nil, false

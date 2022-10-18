@@ -113,7 +113,8 @@ func (p *StatsProvider) RlimitStats() (*statsapi.RlimitStats, error) {
 // this function doesn't generate filesystem stats.
 // 返回容器最近的cpu和memory的使用情况，Accelerators状态（gpu）、UserDefinedMetrics（kubelet没有）、最近的网卡状态
 func (p *StatsProvider) GetCgroupStats(cgroupName string, updateStats bool) (*statsapi.ContainerStats, *statsapi.NetworkStats, error) {
-	// 等待container的housekeeping（更新监控数据）完成后，从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态）
+	// updateStats为true，则等待所有的container的housekeeping（更新监控数据）完成后。否则从memoryCache直接获取
+	// 从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态）
 	info, err := getCgroupInfo(p.cadvisor, cgroupName, updateStats)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to get cgroup stats for %q: %v", cgroupName, err)
@@ -128,12 +129,17 @@ func (p *StatsProvider) GetCgroupStats(cgroupName string, updateStats bool) (*st
 
 // GetCgroupCPUAndMemoryStats returns the CPU and memory stats of the cgroup with the cgroupName. Note that
 // this function doesn't generate filesystem stats.
+// 从cadvisor中，如果updateStats为true，则等待container的housekeeping（更新监控数据）完成后，否则从memoryCache直接获取。
+// 返回container的StartTime（创建时间）、最后的cpu和memory的使用情况
 func (p *StatsProvider) GetCgroupCPUAndMemoryStats(cgroupName string, updateStats bool) (*statsapi.ContainerStats, error) {
+	// updateStats为true，则等待所有的container的housekeeping（更新监控数据）完成后。否则从memoryCache直接获取
+	// 从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态）
 	info, err := getCgroupInfo(p.cadvisor, cgroupName, updateStats)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get cgroup stats for %q: %v", cgroupName, err)
 	}
 	// Rootfs and imagefs doesn't make sense for raw cgroup.
+	// 从info中解析出container的StartTime（创建时间）、最后的cpu和memory的使用情况
 	s := cadvisorInfoToContainerCPUAndMemoryStats(cgroupName, info)
 	return s, nil
 }
@@ -173,21 +179,30 @@ func (p *StatsProvider) RootFsStats() (*statsapi.FsStats, error) {
 }
 
 // GetContainerInfo returns stats (from cAdvisor) for a container.
+// 根据podFullName、containerName、podUID和req，返回info.ContainerInfo（包括在req.start到req.end时间范围内，最多req.maxStats个ContainerStats）
 func (p *StatsProvider) GetContainerInfo(podFullName string, podUID types.UID, containerName string, req *cadvisorapiv1.ContainerInfoRequest) (*cadvisorapiv1.ContainerInfo, error) {
 	// Resolve and type convert back again.
 	// We need the static pod UID but the kubecontainer API works with types.UID.
+	// 首先尝试将uid转成MirrorPodUID，然后在p.podManager.translationByUID中查找static uid
+	// 如果未找到，则返回原始的uid
 	podUID = types.UID(p.podManager.TranslatePodUID(podUID))
 
+	// 缓存未过期，则返回缓存中（r.pods）的pod
+	// 缓存过期了，则从runtime中获得所有的running pod，并更新r.pods和r.cacheTime
 	pods, err := p.runtimeCache.GetPods()
 	if err != nil {
 		return nil, err
 	}
+	// podFullName不为空，则从根据podFullName查找pod
+	// 否则，根据pod uid查找pod
 	pod := kubecontainer.Pods(pods).FindPod(podFullName, podUID)
+	// 根据containerName在pod.Containers中查找container
 	container := pod.FindContainerByName(containerName)
 	if container == nil {
 		return nil, kubecontainer.ErrContainerNotFound
 	}
 
+	// 根据containerName和query，返回info.ContainerInfo（包括在req.start到req.end时间范围内，最多req.maxStats个ContainerStats）
 	ci, err := p.cadvisor.DockerContainer(container.ID.ID, req)
 	if err != nil {
 		return nil, err
@@ -197,10 +212,14 @@ func (p *StatsProvider) GetContainerInfo(podFullName string, podUID types.UID, c
 
 // GetRawContainerInfo returns the stats (from cadvisor) for a non-Kubernetes
 // container.
+// 从cadvisor中获得containerName的containerInfo，包含在req.start到req.end时间范围内，最多req.maxStats个ContainerStats
+// 如果subcontainers为true，返回containerName和所有子container的containerInfo
 func (p *StatsProvider) GetRawContainerInfo(containerName string, req *cadvisorapiv1.ContainerInfoRequest, subcontainers bool) (map[string]*cadvisorapiv1.ContainerInfo, error) {
 	if subcontainers {
+		// 返回containerName和所有子container的info.ContainerInfo（在req.start到req.end时间范围内，最多req.maxStats个ContainerStats）集合
 		return p.cadvisor.SubcontainerInfo(containerName, req)
 	}
+	// 根据containerName和query，返回info.ContainerInfo（在req.start到req.end时间范围内，最多req.maxStats个ContainerStats）
 	containerInfo, err := p.cadvisor.ContainerInfo(containerName, req)
 	if err != nil {
 		return nil, err

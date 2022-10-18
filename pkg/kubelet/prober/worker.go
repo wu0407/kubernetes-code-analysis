@@ -147,6 +147,7 @@ func (w *worker) run() {
 
 		// 从w.probeManager.workers中移除这个worker
 		w.probeManager.removeWorker(w.pod.UID, w.container.Name, w.probeType)
+		// 移除相同label的metrics
 		ProberResults.Delete(w.proberResultsSuccessfulMetricLabels)
 		ProberResults.Delete(w.proberResultsFailedMetricLabels)
 		ProberResults.Delete(w.proberResultsUnknownMetricLabels)

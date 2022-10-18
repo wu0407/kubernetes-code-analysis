@@ -94,8 +94,10 @@ func (rc *resourceMetricsCollector) DescribeWithStability(ch chan<- *metrics.Des
 func (rc *resourceMetricsCollector) CollectWithStability(ch chan<- metrics.Metric) {
 	var errorCount float64
 	defer func() {
+		// 如果metrics不是隐藏的，则返回prometheus.constMetric，否则返回nil
 		ch <- metrics.NewLazyConstMetric(resouceScrapeResultDesc, metrics.GaugeValue, errorCount)
 	}()
+	// 返回node的cpu和memory监控状态，nodeConfig（ContainerManager）里的定义的cgroup类别的cpu和memory监控状态和所有pod的cpu和memory监控状态和所有pod的container的cpu、内存监控状态
 	statsSummary, err := rc.provider.GetCPUAndMemoryStats()
 	if err != nil {
 		errorCount = 1
@@ -103,26 +105,34 @@ func (rc *resourceMetricsCollector) CollectWithStability(ch chan<- metrics.Metri
 		return
 	}
 
+	// 根据s.CPU.UsageCoreNanoSeconds和s.CPU.Time.Time生成带有时间戳的metrics，将metrics发送到ch
 	rc.collectNodeCPUMetrics(ch, statsSummary.Node)
+	// 根据s.Memory.WorkingSetBytes和s.Memory.Time.Time生成带有时间戳的metrics，将metrics发送到ch
 	rc.collectNodeMemoryMetrics(ch, statsSummary.Node)
 
+	// 遍历所有pod里的container
 	for _, pod := range statsSummary.Pods {
 		for _, container := range pod.Containers {
+			// 根据s.CPU.Time.Time和s.CPU.UsageCoreNanoSeconds生成带有时间戳的metrics，将metrics发送到ch~
 			rc.collectContainerCPUMetrics(ch, pod, container)
+			// 根据s.Memory.Time.Time和s.Memory.WorkingSetBytes生成带有时间戳的metrics，将metrics发送到ch
 			rc.collectContainerMemoryMetrics(ch, pod, container)
 		}
 	}
 }
 
+// 根据s.CPU.UsageCoreNanoSeconds和s.CPU.Time.Time生成带有时间戳的metrics，将metrics发送到ch
 func (rc *resourceMetricsCollector) collectNodeCPUMetrics(ch chan<- metrics.Metric, s summary.NodeStats) {
 	if s.CPU == nil {
 		return
 	}
 
 	ch <- metrics.NewLazyMetricWithTimestamp(s.CPU.Time.Time,
+		// 如果metrics不是隐藏的，则返回prometheus.constMetric，否则返回nil
 		metrics.NewLazyConstMetric(nodeCPUUsageDesc, metrics.CounterValue, float64(*s.CPU.UsageCoreNanoSeconds)/float64(time.Second)))
 }
 
+// 根据s.Memory.WorkingSetBytes和s.Memory.Time.Time生成带有时间戳的metrics，将metrics发送到ch
 func (rc *resourceMetricsCollector) collectNodeMemoryMetrics(ch chan<- metrics.Metric, s summary.NodeStats) {
 	if s.Memory == nil {
 		return
@@ -132,6 +142,7 @@ func (rc *resourceMetricsCollector) collectNodeMemoryMetrics(ch chan<- metrics.M
 		metrics.NewLazyConstMetric(nodeMemoryUsageDesc, metrics.GaugeValue, float64(*s.Memory.WorkingSetBytes)))
 }
 
+// 根据s.CPU.Time.Time和s.CPU.UsageCoreNanoSeconds生成带有时间戳的metrics，将metrics发送到ch
 func (rc *resourceMetricsCollector) collectContainerCPUMetrics(ch chan<- metrics.Metric, pod summary.PodStats, s summary.ContainerStats) {
 	if s.CPU == nil {
 		return
@@ -142,6 +153,7 @@ func (rc *resourceMetricsCollector) collectContainerCPUMetrics(ch chan<- metrics
 			float64(*s.CPU.UsageCoreNanoSeconds)/float64(time.Second), s.Name, pod.PodRef.Name, pod.PodRef.Namespace))
 }
 
+// 根据s.Memory.Time.Time和s.Memory.WorkingSetBytes生成带有时间戳的metrics，将metrics发送到ch
 func (rc *resourceMetricsCollector) collectContainerMemoryMetrics(ch chan<- metrics.Metric, pod summary.PodStats, s summary.ContainerStats) {
 	if s.Memory == nil {
 		return

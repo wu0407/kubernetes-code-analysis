@@ -49,6 +49,8 @@ type KubeOpts struct {
 // name from the name component in their Opts. Users of the library will only
 // need this function if they implement their own Metric or instantiate a Desc
 // (with NewDesc) directly.
+// 返回如果namespace, subsystem, name都不为空，则返回"{namespace}_{subsystem}_{name}"
+// 如果namespace, subsystem, name有一个为空，则空的省略
 func BuildFQName(namespace, subsystem, name string) string {
 	return prometheus.BuildFQName(namespace, subsystem, name)
 }
@@ -66,6 +68,7 @@ const (
 )
 
 // setDefaults takes 'ALPHA' in case of empty.
+// 如果sl为空，则设置为"ALPHA"
 func (sl *StabilityLevel) setDefaults() {
 	switch *sl {
 	case "":
@@ -153,6 +156,7 @@ type HistogramOpts struct {
 }
 
 // Modify help description on the metric description.
+// 修改o.Help为"(Deprecated since {o.DeprecatedVersion}) {o.Help}"
 func (o *HistogramOpts) markDeprecated() {
 	o.deprecateOnce.Do(func() {
 		o.Help = fmt.Sprintf("(Deprecated since %v) %v", o.DeprecatedVersion, o.Help)
@@ -161,6 +165,7 @@ func (o *HistogramOpts) markDeprecated() {
 
 // annotateStabilityLevel annotates help description on the metric description with the stability level
 // of the metric
+// 修改o.Help为"[{o.StabilityLevel}] {o.Help}"
 func (o *HistogramOpts) annotateStabilityLevel() {
 	o.annotateOnce.Do(func() {
 		o.Help = fmt.Sprintf("[%v] %v", o.StabilityLevel, o.Help)

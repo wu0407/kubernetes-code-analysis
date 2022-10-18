@@ -82,7 +82,9 @@ type Transport struct {
 // RoundTrip implements the http.RoundTripper interface
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Add reverse proxy headers.
+	// 请求路径添加反向代理前缀
 	forwardedURI := path.Join(t.PathPrepend, req.URL.Path)
+	// request的路径后缀有"/"，则请求路径后缀也添加"/"
 	if strings.HasSuffix(req.URL.Path, "/") {
 		forwardedURI = forwardedURI + "/"
 	}
@@ -95,6 +97,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 
 	rt := t.RoundTripper
+	// t.RoundTripper为nil，则使用默认的http.Transport
 	if rt == nil {
 		rt = http.DefaultTransport
 	}
@@ -112,18 +115,22 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return resp, nil
 	}
 
+	// 如果后端返回header中包含了"Location"，说明后端返回重定向
 	if redirect := resp.Header.Get("Location"); redirect != "" {
+		// 重写返回的"Location" Header
 		resp.Header.Set("Location", t.rewriteURL(redirect, req.URL, req.Host))
 		return resp, nil
 	}
 
 	cType := resp.Header.Get("Content-Type")
 	cType = strings.TrimSpace(strings.SplitN(cType, ";", 2)[0])
+	// 不是"text/html"直接返回response
 	if cType != "text/html" {
 		// Do nothing, simply pass through
 		return resp, nil
 	}
 
+	// 将html中的内容的链接地址，进行重写替换
 	return t.rewriteResponse(req, resp)
 }
 
@@ -155,14 +162,18 @@ func (t *Transport) rewriteURL(targetURL string, sourceURL *url.URL, sourceReque
 	//      or sourceRequestHost, we should not consider the returned URL to be a completely different host.
 	//      It's the API server's responsibility to rewrite a same-host-and-absolute-path URL and append the
 	//      necessary URL prefix (i.e. /api/v1/namespace/foo/service/bar/proxy/).
+	// targetURL（后端响应的重定向url）里有host部分，且与原始请求url的sourceURL.Host不一样，且与原始请求的Host（sourceRequestHost）不一样，则isDifferentHost为true
 	isDifferentHost := url.Host != "" && url.Host != sourceURL.Host && url.Host != sourceRequestHost
+	// url前缀不包含"/"，则isRelative为true
 	isRelative := !strings.HasPrefix(url.Path, "/")
+	// targetURL是相对路径，或（targetURL（后端响应的重定向url）里有host部分，且与原始请求url的sourceURL.Host不一样，且与原始请求的Host（sourceRequestHost）不一样），则直接返回后端响应的重定向url
 	if isDifferentHost || isRelative {
 		return targetURL
 	}
 
 	// Do not rewrite scheme and host if the Transport has empty scheme and host
 	// when targetURL already contains the sourceRequestHost
+	// 如果transport里面Scheme和Host都为空，且后端响应的重定向url的host跟sourceRequestHost（原始请求host）一样，则不rewrite Scheme和Host
 	if !(url.Host == sourceRequestHost && t.Scheme == "" && t.Host == "") {
 		url.Scheme = t.Scheme
 		url.Host = t.Host
@@ -170,10 +181,13 @@ func (t *Transport) rewriteURL(targetURL string, sourceURL *url.URL, sourceReque
 
 	origPath := url.Path
 	// Do not rewrite URL if the sourceURL already contains the necessary prefix.
+	// url.Path包含了预置前缀，则直接返回url
 	if strings.HasPrefix(url.Path, t.PathPrepend) {
 		return url.String()
 	}
+	// url.Path不包含了预置前缀，则路径添加预置前缀
 	url.Path = path.Join(t.PathPrepend, url.Path)
+	// 如果origPath包含了后缀"/"，则拼接后url后缀也添加"/"
 	if strings.HasSuffix(origPath, "/") {
 		// Add back the trailing slash, which was stripped by path.Join().
 		url.Path += "/"
@@ -217,6 +231,7 @@ func rewriteHTML(reader io.Reader, writer io.Writer, urlRewriter func(string) st
 
 // rewriteResponse modifies an HTML response by updating absolute links referring
 // to the original host to instead refer to the proxy transport.
+// 将html中的内容的链接地址，进行重写替换
 func (t *Transport) rewriteResponse(req *http.Request, resp *http.Response) (*http.Response, error) {
 	origBody := resp.Body
 	defer origBody.Close()
@@ -258,6 +273,7 @@ func (t *Transport) rewriteResponse(req *http.Request, resp *http.Response) (*ht
 	urlRewriter := func(targetUrl string) string {
 		return t.rewriteURL(targetUrl, req.URL, req.Host)
 	}
+	// 将html中的内容的链接地址，进行重写替换
 	err := rewriteHTML(reader, writer, urlRewriter)
 	if err != nil {
 		klog.Errorf("Failed to rewrite URLs: %v", err)

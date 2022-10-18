@@ -31,6 +31,7 @@ type stripedCache struct {
 type hashFunc func(string) uint32
 type newCacheFunc func() cache
 
+// 生成一个cache，将cache按照key进行hash后取模分布在stripeCount个cache中
 func newStripedCache(stripeCount int, hash hashFunc, newCacheFunc newCacheFunc) cache {
 	caches := []cache{}
 	for i := 0; i < stripeCount; i++ {

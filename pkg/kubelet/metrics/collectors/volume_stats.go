@@ -89,6 +89,23 @@ func (collector *volumeStatsCollector) DescribeWithStability(ch chan<- *metrics.
 
 // CollectWithStability implements the metrics.StableCollector interface.
 func (collector *volumeStatsCollector) CollectWithStability(ch chan<- metrics.Metric) {
+	// 如果是collector.statsProvider最终为cadvisorStatsProvider，则
+	// 返回所有pod的监控状态
+	// 其中Network为labels["io.kubernetes.container.name"]为"POD"的容器的网卡状态
+	// 其中Containers为pod里所有普通container的状态
+	// 其中VolumeStats为pod各个volume的获取目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free。状态分为两类EphemeralVolumes（EmptyDir且EmptyDir底层存储不是内存、ConfigMap、GitRepo）和PersistentVolumes
+	// EphemeralStorage
+	//    其中AvailableBytes为rootFsInfo.Available
+	//    其中CapacityBytes为rootFsInfo.Capacity
+	//    其中InodesFree为rootFsInfo.InodesFree
+	//    其中Inodes为rootFsInfo.Inodes
+	//    其中Time为这些里面取最晚的时间，rootFsInfo.Timestamp、所有container里container.Rootfs.Time最晚的，所有ephemeralStats里volume.FsStats.Time最晚的
+	//    其中UsedBytes这些里面相加，所有container.Rootfs.UsedBytes相加、所有container.Logs.UsedBytes相加、所有ephemeralStats里volume.FsStats.UsedBytes相加
+	//    其中InodesUsed为这些相加，所有container.Rootfs.InodesUsed相加、所有ephemeralStats里volume.InodesUsed相加
+	// PersistentVolumes
+	//   由各个驱动类型实现
+	// CPU和Memory为pod cgroup监控信息
+	// StartTime为pod status里的StartTime
 	podStats, err := collector.statsProvider.ListPodStats()
 	if err != nil {
 		return
@@ -96,10 +113,13 @@ func (collector *volumeStatsCollector) CollectWithStability(ch chan<- metrics.Me
 	addGauge := func(desc *metrics.Desc, pvcRef *stats.PVCReference, v float64, lv ...string) {
 		lv = append([]string{pvcRef.Namespace, pvcRef.Name}, lv...)
 
+		// 如果metrics不是隐藏的，则返回prometheus.constMetric，否则返回nil
+		// 发送metrics到ch
 		ch <- metrics.NewLazyConstMetric(desc, metrics.GaugeValue, v, lv...)
 	}
 	allPVCs := sets.String{}
 	for _, podStat := range podStats {
+		// 跳过没有volume 状态数据的pod
 		if podStat.VolumeStats == nil {
 			continue
 		}
@@ -114,6 +134,7 @@ func (collector *volumeStatsCollector) CollectWithStability(ch chan<- metrics.Me
 				// ignore if already collected
 				continue
 			}
+			// 将volumeStatsCapacityBytesDesc发送到ch
 			addGauge(volumeStatsCapacityBytesDesc, pvcRef, float64(*volumeStat.CapacityBytes))
 			addGauge(volumeStatsAvailableBytesDesc, pvcRef, float64(*volumeStat.AvailableBytes))
 			addGauge(volumeStatsUsedBytesDesc, pvcRef, float64(*volumeStat.UsedBytes))

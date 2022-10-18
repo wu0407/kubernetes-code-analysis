@@ -54,16 +54,19 @@ type DockerLegacyService interface {
 
 // GetContainerLogs get container logs directly from docker daemon.
 func (d *dockerService) GetContainerLogs(_ context.Context, pod *v1.Pod, containerID kubecontainer.ContainerID, logOptions *v1.PodLogOptions, stdout, stderr io.Writer) error {
+	// 进行docker inspect
 	container, err := d.client.InspectContainer(containerID.ID)
 	if err != nil {
 		return err
 	}
 
 	var since int64
+	// 设置了从之前几秒开始的日志
 	if logOptions.SinceSeconds != nil {
 		t := metav1.Now().Add(-time.Duration(*logOptions.SinceSeconds) * time.Second)
 		since = t.Unix()
 	}
+	// 设置了从某个时间开始的日志
 	if logOptions.SinceTime != nil {
 		since = logOptions.SinceTime.Unix()
 	}
@@ -74,10 +77,12 @@ func (d *dockerService) GetContainerLogs(_ context.Context, pod *v1.Pod, contain
 		Timestamps: logOptions.Timestamps,
 		Follow:     logOptions.Follow,
 	}
+	// 读取最后几行
 	if logOptions.TailLines != nil {
 		opts.Tail = strconv.FormatInt(*logOptions.TailLines, 10)
 	}
 
+	// 限制了读取大小
 	if logOptions.LimitBytes != nil {
 		// stdout and stderr share the total write limit
 		max := *logOptions.LimitBytes
@@ -89,6 +94,9 @@ func (d *dockerService) GetContainerLogs(_ context.Context, pod *v1.Pod, contain
 		ErrorStream:  stderr,
 		RawTerminal:  container.Config.Tty,
 	}
+	// 先包装记录请求
+	// 执行docker logs {container id}
+	// 如果有tty（sopts.RawTerminal为true）则拷贝resp到outputStream，否则拷贝resp到outputStream和errorStream
 	err = d.client.Logs(containerID.ID, opts, sopts)
 	if errors.Is(err, errMaximumWrite) {
 		klog.V(2).Infof("finished logs, hit byte limit %d", *logOptions.LimitBytes)

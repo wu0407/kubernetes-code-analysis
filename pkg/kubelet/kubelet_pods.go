@@ -1419,16 +1419,21 @@ func (kl *Kubelet) podKiller() {
 // of the container. The previous flag will only return the logs for the last terminated container, otherwise, the current
 // running container is preferred over a previous termination. If info about the container is not available then a specific
 // error is returned to the end user.
+// 根据输入参数，从podStatus中获得container id
 func (kl *Kubelet) validateContainerLogStatus(podName string, podStatus *v1.PodStatus, containerName string, previous bool) (containerID kubecontainer.ContainerID, err error) {
 	var cID string
 
+	// 从podStatus.ContainerStatuses中，查找containerName的container的container status，返回true代表找到，false代表未找到
 	cStatus, found := podutil.GetContainerStatus(podStatus.ContainerStatuses, containerName)
 	if !found {
+		// 如果未找到，从podStatus.InitContainerStatuses中，查找containerName的container的container status
 		cStatus, found = podutil.GetContainerStatus(podStatus.InitContainerStatuses, containerName)
 	}
+	// 还是没有找到，且启用了"EphemeralContainers"特性，则从podStatus.EphemeralContainerStatuses中，查找containerName的container的container status
 	if !found && utilfeature.DefaultFeatureGate.Enabled(features.EphemeralContainers) {
 		cStatus, found = podutil.GetContainerStatus(podStatus.EphemeralContainerStatuses, containerName)
 	}
+	// 都没有找到container status，则返回错误
 	if !found {
 		return kubecontainer.ContainerID{}, fmt.Errorf("container %q in pod %q is not available", containerName, podName)
 	}
@@ -1436,33 +1441,45 @@ func (kl *Kubelet) validateContainerLogStatus(podName string, podStatus *v1.PodS
 	waiting, running, terminated := cStatus.State.Waiting, cStatus.State.Running, cStatus.State.Terminated
 
 	switch {
+	// 获取之前container的日志
 	case previous:
+		// lastState.Terminated为nil或ContainerID为空，则返回错误
 		if lastState.Terminated == nil || lastState.Terminated.ContainerID == "" {
 			return kubecontainer.ContainerID{}, fmt.Errorf("previous terminated container %q in pod %q not found", containerName, podName)
 		}
 		cID = lastState.Terminated.ContainerID
 
+	// 获取正在运行容器的日志
 	case running != nil:
 		cID = cStatus.ContainerID
 
+	// 当前容器处于terminated状态
 	case terminated != nil:
 		// in cases where the next container didn't start, terminated.ContainerID will be empty, so get logs from the lastState.Terminated.
+		// terminated的container id为空
 		if terminated.ContainerID == "" {
+			// 有最后退出容器，则获得最后退出容器的id
 			if lastState.Terminated != nil && lastState.Terminated.ContainerID != "" {
 				cID = lastState.Terminated.ContainerID
 			} else {
+				// 没有最后退出的容器，则返回错误
 				return kubecontainer.ContainerID{}, fmt.Errorf("container %q in pod %q is terminated", containerName, podName)
 			}
 		} else {
+			// terminated的container id不为空，则container id为terminated.ContainerID
 			cID = terminated.ContainerID
 		}
 
+	// 当前容器不在运行状态、也不在terminated状态，且有最后退出容器状态
 	case lastState.Terminated != nil:
+		// 最后退出的容器状态为空，则返回错误
 		if lastState.Terminated.ContainerID == "" {
 			return kubecontainer.ContainerID{}, fmt.Errorf("container %q in pod %q is terminated", containerName, podName)
 		}
+		// container id为terminated.ContainerID
 		cID = lastState.Terminated.ContainerID
 
+	// 当前在运行状态、也不在terminated状态、没有最后退出容器状态，且处于waiting状态
 	case waiting != nil:
 		// output some info for the most common pending failures
 		switch reason := waiting.Reason; reason {
@@ -1478,35 +1495,47 @@ func (kl *Kubelet) validateContainerLogStatus(podName string, podStatus *v1.PodS
 		return kubecontainer.ContainerID{}, fmt.Errorf("container %q in pod %q is waiting to start - no logs yet", containerName, podName)
 	}
 
+	// 根据格式应该是"{type}://{id}"，从字符串解析出ContainerID
 	return kubecontainer.ParseContainerID(cID), nil
 }
 
 // GetKubeletContainerLogs returns logs from the container
 // TODO: this method is returning logs of random container attempts, when it should be returning the most recent attempt
 // or all of them.
+// 先从kl.PodManager获得pod uid，再从kl.StatusManager里获取container id
+// 根据container id
+// 如果runtime为docker，且非json-file格式的日志，则dockerLegacyService不为nil
+//   执行docker logs {container id}
+//   如果容器有tty则拷贝resp到outputStream，否则拷贝resp到outputStream和errorStream
+// 如果runtime为cri，则调用cri获得容器的日志路径，读取容器日志文件，发送到stdout或stderr
 func (kl *Kubelet) GetKubeletContainerLogs(ctx context.Context, podFullName, containerName string, logOptions *v1.PodLogOptions, stdout, stderr io.Writer) error {
 	// Pod workers periodically write status to statusManager. If status is not
 	// cached there, something is wrong (or kubelet just restarted and hasn't
 	// caught up yet). Just assume the pod is not ready yet.
+	// 从"{pod name}_{pod namespace}"，解析出pod name和pod namespace
 	name, namespace, err := kubecontainer.ParsePodFullName(podFullName)
 	if err != nil {
 		return fmt.Errorf("unable to parse pod full name %q: %v", podFullName, err)
 	}
 
+	// 从kl.podManager中获得pod
 	pod, ok := kl.GetPodByName(namespace, name)
 	if !ok {
 		return fmt.Errorf("pod %q cannot be found - no logs available", name)
 	}
 
 	podUID := pod.UID
+	// 根据static pod获取mirror pod
 	if mirrorPod, ok := kl.podManager.GetMirrorPodByPod(pod); ok {
 		podUID = mirrorPod.UID
 	}
+	// 从kl.statusManager获得v1.PodStatus
 	podStatus, found := kl.statusManager.GetPodStatus(podUID)
 	if !found {
 		// If there is no cached status, use the status from the
 		// apiserver. This is useful if kubelet has recently been
 		// restarted.
+		// 没有从kl.statusManager获得v1.PodStatus，则使用apiserver里的v1.PodStatus
 		podStatus = pod.Status
 	}
 
@@ -1514,6 +1543,7 @@ func (kl *Kubelet) GetKubeletContainerLogs(ctx context.Context, podFullName, con
 	// but inside kuberuntime we convert container id back to container name and restart count.
 	// TODO: After separate container log lifecycle management, we should get log based on the existing log files
 	// instead of container status.
+	// 根据输入参数，从podStatus中获得container id
 	containerID, err := kl.validateContainerLogStatus(pod.Name, &podStatus, containerName, logOptions.Previous)
 	if err != nil {
 		return err
@@ -1526,12 +1556,16 @@ func (kl *Kubelet) GetKubeletContainerLogs(ctx context.Context, podFullName, con
 		return err
 	}
 
+	// runtime为docker，且非json-file格式的日志，则dockerLegacyService不为nil
 	if kl.dockerLegacyService != nil {
 		// dockerLegacyService should only be non-nil when we actually need it, so
 		// inject it into the runtimeService.
 		// TODO(random-liu): Remove this hack after deprecating unsupported log driver.
+		// 执行docker logs {container id}
+		// 如果容器有tty则拷贝resp到outputStream，否则拷贝resp到outputStream和errorStream
 		return kl.dockerLegacyService.GetContainerLogs(ctx, pod, containerID, logOptions, stdout, stderr)
 	}
+	// 调用cri获得容器的日志路径，读取容器日志文件，发送到stdout或stderr
 	return kl.containerRuntime.GetContainerLogs(ctx, pod, containerID, logOptions, stdout, stderr)
 }
 
@@ -1954,6 +1988,7 @@ func (kl *Kubelet) convertToAPIContainerStatuses(pod *v1.Pod, podStatus *kubecon
 }
 
 // ServeLogs returns logs of current machine.
+// 提供访问节点上日志（/var/log/目录）
 func (kl *Kubelet) ServeLogs(w http.ResponseWriter, req *http.Request) {
 	// TODO: whitelist logs we are willing to serve
 	kl.logServer.ServeHTTP(w, req)
@@ -1961,20 +1996,28 @@ func (kl *Kubelet) ServeLogs(w http.ResponseWriter, req *http.Request) {
 
 // findContainer finds and returns the container with the given pod ID, full name, and container name.
 // It returns nil if not found.
+// 从runtime中查找属于podFullName下的container name为containerName
 func (kl *Kubelet) findContainer(podFullName string, podUID types.UID, containerName string) (*kubecontainer.Container, error) {
+	// 从runtime中获得所有pod的容器列表（运行中）
 	pods, err := kl.containerRuntime.GetPods(false)
 	if err != nil {
 		return nil, err
 	}
 	// Resolve and type convert back again.
 	// We need the static pod UID but the kubecontainer API works with types.UID.
+	// 首先尝试将uid转成MirrorPodUID，然后通过这个id在kl.podManager.translationByUID中查找static uid
+	// 如果未找到，则返回原始的uid
 	podUID = types.UID(kl.podManager.TranslatePodUID(podUID))
+	// podFullName不为空，则从根据podFullName查找pod
+	// 否则，根据pod uid查找pod
 	pod := kubecontainer.Pods(pods).FindPod(podFullName, podUID)
+	// 根据containerName在pod.Containers中查找container
 	return pod.FindContainerByName(containerName), nil
 }
 
 // RunInContainer runs a command in a container, returns the combined stdout, stderr as an array of bytes
 func (kl *Kubelet) RunInContainer(podFullName string, podUID types.UID, containerName string, cmd []string) ([]byte, error) {
+	// 从runtime中查找属于podFullName下的container name为containerName
 	container, err := kl.findContainer(podFullName, podUID, containerName)
 	if err != nil {
 		return nil, err
@@ -1983,11 +2026,16 @@ func (kl *Kubelet) RunInContainer(podFullName string, podUID types.UID, containe
 		return nil, fmt.Errorf("container not found (%q)", containerName)
 	}
 	// TODO(tallclair): Pass a proper timeout value.
+	// 调用runtime（同步调用）执行cmd，设置执行的timeout，并将stderr append到stdout（也就是说命令输出没有保证顺序）
+	// 当timeout为0时候，执行m.runtimeService.ExecSync没有超时时间。
+	// 对于dockershim来说（服务端来说），timeout这个参数会传给dockershim，但是dockershim没有使用。
 	return kl.runner.RunInContainer(container.ID, cmd, 0)
 }
 
 // GetExec gets the URL the exec will be served from, or nil if the Kubelet will serve it.
+// 调用cri接口，获得并返回执行exec的url
 func (kl *Kubelet) GetExec(podFullName string, podUID types.UID, containerName string, cmd []string, streamOpts remotecommandserver.Options) (*url.URL, error) {
+	// 从runtime中查找属于podFullName下的container name为containerName的container
 	container, err := kl.findContainer(podFullName, podUID, containerName)
 	if err != nil {
 		return nil, err
@@ -1995,6 +2043,7 @@ func (kl *Kubelet) GetExec(podFullName string, podUID types.UID, containerName s
 	if container == nil {
 		return nil, fmt.Errorf("container not found (%q)", containerName)
 	}
+	// 调用cri接口，返回执行exec的url
 	return kl.streamingRuntime.GetExec(container.ID, cmd, streamOpts.Stdin, streamOpts.Stdout, streamOpts.Stderr, streamOpts.TTY)
 }
 

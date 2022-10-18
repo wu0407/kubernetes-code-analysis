@@ -44,6 +44,8 @@ var _ streaming.Runtime = &streamingRuntime{}
 
 const maxMsgSize = 1024 * 1024 * 16
 
+// 执行InspectContainer，检测容器是否在运行
+// 执行exec命令，返回后，每2s检测exec是否退出，只等待8s检测exec是否退出。启动一个goroutine，在exec启动之后从resize chan中读取消息，执行ResizeExecTTY。没有超时时间
 func (r *streamingRuntime) Exec(containerID string, cmd []string, in io.Reader, out, err io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
 	return r.exec(containerID, cmd, in, out, err, tty, resize, 0)
 }
@@ -60,18 +62,26 @@ func (r *streamingRuntime) exec(containerID string, cmd []string, in io.Reader, 
 }
 
 func (r *streamingRuntime) Attach(containerID string, in io.Reader, out, errw io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
+	// 执行InspectContainer，检测容器是否在运行
 	_, err := checkContainerStatus(r.client, containerID)
 	if err != nil {
 		return err
 	}
 
+	// 启动一个goroutine，读取resize里的消息，执行resizeFunc（调用docker客户端进行重置container tty）
+	// 调用docker客户端执行attach
 	return attachContainer(r.client, containerID, in, out, errw, tty, resize)
 }
 
 func (r *streamingRuntime) PortForward(podSandboxID string, port int32, stream io.ReadWriteCloser) error {
+	// 校验端口合法性
 	if port < 0 || port > math.MaxUint16 {
 		return fmt.Errorf("invalid port %d", port)
 	}
+	// 查询容器是否存在
+	// 容器不在运行状态，直接返回错误
+	// 从stream中读取数据作为stdin，发送stdout数据到stream
+	// 执行nsenter -t {container pid} -n socat - TCP4:localhost:{port}
 	return r.portForward(podSandboxID, port, stream)
 }
 
@@ -111,14 +121,27 @@ func (ds *dockerService) Exec(_ context.Context, req *runtimeapi.ExecRequest) (*
 	if ds.streamingServer == nil {
 		return nil, streaming.NewErrorStreamingDisabled("exec")
 	}
+	// 执行InspectContainer，检测容器是否在运行
 	_, err := checkContainerStatus(ds.client, req.ContainerId)
 	if err != nil {
 		return nil, err
 	}
+	// 验证请求的合法性
+	//   containerId不能为空
+	//   不能同时启用tty和stderr
+	//   stdin、stdout、stderr必须有一个启用
+	// 缓存中添加这次请求
+	// 返回构建好的url，比如"http://localhost:36589/exec/{token}"
 	return ds.streamingServer.GetExec(req)
 }
 
 // Attach prepares a streaming endpoint to attach to a running container, and returns the address.
+// 验证请求的合法性
+//   containerId不能为空
+//   不能同时启用tty和stderr
+//   stdin、stdout、stderr必须有一个启用
+// 缓存中添加这次请求
+// 返回构建好的url，比如"http://localhost:36589/attach/{token}"
 func (ds *dockerService) Attach(_ context.Context, req *runtimeapi.AttachRequest) (*runtimeapi.AttachResponse, error) {
 	if ds.streamingServer == nil {
 		return nil, streaming.NewErrorStreamingDisabled("attach")
@@ -131,10 +154,17 @@ func (ds *dockerService) Attach(_ context.Context, req *runtimeapi.AttachRequest
 }
 
 // PortForward prepares a streaming endpoint to forward ports from a PodSandbox, and returns the address.
+// 验证请求的合法性
+//   containerId不能为空
+//   不能同时启用tty和stderr
+//   stdin、stdout、stderr必须有一个启用
+// 缓存中添加这次请求
+// 返回构建好的url，比如"http://localhost:36589/portforward/{token}"
 func (ds *dockerService) PortForward(_ context.Context, req *runtimeapi.PortForwardRequest) (*runtimeapi.PortForwardResponse, error) {
 	if ds.streamingServer == nil {
 		return nil, streaming.NewErrorStreamingDisabled("port forward")
 	}
+	// 执行InspectContainer，检测容器是否在运行
 	_, err := checkContainerStatus(ds.client, req.PodSandboxId)
 	if err != nil {
 		return nil, err
@@ -155,9 +185,12 @@ func checkContainerStatus(client libdocker.Interface, containerID string) (*dock
 	return container, nil
 }
 
+// 启动一个goroutine，读取resize里的消息，执行resizeFunc（调用docker客户端进行重置container tty）
+// 调用docker客户端执行attach
 func attachContainer(client libdocker.Interface, containerID string, stdin io.Reader, stdout, stderr io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
 	// Have to start this before the call to client.AttachToContainer because client.AttachToContainer is a blocking
 	// call :-( Otherwise, resize events don't get processed and the terminal never resizes.
+	// 启动一个goroutine，读取resize里的消息，执行resizeFunc（调用docker客户端进行重置container tty）
 	kubecontainer.HandleResizing(resize, func(size remotecommand.TerminalSize) {
 		client.ResizeContainerTTY(containerID, uint(size.Height), uint(size.Width))
 	})

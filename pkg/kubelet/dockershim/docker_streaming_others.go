@@ -28,12 +28,18 @@ import (
 	"k8s.io/klog"
 )
 
+// 查询容器是否存在
+// 容器不在运行状态，直接返回错误
+// 从stream中读取数据作为stdin，发送stdout数据到stream
+// 执行nsenter -t {container pid} -n socat - TCP4:localhost:{port}
 func (r *streamingRuntime) portForward(podSandboxID string, port int32, stream io.ReadWriteCloser) error {
+	// 查询容器是否存在
 	container, err := r.client.InspectContainer(podSandboxID)
 	if err != nil {
 		return err
 	}
 
+	// 容器不在运行状态，直接返回错误
 	if !container.State.Running {
 		return fmt.Errorf("container not running (%s)", container.ID)
 	}
@@ -51,6 +57,7 @@ func (r *streamingRuntime) portForward(podSandboxID string, port int32, stream i
 		return fmt.Errorf("unable to do port forwarding: nsenter not found")
 	}
 
+	// nsenter -t {container pid} -n socat - TCP4:localhost:{port}
 	commandString := fmt.Sprintf("%s %s", nsenterPath, strings.Join(args, " "))
 	klog.V(4).Infof("executing port forwarding command: %s", commandString)
 
@@ -74,6 +81,7 @@ func (r *streamingRuntime) portForward(podSandboxID string, port int32, stream i
 		return fmt.Errorf("unable to do port forwarding: error creating stdin pipe: %v", err)
 	}
 	go func() {
+		// 从stream中拷贝数据到inPipe
 		io.Copy(inPipe, stream)
 		inPipe.Close()
 	}()

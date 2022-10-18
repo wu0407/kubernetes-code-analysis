@@ -230,6 +230,7 @@ type Backoff struct {
 	// hitting the cap). If not positive, the duration is not
 	// changed. Used for exponential backoff in combination with
 	// Factor and Cap.
+	// 剩下执行几次
 	Steps int
 	// A limit on revised values of the duration parameter. If a
 	// multiplication by the factor parameter would make the duration

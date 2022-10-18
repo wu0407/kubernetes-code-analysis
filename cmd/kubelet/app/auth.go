@@ -48,18 +48,24 @@ func BuildAuth(nodeName types.NodeName, client clientset.Interface, config kubel
 		sarClient = client.AuthorizationV1().SubjectAccessReviews()
 	}
 
+	// authenticator为authenticator.Request
+	// runAuthenticatorCAReload为每一分钟读取config.Authentication.X509.ClientCAFile文件
 	authenticator, runAuthenticatorCAReload, err := BuildAuthn(tokenClient, config.Authentication)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// 创建pkg\kubelet\server\auth.go里的nodeAuthorizerAttributesGetter{nodeName: nodeName}
 	attributes := server.NewNodeAuthorizerAttributesGetter(nodeName)
 
+
+	// 返回authorizer.Authorizer
 	authorizer, err := BuildAuthz(sarClient, config.Authorization)
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// 返回pkg\kubelet\server\auth.go里的KubeletAuth{authenticator, authorizerAttributeGetter, authorizer}
 	return server.NewKubeletAuth(authenticator, attributes, authorizer), runAuthenticatorCAReload, nil
 }
 
@@ -68,6 +74,7 @@ func BuildAuthn(client authenticationclient.TokenReviewInterface, authn kubeletc
 	var dynamicCAContentFromFile *dynamiccertificates.DynamicFileCAContent
 	var err error
 	if len(authn.X509.ClientCAFile) > 0 {
+		// 读取authn.X509.ClientCAFile文件，生成dynamicCAContentFromFile
 		dynamicCAContentFromFile, err = dynamiccertificates.NewDynamicCAContentFromFile("client-ca-bundle", authn.X509.ClientCAFile)
 		if err != nil {
 			return nil, nil, err
@@ -87,11 +94,13 @@ func BuildAuthn(client authenticationclient.TokenReviewInterface, authn kubeletc
 		authenticatorConfig.TokenAccessReviewClient = client
 	}
 
+	// 根据authenticatorConfig创建聚合的authenticator.Request
 	authenticator, _, err := authenticatorConfig.New()
 	if err != nil {
 		return nil, nil, err
 	}
 
+	// 每一分钟重新读取一下ca文件
 	return authenticator, func(stopCh <-chan struct{}) {
 		if dynamicCAContentFromFile != nil {
 			go dynamicCAContentFromFile.Run(1, stopCh)
@@ -102,9 +111,12 @@ func BuildAuthn(client authenticationclient.TokenReviewInterface, authn kubeletc
 // BuildAuthz creates an authorizer compatible with the kubelet's needs
 func BuildAuthz(client authorizationclient.SubjectAccessReviewInterface, authz kubeletconfig.KubeletAuthorization) (authorizer.Authorizer, error) {
 	switch authz.Mode {
+	// 如果授权模式是"AlwaysAllow"
 	case kubeletconfig.KubeletAuthorizationModeAlwaysAllow:
+		// 返回staging\src\k8s.io\apiserver\pkg\authorization\authorizerfactory\builtin.go里的alwaysAllowAuthorizer{}
 		return authorizerfactory.NewAlwaysAllowAuthorizer(), nil
 
+	// 如果授权模式是"Webhook"
 	case kubeletconfig.KubeletAuthorizationModeWebhook:
 		if client == nil {
 			return nil, errors.New("no client provided, cannot use webhook authorization")
@@ -114,6 +126,8 @@ func BuildAuthz(client authorizationclient.SubjectAccessReviewInterface, authz k
 			AllowCacheTTL:             authz.Webhook.CacheAuthorizedTTL.Duration,
 			DenyCacheTTL:              authz.Webhook.CacheUnauthorizedTTL.Duration,
 		}
+
+		// 返回staging\src\k8s.io\apiserver\plugin\pkg\authorizer\webhook\webhook.go里的WebhookAuthorizer
 		return authorizerConfig.New()
 
 	case "":

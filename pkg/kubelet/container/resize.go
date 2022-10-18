@@ -24,6 +24,7 @@ import (
 // handleResizing spawns a goroutine that processes the resize channel, calling resizeFunc for each
 // remotecommand.TerminalSize received from the channel. The resize channel must be closed elsewhere to stop the
 // goroutine.
+// 启动一个goroutine，读取resize里的消息，执行resizeFunc
 func HandleResizing(resize <-chan remotecommand.TerminalSize, resizeFunc func(size remotecommand.TerminalSize)) {
 	if resize == nil {
 		return

@@ -234,7 +234,7 @@ func NewDockerService(config *ClientConfig, podSandboxImage string, streamingCon
 		//  StreamIdleTimeout: 4 * time.Hour,
 		//  StreamCreationTimeout: 30 * time.Second,
 		//  Addr: "localhost:0",
-		//  StreamCreationTimeout: ["channel.k8s.io", "v2.channel.k8s.io", "v3.channel.k8s.io", "v4.channel.k8s.io"],
+		//  SupportedRemoteCommandProtocols: ["v4.channel.k8s.io", "v3.channel.k8s.io", "v2.channel.k8s.io", "channel.k8s.io"],
 		//  SupportedPortForwardProtocols: ["portforward.k8s.io"]
 		// }
 		ds.streamingServer, err = streaming.NewServer(*streamingConfig, ds.streamingRuntime)

@@ -81,6 +81,9 @@ type ServiceState struct {
 // keys. The method shouldn't be called concurrently for the same key! This
 // contract is fulfilled in the current implementation of the endpoint(slice)
 // controller.
+// service之前不存在，即service不在t.ServiceStates里，则返回service创建时间
+// 返回pod的pod ready condition的LastTransitionTime时间里最早的时间，跟service创建时间（如果service创建时间在state.lastServiceTriggerTime之后）里最早的时间
+// 当service和pod都没有发生变化时候，返回0值
 func (t *TriggerTimeTracker) ComputeEndpointLastChangeTriggerTime(
 	namespace string, service *v1.Service, pods []*v1.Pod) time.Time {
 
@@ -103,29 +106,40 @@ func (t *TriggerTimeTracker) ComputeEndpointLastChangeTriggerTime(
 	var minChangedTriggerTime time.Time
 	podTriggerTimes := make(map[string]time.Time)
 	for _, pod := range pods {
+		// 获得pod ready condition的LastTransitionTime时间
 		if podTriggerTime := getPodTriggerTime(pod); !podTriggerTime.IsZero() {
+			// pod的podTriggerTime添加到podTriggerTimes
 			podTriggerTimes[pod.Name] = podTriggerTime
+			// pod ready condition的LastTransitionTime时间比state.lastPodTriggerTimes里的这个pod的时间之后
 			if podTriggerTime.After(state.lastPodTriggerTimes[pod.Name]) {
 				// Pod trigger time has changed since the last sync, update minChangedTriggerTime.
+				// podTriggerTime在minChangedTriggerTime之前，则更新minChangedTriggerTime为podTriggerTime
 				minChangedTriggerTime = min(minChangedTriggerTime, podTriggerTime)
 			}
 		}
 	}
+	// 返回service的CreationTimestamp
 	serviceTriggerTime := getServiceTriggerTime(service)
+	// service的CreationTimestamp在state.lastServiceTriggerTime之后
 	if serviceTriggerTime.After(state.lastServiceTriggerTime) {
 		// Service trigger time has changed since the last sync, update minChangedTriggerTime.
+		// serviceTriggerTime在minChangedTriggerTime之前，则更新minChangedTriggerTime为serviceTriggerTime
 		minChangedTriggerTime = min(minChangedTriggerTime, serviceTriggerTime)
 	}
 
+	// 更新state.lastPodTriggerTimes
 	state.lastPodTriggerTimes = podTriggerTimes
+	// 更新state.lastServiceTriggerTime为service创建时间
 	state.lastServiceTriggerTime = serviceTriggerTime
 
+	// service之前不存在，即service不在t.ServiceStates里，则返回service创建时间
 	if !wasKnown {
 		// New Service, use Service creationTimestamp.
 		return service.CreationTimestamp.Time
 	}
 
 	// Regular update of endpoint objects, return min of changed trigger times.
+	// 返回pod的pod ready condition的LastTransitionTime时间里最早的时间，跟service创建时间（如果service创建时间在state.lastServiceTriggerTime之后）里最早的时间
 	return minChangedTriggerTime
 }
 
@@ -139,6 +153,7 @@ func (t *TriggerTimeTracker) DeleteService(namespace, name string) {
 
 // getPodTriggerTime returns the time of the pod change (trigger) that resulted
 // or will result in the endpoint object change.
+// 获得pod ready condition的LastTransitionTime时间
 func getPodTriggerTime(pod *v1.Pod) (triggerTime time.Time) {
 	if readyCondition := podutil.GetPodReadyCondition(pod.Status); readyCondition != nil {
 		triggerTime = readyCondition.LastTransitionTime.Time
@@ -148,6 +163,7 @@ func getPodTriggerTime(pod *v1.Pod) (triggerTime time.Time) {
 
 // getServiceTriggerTime returns the time of the service change (trigger) that
 // resulted or will result in the endpoint change.
+// 返回service的CreationTimestamp
 func getServiceTriggerTime(service *v1.Service) (triggerTime time.Time) {
 	return service.CreationTimestamp.Time
 }

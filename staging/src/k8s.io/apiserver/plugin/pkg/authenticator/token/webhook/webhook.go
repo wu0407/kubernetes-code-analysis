@@ -78,6 +78,7 @@ func newWithBackoff(tokenReview tokenReviewer, initialBackoff time.Duration, imp
 }
 
 // AuthenticateToken implements the authenticator.Token interface.
+// 请求apiserver根据token创建tokenReview，进行认证
 func (w *WebhookTokenAuthenticator) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
 	// We take implicit audiences of the API server at WebhookTokenAuthenticator
 	// construction time. The outline of how we validate audience here is:
@@ -102,6 +103,7 @@ func (w *WebhookTokenAuthenticator) AuthenticateToken(ctx context.Context, token
 		err    error
 		auds   authenticator.Audiences
 	)
+	// 遇到错误指数回退进行重试，执行创建tokenReview
 	webhook.WithExponentialBackoff(ctx, w.initialBackoff, func() error {
 		result, err = w.tokenReview.Create(ctx, r, metav1.CreateOptions{})
 		return err
@@ -112,11 +114,13 @@ func (w *WebhookTokenAuthenticator) AuthenticateToken(ctx context.Context, token
 		return nil, false, err
 	}
 
+	// 需要检测Audiences
 	if checkAuds {
 		gotAuds := w.implicitAuds
 		if len(result.Status.Audiences) > 0 {
 			gotAuds = result.Status.Audiences
 		}
+		// 需要的Audiences，与响应的Status.Audiences交集
 		auds = wantAuds.Intersect(gotAuds)
 		if len(auds) == 0 {
 			return nil, false, nil
@@ -124,6 +128,7 @@ func (w *WebhookTokenAuthenticator) AuthenticateToken(ctx context.Context, token
 	}
 
 	r.Status = result.Status
+	// token认证不通过，返回nil, false, err
 	if !r.Status.Authenticated {
 		var err error
 		if len(r.Status.Error) != 0 {

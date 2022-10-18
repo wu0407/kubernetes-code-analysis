@@ -94,6 +94,7 @@ func (f DebugFlags) addFlag(flag string) {
 type StringFlagSetterFunc func(string) (string, error)
 
 // StringFlagPutHandler wraps an http Handler to set string type flag.
+// 只支持PUT方法，将body以字符串传给setter，响应text/plain的setter返回值
 func StringFlagPutHandler(setter StringFlagSetterFunc) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		switch {

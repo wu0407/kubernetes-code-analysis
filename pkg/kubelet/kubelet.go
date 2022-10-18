@@ -1417,12 +1417,15 @@ func (kl *Kubelet) StartGarbageCollection() {
 // Note that the modules here must not depend on modules that are not initialized here.
 func (kl *Kubelet) initializeModules() error {
 	// Prometheus metrics.
+	// 注册kubelet基本所有的"/metrics"下的metrics
 	metrics.Register(
 		kl.runtimeCache,
 		collectors.NewVolumeStatsCollector(kl),
 		collectors.NewLogMetricsCollector(kl.StatsProvider.ListPodStats),
 	)
+	// "kubelet_node_name"已经在上面进行注册了
 	metrics.SetNodeName(kl.nodeName)
+	// 注册在"/metrics"下的kubelet作为服务端的http请求统计metrics
 	servermetrics.Register()
 
 	// Setup filesystem directories.
@@ -1456,8 +1459,8 @@ func (kl *Kubelet) initializeModules() error {
 	}
 
 	// Start resource analyzer
-	// 启动一个goroutine，周期性更新ra.fsResourceAnalyzer.cachedVolumeStats
-	// ra.fsResourceAnalyzer.cachedVolumeStats保存了volumeStatCalculator集合，用于计算kubelet上所有pod的所有volume状态，volumeStatCalculator用于生成并保存pod的volume状态。
+	// 启动一个goroutine，周期性更新kl.resourceAnalyzer.fsResourceAnalyzer.cachedVolumeStats
+	// kl.resourceAnalyzer.fsResourceAnalyzer.cachedVolumeStats保存了volumeStatCalculator集合，用于计算kubelet上所有pod的所有volume状态，volumeStatCalculator用于生成并保存pod的volume状态。
 	// 每个pod会启动一个goroutine，周期性获得pod各个volume的目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free，并将状态保存到volumeStatCalculator.latest
 	kl.resourceAnalyzer.Start()
 
@@ -1549,7 +1552,7 @@ func (kl *Kubelet) initializeRuntimeDependentModules() {
 // Run starts the kubelet reacting to config updates
 func (kl *Kubelet) Run(updates <-chan kubetypes.PodUpdate) {
 	if kl.logServer == nil {
-		// 提供访问容器日志
+		// 提供访问节点上日志（/var/log/目录）
 		kl.logServer = http.StripPrefix("/logs/", http.FileServer(http.Dir("/var/log/")))
 	}
 	if kl.kubeClient == nil {
@@ -1961,7 +1964,7 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 func (kl *Kubelet) getPodsToSync() []*v1.Pod {
 	// 返回所有普通pod和static pod
 	allPods := kl.podManager.GetPods()
-	// 获得worker queue中过期的uid列表，worker queue中uid列表是在pod worker执行完之后加入的（无论是否执行出现错误）
+	// 获得worker queue中过期的uid列表，并从kl.workQueue中移除，worker queue中uid列表是在pod worker执行完之后加入的（无论是否执行出现错误）
 	podUIDs := kl.workQueue.GetWork()
 	podUIDSet := sets.NewString()
 	for _, podUID := range podUIDs {
@@ -2338,7 +2341,7 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 	case <-syncCh:
 		// Sync pods waiting for sync
 		// 返回的pod包含
-		// 1. 这个pod uid是在pod worker中处理过的uid
+		// 1. 这个pod uid是在pod worker中处理过的uid且在workqueue中已经过期的
 		// 2. pod中还未被pod worker处理完，让kl.podSyncLoopHandler决定（返回true的）加入podsToSync返回列表里
 		// kl.podSyncLoopHandler只有一个pkg\kubelet\active_deadline.go activeDeadlineHandler
 		// activeDeadlineHandler
@@ -2707,6 +2710,7 @@ func (kl *Kubelet) HandlePodSyncs(pods []*v1.Pod) {
 }
 
 // LatestLoopEntryTime returns the last time in the sync loop monitor.
+// 读取最后的sync loop之前或完成之后的时间
 func (kl *Kubelet) LatestLoopEntryTime() time.Time {
 	val := kl.syncLoopMonitor.Load()
 	if val == nil {
@@ -2775,6 +2779,7 @@ func (kl *Kubelet) BirthCry() {
 }
 
 // ResyncInterval returns the interval used for periodic syncs.
+// 默认为1分钟
 func (kl *Kubelet) ResyncInterval() time.Duration {
 	return kl.resyncInterval
 }
@@ -2866,7 +2871,7 @@ func getStreamingConfig(kubeCfg *kubeletconfiginternal.KubeletConfiguration, kub
 		StreamIdleTimeout:               kubeCfg.StreamingConnectionIdleTimeout.Duration,
 		// 固定为30s
 		StreamCreationTimeout:           streaming.DefaultConfig.StreamCreationTimeout,
-		// 固定为["channel.k8s.io", "v2.channel.k8s.io", "v3.channel.k8s.io", "v4.channel.k8s.io"]
+		// 固定为["v4.channel.k8s.io", "v3.channel.k8s.io", "v2.channel.k8s.io", "channel.k8s.io"]
 		SupportedRemoteCommandProtocols: streaming.DefaultConfig.SupportedRemoteCommandProtocols,
 		// 固定为["portforward.k8s.io"]
 		SupportedPortForwardProtocols:   streaming.DefaultConfig.SupportedPortForwardProtocols,

@@ -107,7 +107,12 @@ func NewDynamic(verifyOptionsFn VerifyOptionFunc, user UserConversion) *Authenti
 }
 
 // AuthenticateRequest authenticates the request using presented client certificates
+// 先验证客户端提供的证书，然后执行a.user从证书中提取认证信息
+// 如果a.user为CommonNameUserConversion
+// 使用第一个证书里的subject's CommonName，进行认证
+// 其中username为Subject.CommonName，group为Subject.Organization
 func (a *Authenticator) AuthenticateRequest(req *http.Request) (*authenticator.Response, bool, error) {
+	// 不是tls连接或客户端没有设置对端证书PeerCertificates
 	if req.TLS == nil || len(req.TLS.PeerCertificates) == 0 {
 		return nil, false, nil
 	}
@@ -118,15 +123,19 @@ func (a *Authenticator) AuthenticateRequest(req *http.Request) (*authenticator.R
 	if !ok {
 		return nil, false, nil
 	}
+	// 客户端提供了证书且optsCopy.Intermediates为nil（签发人证书链为空）
 	if optsCopy.Intermediates == nil && len(req.TLS.PeerCertificates) > 1 {
 		optsCopy.Intermediates = x509.NewCertPool()
+		// 将客户端提供的第2个证书到最后一个证书，添加到optsCopy.Intermediates里
 		for _, intermediate := range req.TLS.PeerCertificates[1:] {
 			optsCopy.Intermediates.AddCert(intermediate)
 		}
 	}
 
+	// 证书还剩的过期时间
 	remaining := req.TLS.PeerCertificates[0].NotAfter.Sub(time.Now())
 	clientCertificateExpirationHistogram.Observe(remaining.Seconds())
+	// 验证客户端提供的证书链，并返回证书链（包括提供的和optsCopy.Roots）
 	chains, err := req.TLS.PeerCertificates[0].Verify(optsCopy)
 	if err != nil {
 		return nil, false, err
@@ -134,12 +143,16 @@ func (a *Authenticator) AuthenticateRequest(req *http.Request) (*authenticator.R
 
 	var errlist []error
 	for _, chain := range chains {
+		// 如果a.user为CommonNameUserConversion
+		// 使用第一个证书里的subject's CommonName，进行认证
+		// 其中username为Subject.CommonName，group为Subject.Organization
 		user, ok, err := a.user.User(chain)
 		if err != nil {
 			errlist = append(errlist, err)
 			continue
 		}
 
+		// 有Subject.commonName，并解析出user
 		if ok {
 			return user, ok, err
 		}
@@ -168,7 +181,9 @@ func NewDynamicCAVerifier(verifyOptionsFn VerifyOptionFunc, auth authenticator.R
 }
 
 // AuthenticateRequest verifies the presented client certificate, then delegates to the wrapped auth
+// 先进行客户端证书验证，然后降级到a.auth进行认证
 func (a *Verifier) AuthenticateRequest(req *http.Request) (*authenticator.Response, bool, error) {
+	// 不是tls连接或客户端没有设置对端证书PeerCertificates
 	if req.TLS == nil || len(req.TLS.PeerCertificates) == 0 {
 		return nil, false, nil
 	}
@@ -179,28 +194,37 @@ func (a *Verifier) AuthenticateRequest(req *http.Request) (*authenticator.Respon
 	if !ok {
 		return nil, false, nil
 	}
+	// 客户端提供了证书且optsCopy.Intermediates为nil（签发人证书链为空）
 	if optsCopy.Intermediates == nil && len(req.TLS.PeerCertificates) > 1 {
 		optsCopy.Intermediates = x509.NewCertPool()
+		// 将客户端提供的第2个证书到最后一个证书，添加到optsCopy.Intermediates里
 		for _, intermediate := range req.TLS.PeerCertificates[1:] {
 			optsCopy.Intermediates.AddCert(intermediate)
 		}
 	}
 
+	// 对客户端提供的证书（证书里的第一个证书）进行验证（使用客户端提供的证书链进行验证）
 	if _, err := req.TLS.PeerCertificates[0].Verify(optsCopy); err != nil {
 		return nil, false, err
 	}
+	// 验证第一个证书里的subject.CommonName是否在允许的CommonName集合里，不在集合里直接返回错误
 	if err := a.verifySubject(req.TLS.PeerCertificates[0].Subject); err != nil {
 		return nil, false, err
 	}
+	// 从request的header中解析出nameHeaders、groupHeader、extraHeaderPrefixes的header的值
+	// 从req的header中移除a.nameHeaders、a.groupHeaders，并移除带有a.extraHeaderPrefixes前缀的header
 	return a.auth.AuthenticateRequest(req)
 }
 
+// 验证subject.CommonName是否在允许的CommonName集合里，不在集合里直接返回错误
 func (a *Verifier) verifySubject(subject pkix.Name) error {
 	// No CN restrictions
+	// 没有设置允许的CommonName，则直接返回
 	if len(a.allowedCommonNames.Value()) == 0 {
 		return nil
 	}
 	// Enforce CN restrictions
+	// 证书里subject.CommonName在allowedCommonName（允许的CommonName）集合里，则返回
 	for _, allowedCommonName := range a.allowedCommonNames.Value() {
 		if allowedCommonName == subject.CommonName {
 			return nil
@@ -218,6 +242,9 @@ func DefaultVerifyOptions() x509.VerifyOptions {
 }
 
 // CommonNameUserConversion builds user info from a certificate chain using the subject's CommonName
+// 返回function
+// 使用第一个证书里的subject's CommonName，进行认证
+// 其中username为Subject.CommonName，group为Subject.Organization
 var CommonNameUserConversion = UserConversionFunc(func(chain []*x509.Certificate) (*authenticator.Response, bool, error) {
 	if len(chain[0].Subject.CommonName) == 0 {
 		return nil, false, nil

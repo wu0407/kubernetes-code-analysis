@@ -70,9 +70,16 @@ func NewResponseUpgrader() httpstream.ResponseUpgrader {
 // UpgradeResponse upgrades an HTTP response to one that supports multiplexed
 // streams. newStreamHandler will be called synchronously whenever the
 // other end of the upgraded connection creates a new stream.
+// 校验请求header中"Connection"的值是否为"Upgrade"，header中"Upgrade"的值是否为"SPDY/3.1"
+// 如果请求合法，则响应的http header添加key为"Connection"，value为"Upgrade"和key为"Upgrade"，value为"SPDY/3.1"和http code为101
+// 创建一个goroutine来服务stream frames
+// 返回包装了spdystream.Connection的connection
 func (u responseUpgrader) UpgradeResponse(w http.ResponseWriter, req *http.Request, newStreamHandler httpstream.NewStreamHandler) httpstream.Connection {
+	// header中"Connection"的值
 	connectionHeader := strings.ToLower(req.Header.Get(httpstream.HeaderConnection))
+	// header中"Upgrade"的值
 	upgradeHeader := strings.ToLower(req.Header.Get(httpstream.HeaderUpgrade))
+	// header中"Connection"的值不为"Upgrade"，或header中"Upgrade"的值不为"SPDY/3.1"，则返回http 400
 	if !strings.Contains(connectionHeader, strings.ToLower(httpstream.HeaderUpgrade)) || !strings.Contains(upgradeHeader, strings.ToLower(HeaderSpdy31)) {
 		errorMsg := fmt.Sprintf("unable to upgrade: missing upgrade headers in request: %#v", req.Header)
 		http.Error(w, errorMsg, http.StatusBadRequest)
@@ -86,8 +93,11 @@ func (u responseUpgrader) UpgradeResponse(w http.ResponseWriter, req *http.Reque
 		return nil
 	}
 
+	// 响应的http header添加key为"Connection"，value为"Upgrade"
 	w.Header().Add(httpstream.HeaderConnection, httpstream.HeaderUpgrade)
+	// 响应的http header添加key为"Upgrade"，value为"SPDY/3.1"
 	w.Header().Add(httpstream.HeaderUpgrade, HeaderSpdy31)
+	// 响应http code为101
 	w.WriteHeader(http.StatusSwitchingProtocols)
 
 	conn, bufrw, err := hijacker.Hijack()
@@ -97,6 +107,8 @@ func (u responseUpgrader) UpgradeResponse(w http.ResponseWriter, req *http.Reque
 	}
 
 	connWithBuf := &connWrapper{Conn: conn, bufReader: bufrw.Reader}
+	// 创建一个goroutine来服务stream frames
+	// 返回包装了spdystream.Connection的connection
 	spdyConn, err := NewServerConnection(connWithBuf, newStreamHandler)
 	if err != nil {
 		runtime.HandleError(fmt.Errorf("unable to upgrade: error creating SPDY server connection: %v", err))

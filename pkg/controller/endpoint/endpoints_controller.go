@@ -405,6 +405,8 @@ func (e *EndpointController) syncService(key string) error {
 	// We call ComputeEndpointLastChangeTriggerTime here to make sure that the
 	// state of the trigger time tracker gets updated even if the sync turns out
 	// to be no-op and we don't update the endpoints object.
+	// service之前不存在，即service不在t.ServiceStates里，则返回service创建时间
+	// 返回pod的pod ready condition的LastTransitionTime时间里最早的时间，跟service创建时间（如果service创建时间在state.lastServiceTriggerTime之后）里最早的时间
 	endpointsLastChangeTriggerTime := e.triggerTimeTracker.
 		ComputeEndpointLastChangeTriggerTime(namespace, service, pods)
 
@@ -490,6 +492,7 @@ func (e *EndpointController) syncService(key string) error {
 		newEndpoints.Annotations = make(map[string]string)
 	}
 
+	// endpointsLastChangeTriggerTime是0
 	if !endpointsLastChangeTriggerTime.IsZero() {
 		newEndpoints.Annotations[v1.EndpointsLastChangeTriggerTime] =
 			endpointsLastChangeTriggerTime.Format(time.RFC3339Nano)

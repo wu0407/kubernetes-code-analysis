@@ -323,7 +323,7 @@ func (pm *basicManager) GetPodByFullName(podFullName string) (*v1.Pod, bool) {
 	return pod, ok
 }
 
-// 首先尝试将uid转成MirrorPodUID在translationByUID中查找static uid
+// 首先尝试将uid转成MirrorPodUID，然后通过这个id在pm.translationByUID中查找static uid
 // 如果未找到，则返回原始的uid
 func (pm *basicManager) TranslatePodUID(uid types.UID) kubetypes.ResolvedPodUID {
 	// It is safe to type convert to a resolved UID because type conversion is idempotent.

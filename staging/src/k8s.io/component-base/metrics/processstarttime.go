@@ -37,7 +37,9 @@ var processStartTime = NewGaugeVec(
 // RegisterProcessStartTime registers the process_start_time_seconds to
 // a prometheus registry. This metric needs to be included to ensure counter
 // data fidelity.
+// 注册"process_start_time_seconds"到prometheus.register
 func RegisterProcessStartTime(registrationFunc func(Registerable) error) error {
+	// 获得进程启动时间
 	start, err := getProcessStart()
 	if err != nil {
 		klog.Errorf("Could not get process start time, %v", err)
@@ -47,6 +49,7 @@ func RegisterProcessStartTime(registrationFunc func(Registerable) error) error {
 	return registrationFunc(processStartTime)
 }
 
+// 获得进程启动时间
 func getProcessStart() (float64, error) {
 	pid := os.Getpid()
 	p, err := procfs.NewProc(pid)

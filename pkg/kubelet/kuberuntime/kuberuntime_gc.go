@@ -342,6 +342,7 @@ func (cgc *containerGC) evictSandboxes(evictTerminatedPods bool) error {
 	}
 
 	// collect all the PodSandboxId of container
+	// container所属的sandbox ID集合
 	sandboxIDs := sets.NewString()
 	for _, container := range containers {
 		sandboxIDs.Insert(container.PodSandboxId)
@@ -356,12 +357,13 @@ func (cgc *containerGC) evictSandboxes(evictTerminatedPods bool) error {
 		}
 
 		// Set ready sandboxes to be active.
+		// sandbox为ready状态
 		if sandbox.State == runtimeapi.PodSandboxState_SANDBOX_READY {
 			sandboxInfo.active = true
 		}
 
 		// Set sandboxes that still have containers to be active.
-		// sandbox不为running状态，但是container中所属于的sandbox列表，包含这个sandbox
+		// container中所属于的sandbox列表，包含这个sandbox
 		if sandboxIDs.Has(sandbox.Id) {
 			sandboxInfo.active = true
 		}

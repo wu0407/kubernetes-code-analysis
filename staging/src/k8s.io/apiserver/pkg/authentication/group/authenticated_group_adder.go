@@ -36,6 +36,10 @@ func NewAuthenticatedGroupAdder(auth authenticator.Request) authenticator.Reques
 	return &AuthenticatedGroupAdder{auth}
 }
 
+// 先进行g.Authenticator.AuthenticateRequest(req)处理，处理完之后的响应内容里：
+// 如果用户名字为"system:anonymous"，则返回响应、true、nil
+// 如果用户组里groups里有group为"system:authenticated"或"system:unauthenticated"，则返回响应、true、nil
+// 否则，用户的所属的组添加"system:authenticated"，返回响应、true、nil
 func (g *AuthenticatedGroupAdder) AuthenticateRequest(req *http.Request) (*authenticator.Response, bool, error) {
 	r, ok, err := g.Authenticator.AuthenticateRequest(req)
 	if err != nil || !ok {

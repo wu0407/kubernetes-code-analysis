@@ -53,10 +53,12 @@ type V4Options struct {
 
 // NewV4Options creates a new options from the Request.
 func NewV4Options(req *http.Request) (*V4Options, error) {
+	// header中"Upgrade"的值不为"websocket"，或header中"Connection"不匹配"(^|.*,\\s*)upgrade($|\\s*,)
 	if !wsstream.IsWebSocketRequest(req) {
 		return &V4Options{}, nil
 	}
 
+	// 获得url query里的"port"值
 	portStrings := req.URL.Query()[api.PortHeader]
 	if len(portStrings) == 0 {
 		return nil, fmt.Errorf("query parameter %q is required", api.PortHeader)
@@ -93,9 +95,17 @@ func BuildV4Options(ports []int32) (*V4Options, error) {
 // a PortForwarder. A pair of streams are created per port (DATA n,
 // ERROR n+1). The associated port is written to each stream as a unsigned 16
 // bit integer in little endian format.
+// 启用一个goroutine来处理websocket请求
+// 请求里的每个port Forward，启动一个goroutine
+// 查询容器是否存在
+// 容器不在运行状态，直接返回错误
+// 从streamPair.dataStream中读取数据作为stdin，发送stdout数据到streamPair.dataStream
+// 执行nsenter -t {container pid} -n socat - TCP4:localhost:{port}
+// 如果发生错误，则发送错误到streamPair.errorStream
 func handleWebSocketStreams(req *http.Request, w http.ResponseWriter, portForwarder PortForwarder, podName string, uid types.UID, opts *V4Options, supportedPortForwardProtocols []string, idleTimeout, streamCreationTimeout time.Duration) error {
 	channels := make([]wsstream.ChannelType, 0, len(opts.Ports)*2)
 	for i := 0; i < len(opts.Ports); i++ {
+		// 一个端口包含了data wsstream.ReadWriteChannel和error wsstream.WriteChannel
 		channels = append(channels, wsstream.ReadWriteChannel, wsstream.WriteChannel)
 	}
 	conn := wsstream.NewConn(map[string]wsstream.ChannelProtocolConfig{
@@ -112,7 +122,10 @@ func handleWebSocketStreams(req *http.Request, w http.ResponseWriter, portForwar
 			Channels: channels,
 		},
 	})
+	// 设置conn.timeout为idleTimeout
 	conn.SetIdleTimeout(idleTimeout)
+	// 启用一个goroutine来处理websocket请求
+	// 返回所有channel类型对应的websocketChannel
 	_, streams, err := conn.Open(httplog.Unlogged(req, w), req)
 	if err != nil {
 		err = fmt.Errorf("unable to upgrade websocket connection: %v", err)
@@ -123,7 +136,9 @@ func handleWebSocketStreams(req *http.Request, w http.ResponseWriter, portForwar
 	for i := range streamPairs {
 		streamPair := websocketStreamPair{
 			port:        opts.Ports[i],
+			// streams[0]、streams[2]、streams[i*2]...
 			dataStream:  streams[i*2+dataChannel],
+			// streams[1]、stream[3]、streams[i*2+1]...
 			errorStream: streams[i*2+errorChannel],
 		}
 		streamPairs[i] = &streamPair
@@ -131,7 +146,9 @@ func handleWebSocketStreams(req *http.Request, w http.ResponseWriter, portForwar
 		portBytes := make([]byte, 2)
 		// port is always positive so conversion is allowable
 		binary.LittleEndian.PutUint16(portBytes, uint16(streamPair.port))
+		// 端口号写入数据流
 		streamPair.dataStream.Write(portBytes)
+		// 端口号写入错误流
 		streamPair.errorStream.Write(portBytes)
 	}
 	h := &websocketStreamHandler{
@@ -139,8 +156,15 @@ func handleWebSocketStreams(req *http.Request, w http.ResponseWriter, portForwar
 		streamPairs: streamPairs,
 		pod:         podName,
 		uid:         uid,
+		// portForwarder实现在pkg\kubelet\server\streaming\server.go里的criAdapter
 		forwarder:   portForwarder,
 	}
+	// 每个port Forward，启动一个goroutine
+	// 查询容器是否存在
+	// 容器不在运行状态，直接返回错误
+	// 从streamPair.dataStream中读取数据作为stdin，发送stdout数据到streamPair.dataStream
+	// 执行nsenter -t {container pid} -n socat - TCP4:localhost:{port}
+	// 如果发生错误，则发送错误到streamPair.errorStream
 	h.run()
 
 	return nil
@@ -166,12 +190,24 @@ type websocketStreamHandler struct {
 
 // run invokes the websocketStreamHandler's forwarder.PortForward
 // function for the given stream pair.
+// 每个port Forward，启动一个goroutine
+// 查询容器是否存在
+// 容器不在运行状态，直接返回错误
+// 从p.dataStream中读取数据作为stdin，发送stdout数据到p.dataStream
+// 执行nsenter -t {container pid} -n socat - TCP4:localhost:{port}
+// 如果发生错误，则发送错误到streamPair.errorStream
 func (h *websocketStreamHandler) run() {
 	wg := sync.WaitGroup{}
 	wg.Add(len(h.streamPairs))
 
 	for _, pair := range h.streamPairs {
 		p := pair
+		// 启动一个goroutine
+		// 查询容器是否存在
+		// 容器不在运行状态，直接返回错误
+		// 从p.dataStream中读取数据作为stdin，发送stdout数据到p.dataStream
+		// 执行nsenter -t {container pid} -n socat - TCP4:localhost:{port}
+		// 如果发生错误，则发送错误到p.errorStream
 		go func() {
 			defer wg.Done()
 			h.portForward(p)
@@ -181,14 +217,25 @@ func (h *websocketStreamHandler) run() {
 	wg.Wait()
 }
 
+// 查询容器是否存在
+// 容器不在运行状态，直接返回错误
+// 从p.dataStream中读取数据作为stdin，发送stdout数据到p.dataStream
+// 执行nsenter -t {container pid} -n socat - TCP4:localhost:{port}
+// 如果发生错误，则发送错误到p.errorStream
 func (h *websocketStreamHandler) portForward(p *websocketStreamPair) {
 	defer p.dataStream.Close()
 	defer p.errorStream.Close()
 
 	klog.V(5).Infof("(conn=%p) invoking forwarder.PortForward for port %d", h.conn, p.port)
+	// portForwarder实现在pkg\kubelet\server\streaming\server.go里的criAdapter
+	// 查询容器是否存在
+	// 容器不在运行状态，直接返回错误
+	// 从p.dataStream中读取数据作为stdin，发送stdout数据到p.dataStream
+	// 执行nsenter -t {container pid} -n socat - TCP4:localhost:{port}
 	err := h.forwarder.PortForward(h.pod, h.uid, p.port, p.dataStream)
 	klog.V(5).Infof("(conn=%p) done invoking forwarder.PortForward for port %d", h.conn, p.port)
 
+	// 如果发生错误，则发送错误到p.errorStream
 	if err != nil {
 		msg := fmt.Errorf("error forwarding port %d to pod %s, uid %v: %v", p.port, h.pod, h.uid, err)
 		runtime.HandleError(msg)

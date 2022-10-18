@@ -65,6 +65,7 @@ func NewServerConnection(conn net.Conn, newStreamHandler httpstream.NewStreamHan
 // client.
 func newConnection(conn *spdystream.Connection, newStreamHandler httpstream.NewStreamHandler) httpstream.Connection {
 	c := &connection{conn: conn, newStreamHandler: newStreamHandler}
+	// 启动一个goroutine来服务stream frames 
 	go conn.Serve(c.newSpdyStream)
 	return c
 }
@@ -107,6 +108,7 @@ func (c *connection) CreateStream(headers http.Header) (httpstream.Stream, error
 
 // registerStream adds the stream s to the connection's list of streams that
 // it owns.
+// 添加stream到c.streams
 func (c *connection) registerStream(s httpstream.Stream) {
 	c.streamLock.Lock()
 	c.streams = append(c.streams, s)
@@ -133,13 +135,16 @@ func (c *connection) newSpdyStream(stream *spdystream.Stream) {
 		return
 	}
 
+	// 添加stream到c.streams
 	c.registerStream(stream)
+	// 发送带有空header的stream响应
 	stream.SendReply(http.Header{}, rejectStream)
 	close(replySent)
 }
 
 // SetIdleTimeout sets the amount of time the connection may remain idle before
 // it is automatically closed.
+// 给底层的spdystream.Connection设置超时时间
 func (c *connection) SetIdleTimeout(timeout time.Duration) {
 	c.conn.SetIdleTimeout(timeout)
 }

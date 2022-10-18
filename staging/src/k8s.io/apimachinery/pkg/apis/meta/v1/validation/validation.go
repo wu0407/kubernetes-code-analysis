@@ -151,6 +151,7 @@ var allowedDryRunValues = sets.NewString(metav1.DryRunAll)
 // ValidateDryRun validates that a dryRun query param only contains allowed values.
 func ValidateDryRun(fldPath *field.Path, dryRun []string) field.ErrorList {
 	allErrs := field.ErrorList{}
+	// 如果dryRun不为"All"
 	if !allowedDryRunValues.HasAll(dryRun...) {
 		allErrs = append(allErrs, field.NotSupported(fldPath, dryRun, allowedDryRunValues.List()))
 	}

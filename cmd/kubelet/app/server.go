@@ -443,7 +443,11 @@ func checkPermissions() error {
 	return nil
 }
 
+// 将kc转成外部版本（kubeletconfigv1beta1.KubeletConfiguration），并设置cz.val为这个外部版本的值
 func setConfigz(cz *configz.Config, kc *kubeletconfiginternal.KubeletConfiguration) error {
+	// 将（pkg/kubelet/apis/config）schema.GroupVersion{Group: "kubelet.config.k8s.io", Version: "__internal"}下的KubeletConfiguration{}和SerializedNodeConfigSource{}添加到scheme中
+	// 将（staging\src\k8s.io\kubelet\config\v1beta1）schema.GroupVersion{Group: "kubelet.config.k8s.io", Version: "v1beta1"}下的KubeletConfiguration{}和SerializedNodeConfigSource{}添加到scheme中
+	// 返回scheme和codec和错误
 	scheme, _, err := kubeletscheme.NewSchemeAndCodecs()
 	if err != nil {
 		return err
@@ -452,16 +456,20 @@ func setConfigz(cz *configz.Config, kc *kubeletconfiginternal.KubeletConfigurati
 	if err := scheme.Convert(kc, &versioned, nil); err != nil {
 		return err
 	}
+	// 设置cz.val为versioned
 	cz.Set(versioned)
 	return nil
 }
 
+// 新建一个key为"kubeletconfig"的Config（其中的val字段为kubeletconfigv1beta1.KubeletConfiguration）, 写入到pkg\util\configz\configz.go里的configs
 func initConfigz(kc *kubeletconfiginternal.KubeletConfiguration) error {
+	// 新建一个key为"kubeletconfig"的Config, 写入到pkg\util\configz\configz.go里的configs，返回*Config
 	cz, err := configz.New("kubeletconfig")
 	if err != nil {
 		klog.Errorf("unable to register configz: %s", err)
 		return err
 	}
+	// 将kc转成外部版本（kubeletconfigv1beta1.KubeletConfiguration），并设置cz.val为这个外部版本的值
 	if err := setConfigz(cz, kc); err != nil {
 		klog.Errorf("unable to register config: %s", err)
 		return err
@@ -519,12 +527,17 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 	}
 
 	// Register current configuration with /configz endpoint
+	// 新建一个key为"kubeletconfig"的Config（其中的val字段为kubeletconfigv1beta1.KubeletConfiguration）, 写入到pkg\util\configz\configz.go里的configs
 	err = initConfigz(&s.KubeletConfiguration)
 	if err != nil {
 		klog.Errorf("unable to register KubeletConfiguration with configz, error: %v", err)
 	}
 
+	// 配置了showHiddenMetricsForVersion或--show-hidden-metrics-for-version命令行
 	if len(s.ShowHiddenMetricsForVersion) > 0 {
+		// 设置staging\src\k8s.io\component-base\metrics\registry.go里的showHidden为true
+		// 启用这个registry里所有隐藏的Collector（metrics）
+		// 启用这个registry里所有隐藏的StableCollectors（metrics）
 		metrics.SetShowHidden()
 	}
 
@@ -617,11 +630,13 @@ func run(s *options.KubeletServer, kubeDeps *kubelet.Dependencies, featureGate f
 	}
 
 	if kubeDeps.Auth == nil {
+		// auth包含认证和授权
 		auth, runAuthenticatorCAReload, err := BuildAuth(nodeName, kubeDeps.KubeClient, s.KubeletConfiguration)
 		if err != nil {
 			return err
 		}
 		kubeDeps.Auth = auth
+		// 每一分钟重新读取一下ca文件
 		runAuthenticatorCAReload(stopCh)
 	}
 

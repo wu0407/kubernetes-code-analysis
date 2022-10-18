@@ -160,12 +160,14 @@ func cadvisorInfoToContainerStats(name string, info *cadvisorapiv2.ContainerInfo
 
 // cadvisorInfoToContainerCPUAndMemoryStats returns the statsapi.ContainerStats converted
 // from the container and filesystem info.
+// 从info中解析出container的StartTime（创建时间）、最后的cpu和memory的使用情况
 func cadvisorInfoToContainerCPUAndMemoryStats(name string, info *cadvisorapiv2.ContainerInfo) *statsapi.ContainerStats {
 	result := &statsapi.ContainerStats{
 		StartTime: metav1.NewTime(info.Spec.CreationTime),
 		Name:      name,
 	}
 
+	// 从info.Stats里的最后一个ContainerStats，获取最后的cpu和memory的使用情况
 	cpu, memory := cadvisorInfoToCPUandMemoryStats(info)
 	result.CPU = cpu
 	result.Memory = memory
@@ -292,7 +294,8 @@ func isMemoryUnlimited(v uint64) bool {
 
 // getCgroupInfo returns the information of the container with the specified
 // containerName from cadvisor.
-// 等待所有的container的housekeeping（更新监控数据）完成后，从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态）
+// updateStats为true，则等待所有的container的housekeeping（更新监控数据）完成后。否则从memoryCache直接获取
+// 从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态）
 func getCgroupInfo(cadvisor cadvisor.Interface, containerName string, updateStats bool) (*cadvisorapiv2.ContainerInfo, error) {
 	var maxAge *time.Duration
 	if updateStats {
@@ -320,7 +323,8 @@ func getCgroupInfo(cadvisor cadvisor.Interface, containerName string, updateStat
 // specified containerName from cadvisor.
 // 从cadvisor中获得containerName的最近一个ContainerStats（容器的监控状态cpu、内存、网络、blkio、pid等）
 func getCgroupStats(cadvisor cadvisor.Interface, containerName string, updateStats bool) (*cadvisorapiv2.ContainerStats, error) {
-	// 等待所有的container的housekeeping（更新监控数据）完成后，从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态cpu、内存、网络、blkio、pid等）
+	// updateStats为true，则等待所有的container的housekeeping（更新监控数据）完成后。否则从memoryCache直接获取，
+	// 从cadvisor的memoryCache获得2个最近容器状态，返回容器的最近两个容器的v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态cpu、内存、网络、blkio、pid等）
 	info, err := getCgroupInfo(cadvisor, containerName, updateStats)
 	if err != nil {
 		return nil, err

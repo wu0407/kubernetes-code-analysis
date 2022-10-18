@@ -151,24 +151,34 @@ func NewSecure(clientCA string, proxyClientNames []string, nameHeaders []string,
 func NewDynamicVerifyOptionsSecure(verifyOptionFn x509request.VerifyOptionFunc, proxyClientNames, nameHeaders, groupHeaders, extraHeaderPrefixes StringSliceProvider) authenticator.Request {
 	headerAuthenticator := NewDynamic(nameHeaders, groupHeaders, extraHeaderPrefixes)
 
+	// 生成staging\src\k8s.io\apiserver\pkg\authentication\request\x509\x509.go里的Verifier，包装headerAuthenticator
 	return x509request.NewDynamicCAVerifier(verifyOptionFn, headerAuthenticator, proxyClientNames)
 }
 
+// 从request的header中解析出nameHeaders、groupHeader、extraHeaderPrefixes的header的值
+// 从req的header中移除a.nameHeaders、a.groupHeaders，并移除带有a.extraHeaderPrefixes前缀的header
 func (a *requestHeaderAuthRequestHandler) AuthenticateRequest(req *http.Request) (*authenticator.Response, bool, error) {
+	// 返回所有nameHeaders里第一个在http header中存在的header对应的值
 	name := headerValue(req.Header, a.nameHeaders.Value())
+	// 所有a.nameHeaders里，没有一个在请求的header中
 	if len(name) == 0 {
 		return nil, false, nil
 	}
+	// 返回groupHeaders在http header中存在的header所有对应的值的集合
 	groups := allHeaderValues(req.Header, a.groupHeaders.Value())
+	// 获得所有前缀匹配extraHeaderPrefixes的header，在http header中的value
 	extra := newExtra(req.Header, a.extraHeaderPrefixes.Value())
 
 	// clear headers used for authentication
+	// 从req的header中移除a.nameHeaders
 	for _, headerName := range a.nameHeaders.Value() {
 		req.Header.Del(headerName)
 	}
+	// 从req的header中移除a.groupHeaders
 	for _, headerName := range a.groupHeaders.Value() {
 		req.Header.Del(headerName)
 	}
+	// 从req的header中移除带有a.extraHeaderPrefixes前缀的header
 	for k := range extra {
 		for _, prefix := range a.extraHeaderPrefixes.Value() {
 			req.Header.Del(prefix + k)
@@ -184,6 +194,7 @@ func (a *requestHeaderAuthRequestHandler) AuthenticateRequest(req *http.Request)
 	}, true, nil
 }
 
+// 返回headerNames里第一个在http header中存在的header对应的值
 func headerValue(h http.Header, headerNames []string) string {
 	for _, headerName := range headerNames {
 		headerValue := h.Get(headerName)
@@ -194,6 +205,7 @@ func headerValue(h http.Header, headerNames []string) string {
 	return ""
 }
 
+// 返回headerNames在http header中存在的header所有对应的值的集合
 func allHeaderValues(h http.Header, headerNames []string) []string {
 	ret := []string{}
 	for _, headerName := range headerNames {
@@ -220,6 +232,7 @@ func unescapeExtraKey(encodedKey string) string {
 	return key
 }
 
+// 获得所有前缀匹配headerPrefixes的header，在http header中的value
 func newExtra(h http.Header, headerPrefixes []string) map[string][]string {
 	ret := map[string][]string{}
 
@@ -229,7 +242,9 @@ func newExtra(h http.Header, headerPrefixes []string) map[string][]string {
 			if !strings.HasPrefix(strings.ToLower(headerName), strings.ToLower(prefix)) {
 				continue
 			}
+			// 所有http header里前缀匹配headerName
 
+			// 获得去除前缀的header的值
 			extraKey := unescapeExtraKey(strings.ToLower(headerName[len(prefix):]))
 			ret[extraKey] = append(ret[extraKey], vv...)
 		}

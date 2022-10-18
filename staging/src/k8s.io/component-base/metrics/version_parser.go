@@ -33,6 +33,7 @@ var (
 	versionRe = regexp.MustCompile(versionRegexpString)
 )
 
+// string类型的版本解析成semver.Version
 func parseSemver(s string) *semver.Version {
 	if s != "" {
 		sv := semver.MustParse(s)

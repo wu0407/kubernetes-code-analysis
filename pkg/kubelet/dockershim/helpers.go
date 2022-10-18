@@ -456,14 +456,17 @@ func (w sharedWriteLimiter) Write(p []byte) (int, error) {
 		return 0, errMaximumWrite
 	}
 	var truncated bool
+	// p内容长度大于limit，则读取前limit大小的内容
 	if limit < int64(len(p)) {
 		p = p[0:limit]
 		truncated = true
 	}
 	n, err := w.delegate.Write(p)
+	// 读到了数据，则减少w.limit
 	if n > 0 {
 		atomic.AddInt64(w.limit, -1*int64(n))
 	}
+	// 内容被截断，则返回错误
 	if err == nil && truncated {
 		err = errMaximumWrite
 	}

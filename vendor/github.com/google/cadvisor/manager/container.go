@@ -161,7 +161,7 @@ func (c *containerData) notifyOnDemand() {
 	}
 }
 
-// 如果超过5秒没有，则更新c.info.Spec。如果shouldUpdateSubcontainers为true，还需要更新c.info.Subcontainers
+// 如果c.infoLastUpdatedTime没有超过5秒，则更新c.info.Spec。如果shouldUpdateSubcontainers为true，还需要更新c.info.Subcontainers
 // 返回c.info
 func (c *containerData) GetInfo(shouldUpdateSubcontainers bool) (*containerInfo, error) {
 	// Get spec and subcontainers.
@@ -605,6 +605,7 @@ func (c *containerData) updateSpec() error {
 // Calculate new smoothed load average using the new sample of runnable threads.
 // The decay used ensures that the load will stabilize on a new constant value within
 // 10 seconds.
+// newLoad是多少个线程运行
 func (c *containerData) updateLoad(newLoad uint64) {
 	if c.loadAvg < 0 {
 		c.loadAvg = float64(newLoad) // initialize to the first seen sample for faster stabilization.

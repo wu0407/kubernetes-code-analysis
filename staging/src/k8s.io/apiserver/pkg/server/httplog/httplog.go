@@ -71,6 +71,7 @@ func (passthroughLogger) Addf(format string, data ...interface{}) {
 }
 
 // DefaultStacktracePred is the default implementation of StacktracePred.
+// http code小于200或大于等于500，且不等于101
 func DefaultStacktracePred(status int) bool {
 	return (status < http.StatusOK || status >= http.StatusInternalServerError) && status != http.StatusSwitchingProtocols
 }
@@ -91,6 +92,7 @@ func WithLogging(handler http.Handler, pred StacktracePred) http.Handler {
 }
 
 // respLoggerFromContext returns the respLogger or nil.
+// 返回req的context里存在key为respLoggerContextKey，值为respLogger
 func respLoggerFromContext(req *http.Request) *respLogger {
 	ctx := req.Context()
 	val := ctx.Value(respLoggerContextKey)
@@ -121,7 +123,9 @@ func LogOf(req *http.Request, w http.ResponseWriter) logger {
 }
 
 // Unlogged returns the original ResponseWriter, or w if it is not our inserted logger.
+// req中context里如果保存了respLogger，则返回respLogger.w，否则返回w
 func Unlogged(req *http.Request, w http.ResponseWriter) http.ResponseWriter {
+	// 返回req的context里存在key为respLoggerContextKey，值为respLogger
 	if rl := respLoggerFromContext(req); rl != nil {
 		return rl.w
 	}
@@ -216,9 +220,11 @@ func (rl *respLogger) CloseNotify() <-chan bool {
 	return rl.w.(http.CloseNotifier).CloseNotify()
 }
 
+// 根据status数值，决定是否记录stack strace（设置rl.statusStack和rl.captureErrorOutput）
 func (rl *respLogger) recordStatus(status int) {
 	rl.status = status
 	rl.statusRecorded = true
+	// 默认为DefaultStacktracePred，http code小于200或大于等于500，且不等于101
 	if rl.logStacktracePred(status) {
 		// Only log stacks for errors
 		stack := make([]byte, 50*1024)

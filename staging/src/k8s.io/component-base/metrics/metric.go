@@ -90,19 +90,28 @@ func (r *lazyMetric) lazyInit(self kubeCollector, fqName string) {
 // determineDeprecationStatus figures out whether the lazy metric should be deprecated or not.
 // This method takes a Version argument which should be the version of the binary in which
 // this code is currently being executed.
+// r.self里的配置的DeprecatedVersion为nil，则不做任何操作
+// r.self里的配置的DeprecatedVersion小于等于version，则设置r.isDeprecated为true
+// 如果kubernetes某个组件没有设置showHidden，且r.self里的配置的DeprecatedVersion小于version，则r.isHidden为true
 func (r *lazyMetric) determineDeprecationStatus(version semver.Version) {
+	// 解析r.self里的配置的DeprecatedVersion，比如Histogram为h.HistogramOpts.DeprecatedVersion
 	selfVersion := r.self.DeprecatedVersion()
 	if selfVersion == nil {
 		return
 	}
 	r.markDeprecationOnce.Do(func() {
+		// selfVersion（metrics里的DeprecatedVersion）小于等于version，则设置r.isDeprecated为true
 		if selfVersion.LTE(version) {
 			r.isDeprecated = true
 		}
+		// kubelet里配置了showHiddenMetricsForVersion或--show-hidden-metrics-for-version命令行
+		// 会设置staging\src\k8s.io\component-base\metrics\registry.go里的showHidden值为true
+		// 读取staging\src\k8s.io\component-base\metrics\registry.go里的showHidden值
 		if ShouldShowHidden() {
 			klog.Warningf("Hidden metrics (%s) have been manually overridden, showing this very deprecated metric.", r.fqName)
 			return
 		}
+		// version（小版本版本号第三位置0）大于selfVersion，则返回true
 		if shouldHide(&version, selfVersion) {
 			// TODO(RainbowMango): Remove this log temporarily. https://github.com/kubernetes/kubernetes/issues/85369
 			// klog.Warningf("This metric has been deprecated for more than one release, hiding.")
@@ -124,11 +133,27 @@ func (r *lazyMetric) IsDeprecated() bool {
 // the metric is deprecated or hidden, no-opting if the metric should be considered
 // hidden. Furthermore, this function no-opts and returns true if metric is already
 // created.
+// 根据metric的deprecate状态，判断是否要进行初始化，返回是否进行了初始化
+// 比如r.self是Histogram
+// r.self里的配置的DeprecatedVersion小于等于version，则设置r.isDeprecated为true
+// 如果kubernetes某个组件没有设置showHidden，且r.self里的配置的DeprecatedVersion小于version，则r.isHidden为true，然后直接返回
+// 如果r.isDeprecated为true，则进行deprecated metric初始化
+//     修改r.self.HistogramOpts.Help为"[{r.self.HistogramOpts.StabilityLevel}] (Deprecated since {r.self.HistogramOpts.DeprecatedVersion}) {r.self.HistogramOpts.Help}"
+//     设置r.self.ObserverMetric为生成的prometheus histogram
+//     设置r.self.selfCollector.metric为生成的prometheus histogram
+// 如果r.isDeprecated为false
+//     修改r.self.HistogramOpts.Help为"[{r.self.StabilityLevel}] {r.self.HistogramOpts.Help}"
+//     设置r.self.ObserverMetric为生成prometheus histogram
+//     设置r.self.selfCollector.metric为生成的prometheus histogram
 func (r *lazyMetric) Create(version *semver.Version) bool {
 	if version != nil {
+		// r.self里的配置的DeprecatedVersion为nil，则不做任何操作
+		// r.self里的配置的DeprecatedVersion小于等于version，则设置r.isDeprecated为true
+		// 如果kubernetes某个组件没有设置showHidden，且r.self里的配置的DeprecatedVersion小于version，则r.isHidden为true
 		r.determineDeprecationStatus(*version)
 	}
 	// let's not create if this metric is slated to be hidden
+	// 如果r.isHidden为true，则直接返回
 	if r.IsHidden() {
 		return false
 	}
@@ -136,17 +161,30 @@ func (r *lazyMetric) Create(version *semver.Version) bool {
 		r.createLock.Lock()
 		defer r.createLock.Unlock()
 		r.isCreated = true
+		// 如果r.isDeprecated为true，则进行deprecated metric初始化
 		if r.IsDeprecated() {
+			// 比如r.self是Histogram
+			// 修改r.self.HistogramOpts.Help为"[{r.self.HistogramOpts.StabilityLevel}] (Deprecated since {r.self.HistogramOpts.DeprecatedVersion}) {r.self.HistogramOpts.Help}"
+			// 设置r.self.ObserverMetric为生成的prometheus histogram
+			// 设置r.self.selfCollector.metric为生成的prometheus histogram
 			r.self.initializeDeprecatedMetric()
 		} else {
+			// 比如r.self是Histogram
+			// 修改r.self.HistogramOpts.Help为"[{r.self.StabilityLevel}] {r.self.HistogramOpts.Help}"
+			// 设置r.self.ObserverMetric为生成prometheus histogram
+			// 设置r.self.selfCollector.metric为生成的prometheus histogram
 			r.self.initializeMetric()
 		}
 	})
+	// 返回r.isCreated的值
 	return r.IsCreated()
 }
 
 // ClearState will clear all the states marked by Create.
 // It intends to be used for re-register a hidden metric.
+// 重置所有的状态标记
+// r.isDeprecated、r.isHidden、r.isCreated为false
+// r.markDeprecationOnce、r.createOnce重置成零值
 func (r *lazyMetric) ClearState() {
 	r.createLock.Lock()
 	defer r.createLock.Unlock()
@@ -173,6 +211,9 @@ type selfCollector struct {
 	metric prometheus.Metric
 }
 
+// staging\src\k8s.io\component-base\metrics\histogram.go里的Histogram.initializeMetric()
+// 调用initSelfCollection，设置Histogram.selfCollector.metric为生成的prometheus histogram（实现prometheus.Metric）
+// 设置c.metric为m
 func (c *selfCollector) initSelfCollection(m prometheus.Metric) {
 	c.metric = m
 }

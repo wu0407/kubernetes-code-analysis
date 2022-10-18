@@ -89,6 +89,7 @@ func Delete(name string) {
 }
 
 // Set sets the ComponentConfig for this Config.
+// 设置v.val为val
 func (v *Config) Set(val interface{}) {
 	configsGuard.Lock()
 	defer configsGuard.Unlock()
@@ -106,6 +107,7 @@ func handle(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// 将json格式化后的configs，响应http请求
 func write(w http.ResponseWriter) error {
 	var b []byte
 	var err error

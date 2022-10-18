@@ -241,23 +241,30 @@ func (m *podContainerManagerImpl) ReduceCPULimits(podCgroup CgroupName) error {
 }
 
 // IsPodCgroup returns true if the literal cgroupfs name corresponds to a pod
+// 验证cgroupfs是否为pod的cgroup路径
 func (m *podContainerManagerImpl) IsPodCgroup(cgroupfs string) (bool, types.UID) {
 	// convert the literal cgroupfs form to the driver specific value
+	// 将name转成对应m.adapter.cgroupManagerType（systemd或cgroupfs）的CgroupName
 	cgroupName := m.cgroupManager.CgroupName(cgroupfs)
 	qosContainersList := [3]CgroupName{m.qosContainersInfo.BestEffort, m.qosContainersInfo.Burstable, m.qosContainersInfo.Guaranteed}
 	basePath := ""
 	for _, qosContainerName := range qosContainersList {
 		// a pod cgroup is a direct child of a qos node, so check if its a match
+		// 这个cgroup路径在qos cgroup路径下面，则basePath为最后一个
 		if len(cgroupName) == len(qosContainerName)+1 {
 			basePath = cgroupName[len(qosContainerName)]
 		}
 	}
+	// 如果basePath为""，说明不在qos cgroup路径下面
 	if basePath == "" {
 		return false, types.UID("")
 	}
+	// basePath前缀不为"pod"，则说明不是pod的cgroup路径。
+	// pod下面container的cgroup路径，类似"podeb424a44-7004-429d-9925-fbfbc69a7749"
 	if !strings.HasPrefix(basePath, podCgroupNamePrefix) {
 		return false, types.UID("")
 	}
+	// 对basePath根据"pod"进行分割，如果切割后不为2部分，则说明不是pod的cgroup
 	parts := strings.Split(basePath, podCgroupNamePrefix)
 	if len(parts) != 2 {
 		return false, types.UID("")

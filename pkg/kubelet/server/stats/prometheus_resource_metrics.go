@@ -55,6 +55,7 @@ func NewPrometheusResourceMetricCollector(provider SummaryProvider, config Resou
 	return &resourceMetricCollector{
 		provider: provider,
 		config:   config,
+		// 返回metrics.Desc
 		errors: metrics.NewDesc("scrape_error",
 			"1 if there was an error while getting container metrics, 0 otherwise",
 			nil,
@@ -75,6 +76,7 @@ type resourceMetricCollector struct {
 var _ metrics.StableCollector = &resourceMetricCollector{}
 
 // DescribeWithStability implements metrics.StableCollector
+// 发送rc.config.NodeMetrics和rc.config.ContainerMetrics的desc和rc.errors到ch
 func (rc *resourceMetricCollector) DescribeWithStability(ch chan<- *metrics.Desc) {
 	ch <- rc.errors
 
@@ -90,11 +92,15 @@ func (rc *resourceMetricCollector) DescribeWithStability(ch chan<- *metrics.Desc
 // Since new containers are frequently created and removed, using the Gauge would
 // leak metric collectors for containers or pods that no longer exist.  Instead, implement
 // custom collector in a way that only collects metrics for active containers.
+// 发送rc.config.NodeMetrics里的metrics和rc.config.ContainerMetrics且带了时间戳，到ch
 func (rc *resourceMetricCollector) CollectWithStability(ch chan<- metrics.Metric) {
 	var errorCount float64
 	defer func() {
+		// 如果metrics不是隐藏的，则返回prometheus.constMetric，否则返回nil
+		// 发送"scrape_error"到ch
 		ch <- metrics.NewLazyConstMetric(rc.errors, metrics.GaugeValue, errorCount)
 	}()
+	// 返回node的cpu和memory监控状态，nodeConfig（ContainerManager）里的定义的cgroup类别的cpu和memory监控状态和所有pod的cpu和memory监控状态和所有pod的container的cpu、内存监控状态
 	summary, err := rc.provider.GetCPUAndMemoryStats()
 	if err != nil {
 		errorCount = 1
@@ -102,13 +108,17 @@ func (rc *resourceMetricCollector) CollectWithStability(ch chan<- metrics.Metric
 		return
 	}
 
+	// 遍历每个NodeMetrics，执行ValueFn，获得node的cpu和memory数值
+	// 发送带有时间戳的metrics到ch
 	for _, metric := range rc.config.NodeMetrics {
 		if value, timestamp := metric.ValueFn(summary.Node); value != nil {
+			// 发送带有时间戳的metrics到ch
 			ch <- metrics.NewLazyMetricWithTimestamp(timestamp,
 				metrics.NewLazyConstMetric(metric.desc(), metrics.GaugeValue, *value))
 		}
 	}
 
+	// 遍历每个pod下的container，发送带有时间戳的metrics到ch
 	for _, pod := range summary.Pods {
 		for _, container := range pod.Containers {
 			for _, metric := range rc.config.ContainerMetrics {

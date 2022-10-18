@@ -150,12 +150,17 @@ type RoundTripperWrapper interface {
 
 type DialFunc func(ctx context.Context, net, addr string) (net.Conn, error)
 
+// transport为nil，则返回nil
+// transport为*http.Transport，则优先使用DialContext，否则使用transport.Dial
+// transport为RoundTripperWrapper，则使用包装的RoundTripper
+// 其他情况返回错误
 func DialerFor(transport http.RoundTripper) (DialFunc, error) {
 	if transport == nil {
 		return nil, nil
 	}
 
 	switch transport := transport.(type) {
+	// 如果是http.Transport，则优先使用DialContext，否则使用transport.Dial
 	case *http.Transport:
 		// transport.DialContext takes precedence over transport.Dial
 		if transport.DialContext != nil {
@@ -169,6 +174,7 @@ func DialerFor(transport http.RoundTripper) (DialFunc, error) {
 		}
 		// otherwise return nil
 		return nil, nil
+	// 如果是RoundTripperWrapper，则使用包装的RoundTripper
 	case RoundTripperWrapper:
 		return DialerFor(transport.WrappedRoundTripper())
 	default:
@@ -180,6 +186,11 @@ type TLSClientConfigHolder interface {
 	TLSClientConfig() *tls.Config
 }
 
+// transport为nil，则返回nil
+// transport为http.Transport，则返回它的TLSClientConfig字段
+// transport为TLSClientConfigHolder，则执行TLSClientConfig()获得tls.Config
+// transport为RoundTripperWrapper，先执行transport.WrappedRoundTripper()获得真的transport，再次执行TLSClientConfig获得真实的tls.Config
+// 其他情况返回错误
 func TLSClientConfig(transport http.RoundTripper) (*tls.Config, error) {
 	if transport == nil {
 		return nil, nil
@@ -288,12 +299,14 @@ func GetClientIP(req *http.Request) net.IP {
 
 // Prepares the X-Forwarded-For header for another forwarding hop by appending the previous sender's
 // IP address to the X-Forwarded-For chain.
+// http header中已经有"X-Forwarded-For"，则用逗号分隔之前的值，并添加现在客户端ip的值
 func AppendForwardedForHeader(req *http.Request) {
 	// Copied from net/http/httputil/reverseproxy.go:
 	if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
 		// If we aren't the first proxy retain prior
 		// X-Forwarded-For information as a comma+space
 		// separated list and fold multiple headers into one.
+		// http header中已经有"X-Forwarded-For"，则用逗号分隔之前的值，并添加现在客户端ip的值
 		if prior, ok := req.Header["X-Forwarded-For"]; ok {
 			clientIP = strings.Join(prior, ", ") + ", " + clientIP
 		}
@@ -364,6 +377,7 @@ type Dialer interface {
 // ConnectWithRedirects uses dialer to send req, following up to 10 redirects (relative to
 // originalLocation). It returns the opened net.Conn and the raw response bytes.
 // If requireSameHostRedirects is true, only redirects to the same host are permitted.
+// 进行最多10次重定向请求，返回net.Conn和原始响应byte
 func ConnectWithRedirects(originalMethod string, originalLocation *url.URL, header http.Header, originalBody io.Reader, dialer Dialer, requireSameHostRedirects bool) (net.Conn, []byte, error) {
 	const (
 		maxRedirects    = 9     // Fail on the 10th redirect
@@ -403,10 +417,13 @@ redirectLoop:
 		}
 
 		// Peek at the backend response.
+		// 清空buffer
 		rawResponse.Reset()
+		// 从intermediateConn读取消息（最多不能超过16384），写入到rawResponse
 		respReader := bufio.NewReader(io.TeeReader(
 			io.LimitReader(intermediateConn, maxResponseSize), // Don't read more than maxResponseSize bytes.
 			rawResponse)) // Save the raw response.
+		// 从respReader读取出*http.Response
 		resp, err := http.ReadResponse(respReader, nil)
 		if err != nil {
 			// Unable to read the backend response; let the client handle it.
@@ -415,9 +432,11 @@ redirectLoop:
 		}
 
 		switch resp.StatusCode {
+		// http code 302继续请求
 		case http.StatusFound:
 			// Redirect, continue.
 		default:
+			// 其他状态码，退出循环
 			// Don't redirect.
 			break redirectLoop
 		}
@@ -431,6 +450,7 @@ redirectLoop:
 		resp.Body.Close() // not used
 
 		// Prepare to follow the redirect.
+		// 获得响应的header里的"Location"值
 		redirectStr := resp.Header.Get("Location")
 		if redirectStr == "" {
 			return nil, nil, fmt.Errorf("%d response missing Location header", resp.StatusCode)
@@ -439,12 +459,14 @@ redirectLoop:
 		// if we request http://foo.com/a and get back "http://bar.com/b", the result should be
 		// http://bar.com/b. If we then make that request and get back a redirect to "/c", the result
 		// should be http://bar.com/c, not http://foo.com/c.
+		// 基于当前的url，计算重定向之后的url
 		location, err = location.Parse(redirectStr)
 		if err != nil {
 			return nil, nil, fmt.Errorf("malformed Location header: %v", err)
 		}
 
 		// Only follow redirects to the same host. Otherwise, propagate the redirect response back.
+		// 重定向需要是同一域名，且重定向返回不是同一域名，则返回错误
 		if requireSameHostRedirects && location.Hostname() != originalLocation.Hostname() {
 			return nil, nil, fmt.Errorf("hostname mismatch: expected %s, found %s", originalLocation.Hostname(), location.Hostname())
 		}

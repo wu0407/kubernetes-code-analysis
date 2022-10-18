@@ -71,6 +71,7 @@ func NewLogger(prefix string) *log.Logger {
 }
 
 // GlogSetter is a setter to set glog level.
+// 设置klog日志级别
 func GlogSetter(val string) (string, error) {
 	var level klog.Level
 	if err := level.Set(val); err != nil {

@@ -42,6 +42,7 @@ type Executor interface {
 // creating/receiving the required streams, it delegates the actual execution
 // to the executor.
 func ServeExec(w http.ResponseWriter, req *http.Request, executor Executor, podName string, uid types.UID, container string, cmd []string, streamOpts *Options, idleTimeout, streamCreationTimeout time.Duration, supportedProtocols []string) {
+	// 创建stream server，返回包含各个fd stream的context
 	ctx, ok := createStreams(req, w, streamOpts, supportedProtocols, idleTimeout, streamCreationTimeout)
 	if !ok {
 		// error is handled by createStreams
@@ -49,9 +50,14 @@ func ServeExec(w http.ResponseWriter, req *http.Request, executor Executor, podN
 	}
 	defer ctx.conn.Close()
 
+	// executor实现在pkg\kubelet\server\streaming\server.go里的criAdapter
+	// 执行InspectContainer，检测容器是否在运行
+	// 执行exec命令，返回后，每2s检测exec是否退出，只等待8s检测exec是否退出。启动一个goroutine，在exec启动之后从resize chan中读取消息，执行ResizeExecTTY。没有超时时间
 	err := executor.ExecInContainer(podName, uid, container, cmd, ctx.stdinStream, ctx.stdoutStream, ctx.stderrStream, ctx.tty, ctx.resizeChan, 0)
 	if err != nil {
+		// 如果错误是进程退出
 		if exitErr, ok := err.(utilexec.ExitError); ok && exitErr.Exited() {
+			// 进程退出码
 			rc := exitErr.ExitStatus()
 			ctx.writeStatus(&apierrors.StatusError{ErrStatus: metav1.Status{
 				Status: metav1.StatusFailure,

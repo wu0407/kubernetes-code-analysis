@@ -130,6 +130,7 @@ func (cc *cadvisorClient) Start() error {
 	return cc.Manager.Start()
 }
 
+// 根据containerName和query，返回info.ContainerInfo（在query.start到query.end时间范围内，最多query.maxStats个ContainerStats）
 func (cc *cadvisorClient) ContainerInfo(name string, req *cadvisorapi.ContainerInfoRequest) (*cadvisorapi.ContainerInfo, error) {
 	return cc.GetContainerInfo(name, req)
 }
@@ -144,7 +145,9 @@ func (cc *cadvisorClient) VersionInfo() (*cadvisorapi.VersionInfo, error) {
 	return cc.GetVersionInfo()
 }
 
+// 返回containerName和所有子container的info.ContainerInfo（在req.start到req.end时间范围内，最多req.maxStats个ContainerStats）集合
 func (cc *cadvisorClient) SubcontainerInfo(name string, req *cadvisorapi.ContainerInfoRequest) (map[string]*cadvisorapi.ContainerInfo, error) {
+	// 返回containerName和所有子container的info.ContainerInfo（在req.start到req.end时间范围内，最多req.maxStats个ContainerStats）集合
 	infos, err := cc.SubcontainersInfo(name, req)
 	if err != nil && len(infos) == 0 {
 		return nil, err

@@ -41,6 +41,8 @@ const (
 
 // createChannels returns the standard channel types for a shell connection (STDIN 0, STDOUT 1, STDERR 2)
 // along with the approximate duplex value. It also creates the error (3) and resize (4) channels.
+// 根据Options，创建出5个wsstream.ChannelType
+// 分别代表STDIN 0, STDOUT 1, STDERR 2，error (3) and resize (4)
 func createChannels(opts *Options) []wsstream.ChannelType {
 	// open the requested channels, and always open the error channel
 	channels := make([]wsstream.ChannelType, 5)
@@ -70,31 +72,44 @@ func writeChannel(real bool) wsstream.ChannelType {
 
 // createWebSocketStreams returns a context containing the websocket connection and
 // streams needed to perform an exec or an attach.
+// 创建websocket connection和streams，用来执行exec和attach
 func createWebSocketStreams(req *http.Request, w http.ResponseWriter, opts *Options, idleTimeout time.Duration) (*context, bool) {
+	// 根据Options，创建出5个wsstream.ChannelType
+	// 分别代表STDIN 0, STDOUT 1, STDERR 2，error (3) and resize (4)
 	channels := createChannels(opts)
 	conn := wsstream.NewConn(map[string]wsstream.ChannelProtocolConfig{
 		"": {
 			Binary:   true,
 			Channels: channels,
 		},
+		// "channel.k8s.io"
 		preV4BinaryWebsocketProtocol: {
 			Binary:   true,
 			Channels: channels,
 		},
+		// "base64.channel.k8s.io"
 		preV4Base64WebsocketProtocol: {
 			Binary:   false,
 			Channels: channels,
 		},
+		// "v4.channel.k8s.io"
 		v4BinaryWebsocketProtocol: {
 			Binary:   true,
 			Channels: channels,
 		},
+		// "v4.base64.channel.k8s.io"
 		v4Base64WebsocketProtocol: {
 			Binary:   false,
 			Channels: channels,
 		},
 	})
+	// 设置conn.timeout为idleTimeout
 	conn.SetIdleTimeout(idleTimeout)
+	// httplog.Unlogged
+	// req中context里如果保存了respLogger，则返回respLogger.w，否则返回w
+	//
+	// 启用一个goroutine来处理websocket请求
+	// 返回所有fd对应的websocketChannel
 	negotiatedProtocol, streams, err := conn.Open(httplog.Unlogged(req, w), req)
 	if err != nil {
 		runtime.HandleError(fmt.Errorf("unable to upgrade websocket connection: %v", err))
@@ -103,6 +118,7 @@ func createWebSocketStreams(req *http.Request, w http.ResponseWriter, opts *Opti
 
 	// Send an empty message to the lowest writable channel to notify the client the connection is established
 	// TODO: make generic to SPDY and WebSockets and do it outside of this method?
+	// 发送空消息给客户端，通知链接已经建立
 	switch {
 	case opts.Stdout:
 		streams[stdoutChannel].Write([]byte{})
@@ -122,6 +138,7 @@ func createWebSocketStreams(req *http.Request, w http.ResponseWriter, opts *Opti
 	}
 
 	switch negotiatedProtocol {
+	// 协议类型是"v4.channel.k8s.io"或"v4.base64.channel.k8s.io"
 	case v4BinaryWebsocketProtocol, v4Base64WebsocketProtocol:
 		ctx.writeStatus = v4WriteStatusFunc(streams[errorChannel])
 	default:

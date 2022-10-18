@@ -79,6 +79,7 @@ func NewDesc(fqName string, help string, variableLabels []string, constLabels La
 		stabilityLevel:    stabilityLevel,
 		deprecatedVersion: deprecatedVersion,
 	}
+	// 如果d.stabilityLevel为空，则设置d.stabilityLevel为"ALPHA"
 	d.stabilityLevel.setDefaults()
 
 	return d
@@ -103,23 +104,30 @@ func (d *Desc) toPrometheusDesc() *prometheus.Desc {
 
 // DeprecatedVersion returns a pointer to the Version or nil
 func (d *Desc) DeprecatedVersion() *semver.Version {
+	// string类型的版本解析成semver.Version
 	return parseSemver(d.deprecatedVersion)
 
 }
 
+// 根据version跟d.deprecatedVersion比较，设置d.isDeprecated
+// 检测是否showHidden是否true，如果为true直接返回。
+// 如果为false，根据version跟d.deprecatedVersion比较，设置d.isHidden
 func (d *Desc) determineDeprecationStatus(version semver.Version) {
 	selfVersion := d.DeprecatedVersion()
 	if selfVersion == nil {
 		return
 	}
 	d.markDeprecationOnce.Do(func() {
+		// deprecateVersion小于等于version
 		if selfVersion.LTE(version) {
 			d.isDeprecated = true
 		}
+		// 检测showHidden是否true
 		if ShouldShowHidden() {
 			klog.Warningf("Hidden metrics(%s) have been manually overridden, showing this very deprecated metric.", d.fqName)
 			return
 		}
+		// version（将小版本版本号第三位置0进行比较）大于selfVersion，则返回true
 		if shouldHide(&version, selfVersion) {
 			// TODO(RainbowMango): Remove this log temporarily. https://github.com/kubernetes/kubernetes/issues/85369
 			// klog.Warningf("This metric(%s) has been deprecated for more than one release, hiding.", d.fqName)
@@ -151,12 +159,25 @@ func (d *Desc) IsCreated() bool {
 // the Desc is deprecated or hidden, no-opting if the Desc should be considered
 // hidden. Furthermore, this function no-opts and returns true if Desc is already
 // created.
+// 根据version和showHidden，判断是否为deprecated和是否应该进行隐藏
+// 如果metrics为隐藏的，直接返回false
+// 如果metrics不为隐藏，且为deprecated
+//   设置d.annotatedHelp为"[{d.stabilityLevel}] (Deprecated since {d.deprecatedVersion}) {d.annotatedHelp}"
+//   创建d.promDesc为prometheus desc
+// 如果metrics不为隐藏，且不为deprecated
+//   设置d.annotatedHelp为"[{d.stabilityLevel}] {d.annotatedHelp}"
+//   创建d.promDesc为prometheus desc
+// 设置d.isCreated为true，返回true
 func (d *Desc) create(version *semver.Version) bool {
 	if version != nil {
+		// 根据version跟d.deprecatedVersion比较，设置d.isDeprecated
+		// 检测是否showHidden是否true，如果为true直接返回。
+		// 如果为false，根据version跟d.deprecatedVersion比较，设置d.isHidden
 		d.determineDeprecationStatus(*version)
 	}
 
 	// let's not create if this metric is slated to be hidden
+	// 如果metrics为隐藏的，直接返回
 	if d.IsHidden() {
 		return false
 	}
@@ -165,9 +186,14 @@ func (d *Desc) create(version *semver.Version) bool {
 		defer d.createLock.Unlock()
 
 		d.isCreated = true
+		// 如果是deprecated
 		if d.IsDeprecated() {
+			// 设置d.annotatedHelp为"[{d.stabilityLevel}] (Deprecated since {d.deprecatedVersion}) {d.annotatedHelp}"
+			// 创建d.promDesc为prometheus desc
 			d.initializeDeprecatedDesc()
 		} else {
+			// 设置d.annotatedHelp为"[{d.stabilityLevel}] {d.annotatedHelp}"
+			// 创建d.promDesc为prometheus desc
 			d.initialize()
 		}
 	})
@@ -191,27 +217,37 @@ func (d *Desc) ClearState() {
 	d.promDesc = nil
 }
 
+// 设置d.annotatedHelp为"(Deprecated since {d.deprecatedVersion}) {d.annotatedHelp}"
 func (d *Desc) markDeprecated() {
 	d.deprecateOnce.Do(func() {
 		d.annotatedHelp = fmt.Sprintf("(Deprecated since %s) %s", d.deprecatedVersion, d.annotatedHelp)
 	})
 }
 
+// 设置d.annotatedHelp为"[{d.stabilityLevel}] {d.annotatedHelp}"
 func (d *Desc) annotateStabilityLevel() {
 	d.annotateOnce.Do(func() {
 		d.annotatedHelp = fmt.Sprintf("[%v] %v", d.stabilityLevel, d.annotatedHelp)
 	})
 }
 
+// 设置d.annotatedHelp为"[{d.stabilityLevel}] {d.annotatedHelp}"
+// 创建d.promDesc为prometheus desc
 func (d *Desc) initialize() {
+	// 设置d.annotatedHelp为"[{d.stabilityLevel}] {d.annotatedHelp}"
 	d.annotateStabilityLevel()
 
 	// this actually creates the underlying prometheus desc.
 	d.promDesc = prometheus.NewDesc(d.fqName, d.annotatedHelp, d.variableLabels, prometheus.Labels(d.constLabels))
 }
 
+// 设置d.annotatedHelp为"[{d.stabilityLevel}] (Deprecated since {d.deprecatedVersion}) {d.annotatedHelp}"
+// 创建d.promDesc为prometheus desc
 func (d *Desc) initializeDeprecatedDesc() {
+	// 设置d.annotatedHelp为"(Deprecated since {d.deprecatedVersion}) {d.annotatedHelp}"
 	d.markDeprecated()
+	// 设置d.annotatedHelp为"[{d.stabilityLevel}] {d.annotatedHelp}"
+	// 创建d.promDesc为prometheus desc
 	d.initialize()
 }
 

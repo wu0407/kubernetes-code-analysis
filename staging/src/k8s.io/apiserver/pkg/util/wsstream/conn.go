@@ -86,10 +86,13 @@ var (
 
 // IsWebSocketRequest returns true if the incoming request contains connection upgrade headers
 // for WebSockets.
+// header中"Upgrade"的值为"websocket"，且header中"Connection"匹配"(^|.*,\\s*)upgrade($|\\s*,)"，则返回true
 func IsWebSocketRequest(req *http.Request) bool {
+	// header中"Upgrade"的值不为"websocket"
 	if !strings.EqualFold(req.Header.Get("Upgrade"), "websocket") {
 		return false
 	}
+	// header中"Connection"，是否匹配"(^|.*,\\s*)upgrade($|\\s*,)"
 	return connectionUpgradeRegex.MatchString(strings.ToLower(req.Header.Get("Connection")))
 }
 
@@ -108,12 +111,15 @@ func IgnoreReceives(ws *websocket.Conn, timeout time.Duration) {
 
 // handshake ensures the provided user protocol matches one of the allowed protocols. It returns
 // no error if no protocol is specified.
+// 修改config.protocol为config.protocol里第一个支持的协议
+// 如果config.Protoco为空，则config.protocol为空协议
 func handshake(config *websocket.Config, req *http.Request, allowed []string) error {
 	protocols := config.Protocol
 	if len(protocols) == 0 {
 		protocols = []string{""}
 	}
 
+	// 修改config.protocol为config.protocol里第一个支持的协议
 	for _, protocol := range protocols {
 		for _, allow := range allowed {
 			if allow == protocol {
@@ -145,8 +151,11 @@ func NewDefaultChannelProtocols(channels []ChannelType) map[string]ChannelProtoc
 
 // Conn supports sending multiple binary channels over a websocket connection.
 type Conn struct {
+	// 服务端支持的协议名字与对应协议配置（数据格式、channel类型（读写、只读、只写））
 	protocols        map[string]ChannelProtocolConfig
 	selectedProtocol string
+	// exec和attach是每个fd（0为stdin，1为stdout，2为stderr，3为error，4为resize）对应的websocketChannel
+	// portforward是每个端口data wsstream.ReadWriteChannel和error wsstream.WriteChannel
 	channels         []*websocketChannel
 	codec            codecType
 	ready            chan struct{}
@@ -176,7 +185,10 @@ func (conn *Conn) SetIdleTimeout(duration time.Duration) {
 
 // Open the connection and create channels for reading and writing. It returns
 // the selected subprotocol, a slice of channels and an error.
+// 启用一个goroutine来处理websocket请求
+// 返回所有channel类型（exec和attach对应的fd号）对应的websocketChannel
 func (conn *Conn) Open(w http.ResponseWriter, req *http.Request) (string, []io.ReadWriteCloser, error) {
+	// 启用一个goroutine来处理websocket请求
 	go func() {
 		defer runtime.HandleCrash()
 		defer conn.Close()
@@ -190,9 +202,12 @@ func (conn *Conn) Open(w http.ResponseWriter, req *http.Request) (string, []io.R
 	return conn.selectedProtocol, rwc, nil
 }
 
+// 设置conn.selectedProtocol，conn.codec，conn.ws，conn.channels
+// 关闭conn.ready
 func (conn *Conn) initialize(ws *websocket.Conn) {
 	negotiated := ws.Config().Protocol
 	conn.selectedProtocol = negotiated[0]
+	// 协议配置
 	p := conn.protocols[conn.selectedProtocol]
 	if p.Binary {
 		conn.codec = rawCodec
@@ -219,12 +234,16 @@ func (conn *Conn) initialize(ws *websocket.Conn) {
 
 func (conn *Conn) handshake(config *websocket.Config, req *http.Request) error {
 	supportedProtocols := make([]string, 0, len(conn.protocols))
+	// 遍历所有支持的协议
 	for p := range conn.protocols {
 		supportedProtocols = append(supportedProtocols, p)
 	}
+	// 修改config.protocol为config.protocol里第一个支持的协议
+	// 如果config.Protocol为空，则修改config.protocol为空协议
 	return handshake(config, req, supportedProtocols)
 }
 
+// 设置conn.ws的deadline
 func (conn *Conn) resetTimeout() {
 	if conn.timeout > 0 {
 		conn.ws.SetDeadline(time.Now().Add(conn.timeout))
@@ -244,11 +263,15 @@ func (conn *Conn) Close() error {
 // handle implements a websocket handler.
 func (conn *Conn) handle(ws *websocket.Conn) {
 	defer conn.Close()
+	// 设置conn.selectedProtocol，conn.codec，conn.ws，conn.channels
+	// 关闭conn.ready
 	conn.initialize(ws)
 
 	for {
+		// 设置conn.ws的deadline
 		conn.resetTimeout()
 		var data []byte
+		// 接受websocket消息
 		if err := websocket.Message.Receive(ws, &data); err != nil {
 			if err != io.EOF {
 				klog.Errorf("Error on socket receive: %v", err)
@@ -258,7 +281,9 @@ func (conn *Conn) handle(ws *websocket.Conn) {
 		if len(data) == 0 {
 			continue
 		}
+		// 第一个字节，代表通道号（fd号）
 		channel := data[0]
+		// base64解码，则channel需要减去'0'的字节码
 		if conn.codec == base64Codec {
 			channel = channel - '0'
 		}
@@ -267,6 +292,9 @@ func (conn *Conn) handle(ws *websocket.Conn) {
 			klog.V(6).Infof("Frame is targeted for a reader %d that is not valid, possible protocol error", channel)
 			continue
 		}
+		// 如果websocketChannel需要读数据，则根据解码器类型，采取不同动作
+		// 如果是rawCodec，则直接将data写入到pipe中，等待数据被消费
+		// 如果是base64Codec，则对数据进行base64解码，然后将解码后的data写入到pipe中，等待数据被消费
 		if _, err := conn.channels[channel].DataFromSocket(data); err != nil {
 			klog.Errorf("Unable to write frame to %d: %v\n%s", channel, err, string(data))
 			continue
@@ -276,16 +304,19 @@ func (conn *Conn) handle(ws *websocket.Conn) {
 
 // write multiplexes the specified channel onto the websocket
 func (conn *Conn) write(num byte, data []byte) (int, error) {
+	// 设置conn.ws的deadline
 	conn.resetTimeout()
 	switch conn.codec {
 	case rawCodec:
 		frame := make([]byte, len(data)+1)
+		// 第一字节为fd号（协议号）
 		frame[0] = num
 		copy(frame[1:], data)
 		if err := websocket.Message.Send(conn.ws, frame); err != nil {
 			return 0, err
 		}
 	case base64Codec:
+		// 第一字节是fd号加'0'的字节码
 		frame := string('0'+num) + base64.StdEncoding.EncodeToString(data)
 		if err := websocket.Message.Send(conn.ws, frame); err != nil {
 			return 0, err
@@ -312,7 +343,9 @@ func newWebsocketChannel(conn *Conn, num byte, read, write bool) *websocketChann
 	return &websocketChannel{conn, num, r, w, read, write}
 }
 
+// 将数据写入到websocket的conn里
 func (p *websocketChannel) Write(data []byte) (int, error) {
+	// 如果这个websocketChannel不需要写，则直接返回data大小和nil
 	if !p.write {
 		return len(data), nil
 	}
@@ -321,25 +354,33 @@ func (p *websocketChannel) Write(data []byte) (int, error) {
 
 // DataFromSocket is invoked by the connection receiver to move data from the connection
 // into a specific channel.
+// 如果websocketChannel需要读数据，则根据解码器类型，采取不同动作
+// 如果是rawCodec，则直接将data写入到pipe中，等待数据被消费
+// 如果是base64Codec，则对数据进行base64解码，然后将解码后的data写入到pipe中，等待数据被消费
 func (p *websocketChannel) DataFromSocket(data []byte) (int, error) {
+	// 如果这个websocketChannel不需要读，则直接返回data大小和nil
 	if !p.read {
 		return len(data), nil
 	}
 
 	switch p.conn.codec {
 	case rawCodec:
+		// 写入到pipe中，等待数据被消费
 		return p.w.Write(data)
 	case base64Codec:
 		dst := make([]byte, len(data))
+		// 对数据进行base64解码
 		n, err := base64.StdEncoding.Decode(dst, data)
 		if err != nil {
 			return 0, err
 		}
+		// 写入到pipe中，等待数据被消费
 		return p.w.Write(dst[:n])
 	}
 	return 0, nil
 }
 
+// 这个应该在docker中被执行，比如stdin读入在p.DataFromSocket里客户端发送写入到p.w
 func (p *websocketChannel) Read(data []byte) (int, error) {
 	if !p.read {
 		return 0, io.EOF

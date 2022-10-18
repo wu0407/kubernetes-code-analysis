@@ -40,6 +40,7 @@ type Histogram struct {
 	ObserverMetric
 	*HistogramOpts
 	lazyMetric
+	// 这个实现了prometheus.Collector)
 	selfCollector
 }
 
@@ -52,34 +53,60 @@ func NewHistogram(opts *HistogramOpts) *Histogram {
 		HistogramOpts: opts,
 		lazyMetric:    lazyMetric{},
 	}
+	// 设置h.ObserverMetric为noopMetric{}
+	// 设置h.selfCollector.metric为noopMetric{}
 	h.setPrometheusHistogram(noopMetric{})
+	// BuildFQName
+	// 返回如果namespace, subsystem, name都不为空，则返回"{namespace}_{subsystem}_{name}"
+	// 如果namespace, subsystem, name有一个为空，则空的省略
+	//
+	// 设置h.lazyMetric.fqName为BuildFQName执行结果
+	// 设置h.lazyMetric.self为h
 	h.lazyInit(h, BuildFQName(opts.Namespace, opts.Subsystem, opts.Name))
 	return h
 }
 
 // setPrometheusHistogram sets the underlying KubeGauge object, i.e. the thing that does the measurement.
+// 设置h.ObserverMetric为histogram
+// 设置h.selfCollector.metric为histogram
 func (h *Histogram) setPrometheusHistogram(histogram prometheus.Histogram) {
 	h.ObserverMetric = histogram
+	// 设置h.selfCollector.metric为histogram
 	h.initSelfCollection(histogram)
 }
 
 // DeprecatedVersion returns a pointer to the Version or nil
+// h.HistogramOpts.DeprecatedVersion解析成semver.Version
 func (h *Histogram) DeprecatedVersion() *semver.Version {
 	return parseSemver(h.HistogramOpts.DeprecatedVersion)
 }
 
 // initializeMetric invokes the actual prometheus.Histogram object instantiation
 // and stores a reference to it
+// 修改h.HistogramOpts.Help为"[{h.HistogramOpts.StabilityLevel}] {h.HistogramOpts.Help}"
+// 设置h.ObserverMetric为生成prometheus histogram
+// 设置h.selfCollector.metric为生成的prometheus histogram
 func (h *Histogram) initializeMetric() {
+	// 修改h.HistogramOpts.Help为"[{h.HistogramOpts.StabilityLevel}] {h.HistogramOpts.Help}"
 	h.HistogramOpts.annotateStabilityLevel()
 	// this actually creates the underlying prometheus gauge.
+	// h.HistogramOpts.toPromHistogramOpts()为将HistogramOpts转成prometheus.HistogramOpts
+	// 设置h.ObserverMetric为生成的prometheus.histogram（实现prometheus.Metric）
+	// 设置h.selfCollector.metric为为生成的prometheus.histogram（实现prometheus.Metric）
 	h.setPrometheusHistogram(prometheus.NewHistogram(h.HistogramOpts.toPromHistogramOpts()))
 }
 
 // initializeDeprecatedMetric invokes the actual prometheus.Histogram object instantiation
 // but modifies the Help description prior to object instantiation.
+// 修改h.HistogramOpts.Help为"[{o.StabilityLevel}] (Deprecated since {h.HistogramOpts.DeprecatedVersion}) {h.HistogramOpts.Help}"
+// 设置h.ObserverMetric为生成的prometheus histogram
+// 设置h.selfCollector.metric为生成的prometheus histogram
 func (h *Histogram) initializeDeprecatedMetric() {
+	// 修改h.HistogramOpts.Help为"(Deprecated since {h.HistogramOpts.DeprecatedVersion}) {h.HistogramOpts.Help}"
 	h.HistogramOpts.markDeprecated()
+	// 修改h.HistogramOpts.Help为"[{o.StabilityLevel}] {h.HistogramOpts.Help}"
+	// 设置h.ObserverMetric为histogram
+	// 设置h.selfCollector.metric为histogram
 	h.initializeMetric()
 }
 
@@ -110,6 +137,7 @@ func NewHistogramVec(opts *HistogramOpts, labels []string) *HistogramVec {
 
 // DeprecatedVersion returns a pointer to the Version or nil
 func (v *HistogramVec) DeprecatedVersion() *semver.Version {
+	// string类型版本解析成semver.Version
 	return parseSemver(v.HistogramOpts.DeprecatedVersion)
 }
 

@@ -433,6 +433,8 @@ func (m *managerImpl) synchronize(diskInfoProvider DiskInfoProvider, podFunc Act
 		if evictedPods := m.localStorageEviction(summary, activePods); len(evictedPods) > 0 {
 			return evictedPods
 		}
+		// 内存用满了，直接内核会kill，不用这里处理
+		// cpu用满了，内核调度算法控制
 	}
 
 	// node层面资源evicted

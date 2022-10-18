@@ -223,6 +223,7 @@ func (ect *EndpointChangeTracker) EndpointSliceUpdate(endpointSlice *discovery.E
 
 // checkoutChanges returns a list of pending endpointsChanges and marks them as
 // applied.
+// 从ect.items复制出所有endpointsChange，并清空ect.items
 func (ect *EndpointChangeTracker) checkoutChanges() []*endpointsChange {
 	ect.lock.Lock()
 	defer ect.lock.Unlock()
@@ -243,6 +244,7 @@ func (ect *EndpointChangeTracker) checkoutChanges() []*endpointsChange {
 
 // checkoutTriggerTimes applies the locally cached trigger times to a map of
 // trigger times that have been passed in and empties the local cache.
+// 从ect.lastChangeTriggerTimes导出所有types.NamespacedName的时间，到lastChangeTriggerTimes，并清空ect.lastChangeTriggerTimes
 func (ect *EndpointChangeTracker) checkoutTriggerTimes(lastChangeTriggerTimes *map[types.NamespacedName][]time.Time) {
 	ect.lock.Lock()
 	defer ect.lock.Unlock()
@@ -308,14 +310,19 @@ func (em EndpointsMap) Update(changes *EndpointChangeTracker) (result UpdateEndp
 	result.StaleServiceNames = make([]ServicePortName, 0)
 	result.LastChangeTriggerTimes = make(map[types.NamespacedName][]time.Time)
 
+	// 获得result.staleEndpoints，从changes.items里的所有endpointsChange，遍历endpointsChange里的change，找到change.previous里所有svcPortName里的所有endpoint，不在change.current对应svcPortName里的endpoint列表
+	// 获得result.staleServiceNames，从changes.items里的所有endpointsChange，遍历endpointsChange里的change，change.current的endpoint数量不为0，且change.previous的svcPortName的endpoint数量为0，则将svcPortName append到staleServiceNames
+	// 获得result.lastChangeTriggerTimes，从changes.lastChangeTriggerTimes导出所有types.NamespacedName的时间，到lastChangeTriggerTimes，并清空changes.lastChangeTriggerTimes
 	em.apply(
 		changes, &result.StaleEndpoints, &result.StaleServiceNames, &result.LastChangeTriggerTimes)
 
 	// TODO: If this will appear to be computationally expensive, consider
 	// computing this incrementally similarly to endpointsMap.
 	result.HCEndpointsLocalIPSize = make(map[types.NamespacedName]int)
+	// 返回endpoint的NodeName是本地node名字，types.NamespacedName和对应ip列表
 	localIPs := em.getLocalEndpointIPs()
 	for nsn, ips := range localIPs {
+		// 保存nodeName为本地的endpoint，每个types.NamespacedName和这个endpoint数量
 		result.HCEndpointsLocalIPSize[nsn] = len(ips)
 	}
 
@@ -384,22 +391,32 @@ func (ect *EndpointChangeTracker) endpointsToEndpointsMap(endpoints *v1.Endpoint
 // The changes map is cleared after applying them.
 // In addition it returns (via argument) and resets the lastChangeTriggerTimes for all endpoints
 // that were changed and will result in syncing the proxy rules.
+// 获得staleEndpoints，从ect.items里的所有endpointsChange，遍历endpointsChange里的change，找到change.previous里所有svcPortName里的所有endpoint，不在change.current对应svcPortName里的endpoint列表
+// 获得staleServiceNames，从ect.items里的所有endpointsChange，遍历endpointsChange里的change，change.current的endpoint数量不为0，且change.previous的svcPortName的endpoint数量为0，则将svcPortName append到staleServiceNames
+// 获得lastChangeTriggerTimes，从ect.lastChangeTriggerTimes导出所有types.NamespacedName的时间，到lastChangeTriggerTimes，并清空ect.lastChangeTriggerTimes
 func (em EndpointsMap) apply(ect *EndpointChangeTracker, staleEndpoints *[]ServiceEndpoint,
 	staleServiceNames *[]ServicePortName, lastChangeTriggerTimes *map[types.NamespacedName][]time.Time) {
 	if ect == nil {
 		return
 	}
 
+	// 从ect.items复制出所有endpointsChange，并清空ect.items
 	changes := ect.checkoutChanges()
 	for _, change := range changes {
+		// em中移除change.previous集合
 		em.unmerge(change.previous)
+		// 将em添加change.current
 		em.merge(change.current)
+		// 找到change.previous里所有svcPortName里的所有endpoint，不在change.current对应svcPortName里的endpoint列表
+		// change.current的endpoint数量不为0，且change.previous的svcPortName的endpoint数量为0，则将svcPortName append到staleServiceNames
 		detectStaleConnections(change.previous, change.current, staleEndpoints, staleServiceNames)
 	}
+	// 从ect.lastChangeTriggerTimes导出所有types.NamespacedName的时间，到lastChangeTriggerTimes，并清空ect.lastChangeTriggerTimes
 	ect.checkoutTriggerTimes(lastChangeTriggerTimes)
 }
 
 // Merge ensures that the current EndpointsMap contains all <service, endpoints> pairs from the EndpointsMap passed in.
+// 将other添加进em
 func (em EndpointsMap) merge(other EndpointsMap) {
 	for svcPortName := range other {
 		em[svcPortName] = other[svcPortName]
@@ -407,6 +424,7 @@ func (em EndpointsMap) merge(other EndpointsMap) {
 }
 
 // Unmerge removes the <service, endpoints> pairs from the current EndpointsMap which are contained in the EndpointsMap passed in.
+// em中移除other集合
 func (em EndpointsMap) unmerge(other EndpointsMap) {
 	for svcPortName := range other {
 		delete(em, svcPortName)
@@ -414,10 +432,12 @@ func (em EndpointsMap) unmerge(other EndpointsMap) {
 }
 
 // GetLocalEndpointIPs returns endpoints IPs if given endpoint is local - local means the endpoint is running in same host as kube-proxy.
+// 返回endpoint的NodeName是本地node名字，types.NamespacedName和对应ip列表
 func (em EndpointsMap) getLocalEndpointIPs() map[types.NamespacedName]sets.String {
 	localIPs := make(map[types.NamespacedName]sets.String)
 	for svcPortName, epList := range em {
 		for _, ep := range epList {
+			// endpoint的NodeName是本地node名字
 			if ep.GetIsLocal() {
 				nsn := svcPortName.NamespacedName
 				if localIPs[nsn] == nil {
@@ -432,20 +452,26 @@ func (em EndpointsMap) getLocalEndpointIPs() map[types.NamespacedName]sets.Strin
 
 // detectStaleConnections modifies <staleEndpoints> and <staleServices> with detected stale connections. <staleServiceNames>
 // is used to store stale udp service in order to clear udp conntrack later.
+// 找到oldEndpointsMap里所有svcPortName里的所有endpoint，不在newEndpointsMap对应svcPortName里的endpoint列表
+// 新的svcPortName的endpoint数量不为0，且oldEndpointsMap的svcPortName的endpoint数量为0，则将svcPortName append到staleServiceNames
 func detectStaleConnections(oldEndpointsMap, newEndpointsMap EndpointsMap, staleEndpoints *[]ServiceEndpoint, staleServiceNames *[]ServicePortName) {
+	// 找到oldEndpointsMap里所有svcPortName里的所有endpoint，不在newEndpointsMap对应svcPortName里的endpoint列表
 	for svcPortName, epList := range oldEndpointsMap {
+		// 协议不为"UDP"，则跳过
 		if svcPortName.Protocol != v1.ProtocolUDP {
 			continue
 		}
 
 		for _, ep := range epList {
 			stale := true
+			// 新的endpointMap[svcPortName]里的有一个endpoint，跟oldEndpointsMap[svcPortName]里的这个endpoint一样，则stale为false
 			for i := range newEndpointsMap[svcPortName] {
 				if newEndpointsMap[svcPortName][i].Equal(ep) {
 					stale = false
 					break
 				}
 			}
+			// 新的endpointMap[svcPortName]里的没有一个endpoint，跟oldEndpointsMap[svcPortName]里的这个endpoint一样，则stale为false
 			if stale {
 				klog.V(4).Infof("Stale endpoint %v -> %v", svcPortName, ep.String())
 				*staleEndpoints = append(*staleEndpoints, ServiceEndpoint{Endpoint: ep.String(), ServicePortName: svcPortName})
@@ -454,11 +480,13 @@ func detectStaleConnections(oldEndpointsMap, newEndpointsMap EndpointsMap, stale
 	}
 
 	for svcPortName, epList := range newEndpointsMap {
+		// 协议不为"UDP"，则跳过
 		if svcPortName.Protocol != v1.ProtocolUDP {
 			continue
 		}
 
 		// For udp service, if its backend changes from 0 to non-0. There may exist a conntrack entry that could blackhole traffic to the service.
+		// 新的svcPortName的endpoint数量不为0，且oldEndpointsMap的svcPortName的endpoint数量为0，则将svcPortName append到staleServiceNames
 		if len(epList) > 0 && len(oldEndpointsMap[svcPortName]) == 0 {
 			*staleServiceNames = append(*staleServiceNames, svcPortName)
 		}

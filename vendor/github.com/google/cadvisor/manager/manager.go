@@ -395,6 +395,7 @@ func (self *manager) globalHousekeeping(quit chan error) {
 	}
 }
 
+// 从self.containers中查找containerName对应的containerData
 func (self *manager) getContainerData(containerName string) (*containerData, error) {
 	var cont *containerData
 	var ok bool
@@ -456,6 +457,7 @@ func (self *manager) getV2Spec(cinfo *containerInfo) v2.ContainerSpec {
 	return v2.ContainerSpecFromV1(&spec, cinfo.Aliases, cinfo.Namespace)
 }
 
+// cinfo.spec.Memory.Limit为0，则调整为node的内存总大小
 func (self *manager) getAdjustedSpec(cinfo *containerInfo) info.ContainerSpec {
 	spec := cinfo.Spec
 
@@ -471,11 +473,15 @@ func (self *manager) getAdjustedSpec(cinfo *containerInfo) info.ContainerSpec {
 	return spec
 }
 
+// 根据containerName和query，返回info.ContainerInfo（在query.start到query.end时间范围内，最多query.maxStats个ContainerStats）
 func (self *manager) GetContainerInfo(containerName string, query *info.ContainerInfoRequest) (*info.ContainerInfo, error) {
+	// 从self.containers中查找containerName对应的containerData
 	cont, err := self.getContainerData(containerName)
 	if err != nil {
 		return nil, err
 	}
+	// 从containerData中获得containerInfo，并从self.memoryCache中获得在query.start到query.end时间范围内，最多query.maxStats个ContainerStats
+	// 返回info.ContainerInfo包含监控数据和container属性（containerInfo.ContainerReference和containerInfo.spec）和所有子container（containerInfo.Subcontainers）
 	return self.containerDataToContainerInfo(cont, query)
 }
 
@@ -520,13 +526,18 @@ func (self *manager) GetContainerInfoV2(containerName string, options v2.Request
 	return infos, errs.OrNil()
 }
 
+// 从containerData中获得containerInfo，并从self.memoryCache中获得在query.start到query.end时间范围内，最多query.maxStats个ContainerStats
+// 返回info.ContainerInfo包含监控数据和container属性（containerInfo.ContainerReference和containerInfo.spec）和所有子container（containerInfo.Subcontainers）
 func (self *manager) containerDataToContainerInfo(cont *containerData, query *info.ContainerInfoRequest) (*info.ContainerInfo, error) {
 	// Get the info from the container.
+	// 如果cont.infoLastUpdatedTime没有超过5秒，则更新cont.info.Spec(容器的信息，包括各种（是否有cpu、内存、网络、blkio、pid等）属性和子container列表和容器名字)。还需要更新cont.info.Subcontainers
+	// 返回cont.info
 	cinfo, err := cont.GetInfo(true)
 	if err != nil {
 		return nil, err
 	}
 
+	// 从self.containerCacheMap中获得name的*containerCache，并从containerCache中获得在start到end时间范围内，最多maxStats个ContainerStats
 	stats, err := self.memoryCache.RecentStats(cinfo.Name, query.Start, query.End, query.NumStats)
 	if err != nil {
 		return nil, err
@@ -536,6 +547,7 @@ func (self *manager) containerDataToContainerInfo(cont *containerData, query *in
 	ret := &info.ContainerInfo{
 		ContainerReference: cinfo.ContainerReference,
 		Subcontainers:      cinfo.Subcontainers,
+		// cinfo.spec.Memory.Limit为0，则调整为node的内存总大小
 		Spec:               self.getAdjustedSpec(cinfo),
 		Stats:              stats,
 	}
@@ -569,13 +581,16 @@ func (self *manager) getSubcontainers(containerName string) map[string]*containe
 	return containersMap
 }
 
+// 返回containerName和所有子container的info.ContainerInfo（在query.start到query.end时间范围内，最多query.maxStats个ContainerStats）集合
 func (self *manager) SubcontainersInfo(containerName string, query *info.ContainerInfoRequest) ([]*info.ContainerInfo, error) {
+	// 获得containerName和所有子container的containerData
 	containersMap := self.getSubcontainers(containerName)
 
 	containers := make([]*containerData, 0, len(containersMap))
 	for _, cont := range containersMap {
 		containers = append(containers, cont)
 	}
+	// 根据每个containerData和query，返回所有*info.ContainerInfo集合
 	return self.containerDataSliceToContainerInfoSlice(containers, query)
 }
 
@@ -612,6 +627,7 @@ func (self *manager) AllDockerContainers(query *info.ContainerInfoRequest) (map[
 	return output, nil
 }
 
+// 根据containerName查找Namespace为"docker"的containerData
 func (self *manager) getDockerContainer(containerName string) (*containerData, error) {
 	self.containersLock.RLock()
 	defer self.containersLock.RUnlock()
@@ -624,6 +640,7 @@ func (self *manager) getDockerContainer(containerName string) (*containerData, e
 
 	// Look for container by short prefix name if no exact match found.
 	if !ok {
+		// 在self.containers没有找到，则尝试containerName为container名字前缀
 		for contName, c := range self.containers {
 			if contName.Namespace == docker.DockerNamespace && strings.HasPrefix(contName.Name, containerName) {
 				if cont == nil {
@@ -642,12 +659,16 @@ func (self *manager) getDockerContainer(containerName string) (*containerData, e
 	return cont, nil
 }
 
+// 根据containerName和query，返回info.ContainerInfo（包括在query.start到query.end时间范围内，最多query.maxStats个ContainerStats）
 func (self *manager) DockerContainer(containerName string, query *info.ContainerInfoRequest) (info.ContainerInfo, error) {
+	// 根据containerName查找Namespace为"docker"的containerData
 	container, err := self.getDockerContainer(containerName)
 	if err != nil {
 		return info.ContainerInfo{}, err
 	}
 
+	// 从containerData中获得containerInfo，并从self.memoryCache中获得在query.start到query.end时间范围内，最多query.maxStats个ContainerStats
+	// 返回info.ContainerInfo包含监控数据和container属性（containerInfo.ContainerReference和containerInfo.spec）和所有子container（containerInfo.Subcontainers）
 	inf, err := self.containerDataToContainerInfo(container, query)
 	if err != nil {
 		return info.ContainerInfo{}, err
@@ -655,6 +676,7 @@ func (self *manager) DockerContainer(containerName string, query *info.Container
 	return *inf, nil
 }
 
+// 根据每个containerData和query，返回所有*info.ContainerInfo集合
 func (self *manager) containerDataSliceToContainerInfoSlice(containers []*containerData, query *info.ContainerInfoRequest) ([]*info.ContainerInfo, error) {
 	if len(containers) == 0 {
 		return nil, fmt.Errorf("no containers found")
@@ -663,6 +685,8 @@ func (self *manager) containerDataSliceToContainerInfoSlice(containers []*contai
 	// Get the info for each container.
 	output := make([]*info.ContainerInfo, 0, len(containers))
 	for i := range containers {
+		// 从containers[i] containerData中获得containerInfo，并从self.memoryCache中获得在query.start到query.end时间范围内，最多query.maxStats个ContainerStats
+		// 返回info.ContainerInfo包含监控数据和container属性（containerInfo.）和所有子container
 		cinfo, err := self.containerDataToContainerInfo(containers[i], query)
 		if err != nil {
 			// Skip containers with errors, we try to degrade gracefully.

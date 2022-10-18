@@ -47,9 +47,11 @@ func (self *containerCache) AddStats(stats *info.ContainerStats) error {
 	return nil
 }
 
+// 获得在start到end时间范围内，最多maxStats个ContainerStats
 func (self *containerCache) RecentStats(start, end time.Time, maxStats int) ([]*info.ContainerStats, error) {
 	self.lock.RLock()
 	defer self.lock.RUnlock()
+	// 获得在时间范围内，最多maxStats个ContainerStats
 	result := self.recentStats.InTimeRange(start, end, maxStats)
 	converted := make([]*info.ContainerStats, len(result))
 	for i, el := range result {
@@ -98,6 +100,7 @@ func (self *InMemoryCache) AddStats(cInfo *info.ContainerInfo, stats *info.Conta
 	return cstore.AddStats(stats)
 }
 
+// 从self.containerCacheMap中获得name的*containerCache，并从containerCache中获得在start到end时间范围内，最多maxStats个ContainerStats
 func (self *InMemoryCache) RecentStats(name string, start, end time.Time, maxStats int) ([]*info.ContainerStats, error) {
 	var cstore *containerCache
 	var ok bool
@@ -113,6 +116,7 @@ func (self *InMemoryCache) RecentStats(name string, start, end time.Time, maxSta
 		return nil, err
 	}
 
+	// 获得在start到end时间范围内，最多maxStats个ContainerStats
 	return cstore.RecentStats(start, end, maxStats)
 }
 

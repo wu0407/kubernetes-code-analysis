@@ -148,6 +148,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 		},
 		includedMetrics: includedMetrics,
 	}
+	// 如果includedMetrics包含"cpu"
 	if includedMetrics.Has(container.CpuUsageMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -240,6 +241,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			},
 		}...)
 	}
+	// includeMetrics里包含"sched"
 	if includedMetrics.Has(container.ProcessSchedulerMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -275,6 +277,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			},
 		}...)
 	}
+	// includedMetrics包含"cpuLoad"
 	if includedMetrics.Has(container.CpuLoadMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -321,6 +324,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			},
 		}...)
 	}
+	// includeMetrics包含"memory"
 	if includedMetrics.Has(container.MemoryUsageMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -415,6 +419,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			},
 		}...)
 	}
+	// includedMetrics包含"accelerator"
 	if includedMetrics.Has(container.AcceleratorUsageMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -468,6 +473,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			},
 		}...)
 	}
+	// includedMetrics包含"disk"
 	if includedMetrics.Has(container.DiskUsageMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -513,6 +519,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			},
 		}...)
 	}
+	// includeMetrics包含"diskIO"
 	if includedMetrics.Has(container.DiskIOMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -692,6 +699,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			},
 		}...)
 	}
+	// includeMetrics包含"network"
 	if includedMetrics.Has(container.NetworkUsageMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -825,6 +833,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			},
 		}...)
 	}
+	// includeMetics包含"tcp"
 	if includedMetrics.Has(container.NetworkTcpUsageMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -961,6 +970,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			},
 		}...)
 	}
+	// includeMetics包含"udp"
 	if includedMetrics.Has(container.NetworkUdpUsageMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -1027,6 +1037,7 @@ func NewPrometheusCollector(i infoProvider, f ContainerLabelsFunc, includedMetri
 			},
 		}...)
 	}
+	// includeMetics包含"processes"
 	if includedMetrics.Has(container.ProcessMetrics) {
 		c.containerMetrics = append(c.containerMetrics, []containerMetric{
 			{
@@ -1108,8 +1119,11 @@ func (c *PrometheusCollector) Describe(ch chan<- *prometheus.Desc) {
 // Prometheus metrics. It implements prometheus.PrometheusCollector.
 func (c *PrometheusCollector) Collect(ch chan<- prometheus.Metric) {
 	c.errors.Set(0)
+	// 收集machine_cpu_cores和machine_memory_bytes metrics的值，发送prometheus.constMetric到ch
 	c.collectMachineInfo(ch)
+	// 从cadvisor中获得cadvisor版本信息（设置cadvisor_version_info metrics的值），发送prometheus.constMetric到ch
 	c.collectVersionInfo(ch)
+	// 所有"/"和所有子container的监控metric发送到ch
 	c.collectContainersInfo(ch)
 	c.errors.Collect(ch)
 }
@@ -1139,9 +1153,11 @@ func DefaultContainerLabels(container *info.ContainerInfo) map[string]string {
 		set[LabelImage] = image
 	}
 	for k, v := range container.Spec.Labels {
+		// "container_label_"+{label key}
 		set[ContainerLabelPrefix+k] = v
 	}
 	for k, v := range container.Spec.Envs {
+		// "container_env_"+{env key}
 		set[ContainerEnvPrefix+k] = v
 	}
 	return set
@@ -1172,7 +1188,11 @@ func BaseContainerLabels(whiteList []string) func(container *info.ContainerInfo)
 	}
 }
 
+// 所有"/"和所有子container的监控metric发送到ch
+// 包括值固定的metrics和值变化的metrics
 func (c *PrometheusCollector) collectContainersInfo(ch chan<- prometheus.Metric) {
+	// 从cadvisor中获得"/"的containerInfo，包含在query.start到query.end时间范围内，最多query.maxStats个ContainerStats
+	// 返回"/"和所有子container的containerInfo
 	containers, err := c.infoProvider.SubcontainersInfo("/", &info.ContainerInfoRequest{NumStats: 1})
 	if err != nil {
 		c.errors.Set(1)
@@ -1181,17 +1201,20 @@ func (c *PrometheusCollector) collectContainersInfo(ch chan<- prometheus.Metric)
 	}
 	rawLabels := map[string]struct{}{}
 	for _, container := range containers {
+		// 获得metrics中所有label的key名字
 		for l := range c.containerLabelsFunc(container) {
 			rawLabels[l] = struct{}{}
 		}
 	}
 
+	// 遍历所有container
 	for _, cont := range containers {
 		values := make([]string, 0, len(rawLabels))
 		labels := make([]string, 0, len(rawLabels))
 		containerLabels := c.containerLabelsFunc(cont)
 		for l := range rawLabels {
 			duplicate := false
+			// label名字里除了"a-zA-Z0-9_"之外字符替换成"_"
 			sl := sanitizeLabelName(l)
 			for _, x := range labels {
 				if sl == x {
@@ -1206,7 +1229,9 @@ func (c *PrometheusCollector) collectContainersInfo(ch chan<- prometheus.Metric)
 		}
 
 		// Container spec
+		// 固定metrics
 		desc := prometheus.NewDesc("container_start_time_seconds", "Start time of the container since unix epoch in seconds.", labels, nil)
+		// 发送prometheus.constMetric到ch
 		ch <- prometheus.MustNewConstMetric(desc, prometheus.GaugeValue, float64(cont.Spec.CreationTime.Unix()), values...)
 
 		if cont.Spec.HasCpu {
@@ -1230,15 +1255,18 @@ func (c *PrometheusCollector) collectContainersInfo(ch chan<- prometheus.Metric)
 		}
 
 		// Now for the actual metrics
+		// 没有监控数据跳过
 		if len(cont.Stats) == 0 {
 			continue
 		}
 		stats := cont.Stats[0]
 		for _, cm := range c.containerMetrics {
+			// 执行condition，判断是否要记录metrics
 			if cm.condition != nil && !cm.condition(cont.Spec) {
 				continue
 			}
 			desc := cm.desc(labels)
+			// 遍历所有metrics值，生成prometheus.timestampedMetric（明确设置metrics的timestamp）发送到ch
 			for _, metricValue := range cm.getValues(stats) {
 				ch <- prometheus.NewMetricWithTimestamp(
 					metricValue.timestamp,
@@ -1249,7 +1277,9 @@ func (c *PrometheusCollector) collectContainersInfo(ch chan<- prometheus.Metric)
 	}
 }
 
+// 从cadvisor中获得cadvisor版本信息（设置cadvisor_version_info metrics的值），发送prometheus.constMetric到ch
 func (c *PrometheusCollector) collectVersionInfo(ch chan<- prometheus.Metric) {
+	// a.host是kubelet，从cadvisor中获得cadvisor版本信息（在kubelet里没有初始化版本信息，所以都是空，只有kernelVersion和ContainerOsVersion有值）
 	versionInfo, err := c.infoProvider.GetVersionInfo()
 	if err != nil {
 		c.errors.Set(1)
@@ -1259,7 +1289,10 @@ func (c *PrometheusCollector) collectVersionInfo(ch chan<- prometheus.Metric) {
 	ch <- prometheus.MustNewConstMetric(versionInfoDesc, prometheus.GaugeValue, 1, []string{versionInfo.KernelVersion, versionInfo.ContainerOsVersion, versionInfo.DockerVersion, versionInfo.CadvisorVersion, versionInfo.CadvisorRevision}...)
 }
 
+// 收集machine_cpu_cores和machine_memory_bytes metrics的值，发送prometheus.constMetric到ch
 func (c *PrometheusCollector) collectMachineInfo(ch chan<- prometheus.Metric) {
+	// 在kubelet中c.infoProvider是在pkg\kubelet\server\server.go里的prometheusHostAdapter.GetMachineInfo()
+	// 它是调用kl.GetCachedMachineInfo，从cadvisor中获取MachineInfo（绕了一大圈）
 	machineInfo, err := c.infoProvider.GetMachineInfo()
 	if err != nil {
 		c.errors.Set(1)
@@ -1285,6 +1318,7 @@ var invalidLabelCharRE = regexp.MustCompile(`[^a-zA-Z0-9_]`)
 
 // sanitizeLabelName replaces anything that doesn't match
 // client_label.LabelNameRE with an underscore.
+// name里除了"a-zA-Z0-9_"之外字符替换成"_"
 func sanitizeLabelName(name string) string {
 	return invalidLabelCharRE.ReplaceAllString(name, "_")
 }

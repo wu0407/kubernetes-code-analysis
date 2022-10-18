@@ -192,7 +192,7 @@ func BuildContainerID(typ, ID string) ContainerID {
 }
 
 // Convenience method for creating a ContainerID from an ID string.
-// 字符串解析出ContainerID
+// 根据格式应该是"{type}://{id}"，从字符串解析出ContainerID
 func ParseContainerID(containerID string) ContainerID {
 	var id ContainerID
 	if err := id.ParseString(containerID); err != nil {
@@ -545,6 +545,7 @@ func (p Pods) FindPod(podFullName string, podUID types.UID) Pod {
 // FindContainerByName returns a container in the pod with the given name.
 // When there are multiple containers with the same name, the first match will
 // be returned.
+// 根据containerName在p.Containers中查找container
 func (p *Pod) FindContainerByName(containerName string) *Container {
 	for _, c := range p.Containers {
 		if c.Name == containerName {
@@ -575,6 +576,7 @@ func (p *Pod) FindSandboxByID(id ContainerID) *Container {
 
 // ToAPIPod converts Pod to v1.Pod. Note that if a field in v1.Pod has no
 // corresponding field in Pod, the field would not be populated.
+// 将pod转成对外的api pod
 func (p *Pod) ToAPIPod() *v1.Pod {
 	var pod v1.Pod
 	pod.UID = p.ID
@@ -610,6 +612,7 @@ func BuildPodFullName(name, namespace string) string {
 }
 
 // Parse the pod full name.
+// 从"{pod name}_{pod namespace}"，解析出pod name和pod namespace
 func ParsePodFullName(podFullName string) (string, string, error) {
 	parts := strings.Split(podFullName, "_")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {

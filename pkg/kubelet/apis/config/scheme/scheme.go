@@ -28,11 +28,16 @@ import (
 // NewSchemeAndCodecs is a utility function that returns a Scheme and CodecFactory
 // that understand the types in the kubeletconfig API group. Passing mutators allows
 // for adjusting the behavior of the CodecFactory, for example enable strict decoding.
+// 将（pkg/kubelet/apis/config）schema.GroupVersion{Group: "kubelet.config.k8s.io", Version: "__internal"}下的KubeletConfiguration{}和SerializedNodeConfigSource{}添加到scheme中
+// 将（staging\src\k8s.io\kubelet\config\v1beta1）schema.GroupVersion{Group: "kubelet.config.k8s.io", Version: "v1beta1"}下的KubeletConfiguration{}和SerializedNodeConfigSource{}添加到scheme中
+// 返回scheme和codec和错误
 func NewSchemeAndCodecs(mutators ...serializer.CodecFactoryOptionsMutator) (*runtime.Scheme, *serializer.CodecFactory, error) {
 	scheme := runtime.NewScheme()
+	// 将（pkg/kubelet/apis/config）schema.GroupVersion{Group: "kubelet.config.k8s.io", Version: "__internal"}下的KubeletConfiguration{}和SerializedNodeConfigSource{}添加到scheme中
 	if err := kubeletconfig.AddToScheme(scheme); err != nil {
 		return nil, nil, err
 	}
+	// 将（staging\src\k8s.io\kubelet\config\v1beta1）schema.GroupVersion{Group: "kubelet.config.k8s.io", Version: "v1beta1"}下的KubeletConfiguration{}和SerializedNodeConfigSource{}添加到scheme中
 	if err := kubeletconfigv1beta1.AddToScheme(scheme); err != nil {
 		return nil, nil, err
 	}

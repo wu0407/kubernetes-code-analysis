@@ -80,6 +80,11 @@ func (bsc *BaseStableCollector) Collect(ch chan<- prometheus.Metric) {
 	mch := make(chan Metric)
 
 	go func() {
+		// 如果bsc.self是pkg\kubelet\server\stats\prometheus_resource_metrics.go里的resourceMetricCollector
+		// 发送bsc.self.config.NodeMetrics里的metrics和bsc.self.config.ContainerMetrics且带了时间戳，到mch
+
+		// 如果pkg\kubelet\metrics\collectors\resource_metrics.go里的resourceMetricsCollector
+		// 发送node和cpu和scrape_error的metrics到mch
 		bsc.self.CollectWithStability(mch)
 		close(mch)
 	}()
@@ -90,10 +95,12 @@ func (bsc *BaseStableCollector) Collect(ch chan<- prometheus.Metric) {
 			continue
 		}
 
+		// 将自身类型Metric转成Prometheus的metrics发送到c
 		ch <- prometheus.Metric(m)
 	}
 }
 
+// 将desc添加到bsc.descriptors（map中）
 func (bsc *BaseStableCollector) add(d *Desc) {
 	if len(d.fqName) == 0 {
 		panic("nameless metrics will be not allowed")
@@ -111,6 +118,7 @@ func (bsc *BaseStableCollector) add(d *Desc) {
 }
 
 // Init intends to be called by registry.
+// 添加bsc.self.config.NodeMetrics和bsc.self.config.ContainerMetrics的desc和bsc.self.errors到bsc.descriptors（map中）
 func (bsc *BaseStableCollector) init(self StableCollector) {
 	bsc.self = self
 
@@ -118,15 +126,23 @@ func (bsc *BaseStableCollector) init(self StableCollector) {
 
 	// collect all possible descriptions from custom side
 	go func() {
+		// 如果bsc.self是pkg\kubelet\server\stats\prometheus_resource_metrics.go里resourceMetricCollector
+		// 发送bsc.self.config.NodeMetrics和bsc.self.config.ContainerMetrics的desc和bsc.self.errors到dch
+
+		// 如果bsc.self是pkg\kubelet\metrics\collectors\resource_metrics.go里的resourceMetricsCollector
+		// 发送node和cpu和scrape_error的metrics的desc到mch
 		bsc.self.DescribeWithStability(dch)
 		close(dch)
 	}()
 
+	// 消费所有Desc
 	for d := range dch {
+		// 将desc添加到bsc.descriptors
 		bsc.add(d)
 	}
 }
 
+// 将Desc添加到bsc.registrable
 func (bsc *BaseStableCollector) trackRegistrableDescriptor(d *Desc) {
 	if bsc.registrable == nil {
 		bsc.registrable = make(map[string]*Desc)
@@ -135,6 +151,7 @@ func (bsc *BaseStableCollector) trackRegistrableDescriptor(d *Desc) {
 	bsc.registrable[d.fqName] = d
 }
 
+// 将Desc添加到bsc.hidden（map中）
 func (bsc *BaseStableCollector) trackHiddenDescriptor(d *Desc) {
 	if bsc.hidden == nil {
 		bsc.hidden = make(map[string]*Desc)
@@ -147,17 +164,31 @@ func (bsc *BaseStableCollector) trackHiddenDescriptor(d *Desc) {
 // Create will return true as long as there is one or more metrics not be hidden.
 // Otherwise return false, that means the whole collector will be ignored by registry.
 func (bsc *BaseStableCollector) Create(version *semver.Version, self StableCollector) bool {
+	// 添加bsc.self.config.NodeMetrics和bsc.self.config.ContainerMetrics的desc和bsc.self.errors到bsc.descriptors（map中）
 	bsc.init(self)
 
 	for _, d := range bsc.descriptors {
+		// 根据version和showHidden，判断是否为deprecated和是否应该进行隐藏
+		// 如果metrics为隐藏的，直接返回false
+		// 如果metrics不为隐藏，且为deprecated
+		//   设置d.annotatedHelp为"[{d.stabilityLevel}] (Deprecated since {d.deprecatedVersion}) {d.annotatedHelp}"
+		//   创建d.promDesc为prometheus desc
+		// 如果metrics不为隐藏，且不为deprecated
+		//   设置d.annotatedHelp为"[{d.stabilityLevel}] {d.annotatedHelp}"
+		//   创建d.promDesc为prometheus desc
+		// 设置d.isCreated为true，返回true
 		d.create(version)
+		// 如果metrics为隐藏
 		if d.IsHidden() {
+			// 将Desc添加到bsc.hidden（map中）
 			bsc.trackHiddenDescriptor(d)
 		} else {
+			// 将Desc添加到bsc.registrable
 			bsc.trackRegistrableDescriptor(d)
 		}
 	}
 
+	// 至少有一个metrics注册了，返回true
 	if len(bsc.registrable) > 0 {
 		return true
 	}

@@ -132,6 +132,7 @@ func NewServer(config Config, runtime Runtime) (Server, error) {
 		{"/portforward/{token}", s.servePortForward},
 	}
 	// If serving relative to a base path, set that here.
+	// 默认为""
 	pathPrefix := path.Dir(s.config.BaseURL.Path)
 	for _, e := range endpoints {
 		for _, method := range []string{"GET", "POST"} {
@@ -161,30 +162,50 @@ type server struct {
 	server  *http.Server
 }
 
+// containerId不能为空
+// 不能同时启用tty和stderr
+// stdin、stdout、stderr必须有一个启用
 func validateExecRequest(req *runtimeapi.ExecRequest) error {
 	if req.ContainerId == "" {
 		return status.Errorf(codes.InvalidArgument, "missing required container_id")
 	}
+	// 同时启用tty和stderr，直接返回错误
 	if req.Tty && req.Stderr {
 		// If TTY is set, stderr cannot be true because multiplexing is not
 		// supported.
 		return status.Errorf(codes.InvalidArgument, "tty and stderr cannot both be true")
 	}
+	// stdin、stdout、stderr（必须有一个启用）都没有启用，则直接返回错误
 	if !req.Stdin && !req.Stdout && !req.Stderr {
 		return status.Errorf(codes.InvalidArgument, "one of stdin, stdout, or stderr must be set")
 	}
 	return nil
 }
 
+// 验证请求的合法性
+//   containerId不能为空
+//   不能同时启用tty和stderr
+//   stdin、stdout、stderr必须有一个启用
+// 缓存中添加这次请求
+// 返回构建好的url，比如"http://localhost:36589/exec/{token}"
 func (s *server) GetExec(req *runtimeapi.ExecRequest) (*runtimeapi.ExecResponse, error) {
+	// containerId不能为空
+	// 不能同时启用tty和stderr
+	// stdin、stdout、stderr必须有一个启用
 	if err := validateExecRequest(req); err != nil {
 		return nil, err
 	}
+	// 先从s.cache.ll（链表保存所有的cacheEntry）和s.cache.tokens（hash值对应cacheEntry）移除过期元素
+	// 再向s.cache.ll（链表保存所有的cacheEntry）添加到开头和s.cache.tokens（hash值对应cacheEntry）添加元素
+	// 返回用来索引的token
 	token, err := s.cache.Insert(req)
 	if err != nil {
 		return nil, err
 	}
 	return &runtimeapi.ExecResponse{
+		// 根据s.config.BaseURL为框架，填充Path为"/{Path}/exec/{token}"
+		// 返回构建完之后的url
+		// 比如"http://localhost:36589/exec/{token}"
 		Url: s.buildURL("exec", token),
 	}, nil
 }
@@ -204,28 +225,53 @@ func validateAttachRequest(req *runtimeapi.AttachRequest) error {
 	return nil
 }
 
+// 验证请求的合法性
+//   containerId不能为空
+//   不能同时启用tty和stderr
+//   stdin、stdout、stderr必须有一个启用
+// 缓存中添加这次请求
+// 返回构建好的url，比如"http://localhost:36589/attach/{token}"
 func (s *server) GetAttach(req *runtimeapi.AttachRequest) (*runtimeapi.AttachResponse, error) {
+	// containerId不能为空
+	// 不能同时启用tty和stderr
+	// stdin、stdout、stderr必须有一个启用
 	if err := validateAttachRequest(req); err != nil {
 		return nil, err
 	}
+	// 先从s.cache.ll（链表保存所有的cacheEntry）和s.cache.tokens（hash值对应cacheEntry）移除过期元素
+	// 再向s.cache.ll（链表保存所有的cacheEntry）添加到开头和s.cache.tokens（hash值对应cacheEntry）添加元素
+	// 返回用来索引的token
 	token, err := s.cache.Insert(req)
 	if err != nil {
 		return nil, err
 	}
 	return &runtimeapi.AttachResponse{
+		// 根据s.config.BaseURL为框架，填充Path为"/{Path}/{method}/{token}" 返回构建完之后的url
+		// 比如"http://localhost:36589/attach/{token}"
 		Url: s.buildURL("attach", token),
 	}, nil
 }
 
+// 验证请求的合法性
+//   containerId不能为空
+//   不能同时启用tty和stderr
+//   stdin、stdout、stderr必须有一个启用
+// 缓存中添加这次请求
+// 返回构建好的url，比如"http://localhost:36589/portforward/{token}"
 func (s *server) GetPortForward(req *runtimeapi.PortForwardRequest) (*runtimeapi.PortForwardResponse, error) {
 	if req.PodSandboxId == "" {
 		return nil, status.Errorf(codes.InvalidArgument, "missing required pod_sandbox_id")
 	}
+	// 先从s.cache.ll（链表保存所有的cacheEntry）和s.cache.tokens（hash值对应cacheEntry）移除过期元素
+	// 再向s.cache.ll（链表保存所有的cacheEntry）添加到开头和s.cache.tokens（hash值对应cacheEntry）添加元素
+	// 返回用来索引的token
 	token, err := s.cache.Insert(req)
 	if err != nil {
 		return nil, err
 	}
 	return &runtimeapi.PortForwardResponse{
+		// 根据s.config.BaseURL为框架，填充Path为"/{Path}/{method}/{token}" 返回构建完之后的url
+		// 比如"http://localhost:36589/portforward/{token}"
 		Url: s.buildURL("portforward", token),
 	}, nil
 }
@@ -259,6 +305,8 @@ func (s *server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.handler.ServeHTTP(w, r)
 }
 
+// 根据s.config.BaseURL为框架，填充Path为"/{Path}/{method}/{token}"
+// 返回构建完之后的url
 func (s *server) buildURL(method, token string) string {
 	return s.config.BaseURL.ResolveReference(&url.URL{
 		Path: path.Join(method, token),
@@ -266,7 +314,12 @@ func (s *server) buildURL(method, token string) string {
 }
 
 func (s *server) serveExec(req *restful.Request, resp *restful.Response) {
+	// 路径中token的值
 	token := req.PathParameter("token")
+	// 从s.cache.tokens中获得cacheEntry
+	// token对应得请求不存在，则直接返回nil，false
+	// 如果存在，则从s.cache.ll和s.cache.tokens中移除，如果过期了，则返回nil，false
+	// 否则返回request
 	cachedRequest, ok := s.cache.Consume(token)
 	if !ok {
 		http.NotFound(resp.ResponseWriter, req.Request)
@@ -300,7 +353,12 @@ func (s *server) serveExec(req *restful.Request, resp *restful.Response) {
 }
 
 func (s *server) serveAttach(req *restful.Request, resp *restful.Response) {
+	// 请求路径中token的值
 	token := req.PathParameter("token")
+	// 从s.cache.tokens中获得cacheEntry
+	// token对应得请求不存在，则直接返回nil，false
+	// 如果存在，则从s.cache.ll和s.cache.tokens中移除，如果过期了，则返回nil，false
+	// 否则返回request
 	cachedRequest, ok := s.cache.Consume(token)
 	if !ok {
 		http.NotFound(resp.ResponseWriter, req.Request)
@@ -332,7 +390,12 @@ func (s *server) serveAttach(req *restful.Request, resp *restful.Response) {
 }
 
 func (s *server) servePortForward(req *restful.Request, resp *restful.Response) {
+	// 请求路径中token的值
 	token := req.PathParameter("token")
+	// 从s.cache.tokens中获得cacheEntry
+	// token对应得请求不存在，则直接返回nil，false
+	// 如果存在，则从s.cache.ll和s.cache.tokens中移除，如果过期了，则返回nil，false
+	// 否则返回request
 	cachedRequest, ok := s.cache.Consume(token)
 	if !ok {
 		http.NotFound(resp.ResponseWriter, req.Request)
@@ -373,13 +436,23 @@ var _ remotecommandserver.Attacher = &criAdapter{}
 var _ portforward.PortForwarder = &criAdapter{}
 
 func (a *criAdapter) ExecInContainer(podName string, podUID types.UID, container string, cmd []string, in io.Reader, out, err io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize, timeout time.Duration) error {
+	// a.Runtine实现在pkg\kubelet\dockershim\docker_streaming.go的streamingRuntime
+	// 执行InspectContainer，检测容器是否在运行
+	// 执行exec命令，返回后，每2s检测exec是否退出，只等待8s检测exec是否退出。启动一个goroutine，在exec启动之后从resize chan中读取消息，执行ResizeExecTTY。没有超时时间
 	return a.Runtime.Exec(container, cmd, in, out, err, tty, resize)
 }
 
+// 启动一个goroutine，读取resize里的消息，执行resizeFunc（调用docker客户端进行重置container tty）
+// 调用docker客户端执行attach
 func (a *criAdapter) AttachContainer(podName string, podUID types.UID, container string, in io.Reader, out, err io.WriteCloser, tty bool, resize <-chan remotecommand.TerminalSize) error {
 	return a.Runtime.Attach(container, in, out, err, tty, resize)
 }
 
+// 查询容器是否存在
+// 容器不在运行状态，直接返回错误
+// 从stream中读取数据作为stdin，发送stdout数据到stream
+// 执行nsenter -t {container pid} -n socat - TCP4:localhost:{port}
 func (a *criAdapter) PortForward(podName string, podUID types.UID, port int32, stream io.ReadWriteCloser) error {
+	// a.Runtine实现在pkg\kubelet\dockershim\docker_streaming.go的streamingRuntime
 	return a.Runtime.PortForward(podName, port, stream)
 }

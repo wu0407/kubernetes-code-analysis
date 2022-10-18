@@ -83,6 +83,8 @@ func newCadvisorStatsProvider(
 //    其中Time为这些里面取最晚的时间，rootFsInfo.Timestamp、所有container里container.Rootfs.Time最晚的，所有ephemeralStats里volume.FsStats.Time最晚的
 //    其中UsedBytes这些里面相加，所有container.Rootfs.UsedBytes相加、所有container.Logs.UsedBytes相加、所有ephemeralStats里volume.FsStats.UsedBytes相加
 //    其中InodesUsed为这些相加，所有container.Rootfs.InodesUsed相加、所有ephemeralStats里volume.InodesUsed相加
+// PersistentVolumes
+//   由各个驱动类型实现
 // CPU和Memory为pod cgroup监控信息
 // StartTime为pod status里的StartTime
 func (p *cadvisorStatsProvider) ListPodStats() ([]statsapi.PodStats, error) {
@@ -230,13 +232,19 @@ func (p *cadvisorStatsProvider) ListPodStatsAndUpdateCPUNanoCoreUsage() ([]stats
 }
 
 // ListPodCPUAndMemoryStats returns the cpu and memory stats of all the pod-managed containers.
+// 从cadvisor的memoryCache中，获取所有pod的监控状态，包括pod的cpu和memory监控状态和所有pod的container的cpu、内存监控状态
 func (p *cadvisorStatsProvider) ListPodCPUAndMemoryStats() ([]statsapi.PodStats, error) {
+	// 从cadvisor的memoryCache获得2个最近"/"容器状态，返回容器的最近两个v2.ContainerInfo包括ContainerSpec（包括各种（是否有cpu、内存、网络、blkio、pid等）属性）和ContainerStats（容器的监控状态），包含所有子容器的ContainerInfo
 	infos, err := getCadvisorContainerInfo(p.cadvisor)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get container info from cadvisor: %v", err)
 	}
 	// removeTerminatedContainerInfo will also remove pod level cgroups, so save the infos into allInfos first
 	allInfos := infos
+	// 对containerInfo进行过滤
+	// 忽略掉不是pod的container，或container label里pod name和pod namespace至少有一个为空
+	// 如果pod里container名字有多个cgroup（容器），则只取最晚创建时间且cpu有使用数值且有memory RSS数值
+	// pod里container名字只有一个cgroup（容器），则保留
 	infos = removeTerminatedContainerInfo(infos)
 	// Map each container to a pod and update the PodStats with container data.
 	podToStats := map[statsapi.PodReference]*statsapi.PodStats{}
@@ -249,9 +257,11 @@ func (p *cadvisorStatsProvider) ListPodCPUAndMemoryStats() ([]statsapi.PodStats,
 			continue
 		}
 		// Build the Pod key if this container is managed by a Pod
+		// container的label里，不是pod name和pod namespace都有（pod name和pod namespace至少有一个为空），则忽略
 		if !isPodManagedContainer(&cinfo) {
 			continue
 		}
+		// 根据label获得pod name和pod namespace和pod uid，生成statsapi.PodReference
 		ref := buildPodRef(cinfo.Spec.Labels)
 
 		// Lookup the PodStats for the pod using the PodRef. If none exists,
@@ -264,12 +274,16 @@ func (p *cadvisorStatsProvider) ListPodCPUAndMemoryStats() ([]statsapi.PodStats,
 
 		// Update the PodStats entry with the stats from the container by
 		// adding it to podStats.Containers.
+		// 获得labels["io.kubernetes.container.name"]值
 		containerName := kubetypes.GetContainerName(cinfo.Spec.Labels)
 		if containerName == leaky.PodInfraContainerName {
 			// Special case for infrastructure container which is hidden from
 			// the user and has network stats.
+			// 如果是sandbox就将sandbox的容器创建时间设置为StartTime
 			podStats.StartTime = metav1.NewTime(cinfo.Spec.CreationTime)
 		} else {
+			// 从info中解析出container的StartTime（创建时间）、最后的cpu和memory的使用情况
+			// append到podStats.Containers
 			podStats.Containers = append(podStats.Containers, *cadvisorInfoToContainerCPUAndMemoryStats(containerName, &cinfo))
 		}
 	}
@@ -279,8 +293,10 @@ func (p *cadvisorStatsProvider) ListPodCPUAndMemoryStats() ([]statsapi.PodStats,
 	for _, podStats := range podToStats {
 		podUID := types.UID(podStats.PodRef.UID)
 		// Lookup the pod-level cgroup's CPU and memory stats
+		// 从allInfos里找到pod cgroup的cadvisorapiv2.ContainerInfo监控信息
 		podInfo := getCadvisorPodInfoFromPodUID(podUID, allInfos)
 		if podInfo != nil {
+			// 从info.Stats里的最后一个ContainerStats，获取最后的cpu和memory的使用情况
 			cpu, memory := cadvisorInfoToCPUandMemoryStats(podInfo)
 			podStats.CPU = cpu
 			podStats.Memory = memory
@@ -348,7 +364,7 @@ func buildPodRef(containerLabels map[string]string) statsapi.PodReference {
 }
 
 // isPodManagedContainer returns true if the cinfo container is managed by a Pod
-// 是否即有pod name和pod namespace
+// 是否同时有pod name和pod namespace
 func isPodManagedContainer(cinfo *cadvisorapiv2.ContainerInfo) bool {
 	// 获得labels["io.kubernetes.pod.name"]值
 	podName := kubetypes.GetPodName(cinfo.Spec.Labels)
@@ -394,7 +410,7 @@ func getCadvisorPodInfoFromPodUID(podUID types.UID, infos map[string]cadvisorapi
 // A ContainerInfo is considered to be of a terminated container if it has an
 // older CreationTime and zero CPU instantaneous and memory RSS usage.
 // 对containerInfo进行过滤
-// 忽略掉不是pod name和pod namespace都有
+// 忽略掉不是pod的container，或container label里pod name和pod namespace至少有一个为空
 // 如果pod里container名字有多个cgroup（容器），则只取最晚创建时间且cpu有使用数值且有memory RSS数值
 // pod里container名字只有一个cgroup（容器），则保留
 func removeTerminatedContainerInfo(containerInfo map[string]cadvisorapiv2.ContainerInfo) map[string]cadvisorapiv2.ContainerInfo {

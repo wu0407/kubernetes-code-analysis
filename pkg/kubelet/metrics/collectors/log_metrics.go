@@ -61,6 +61,24 @@ func (c *logMetricsCollector) DescribeWithStability(ch chan<- *metrics.Desc) {
 
 // CollectWithStability implements the metrics.StableCollector interface.
 func (c *logMetricsCollector) CollectWithStability(ch chan<- metrics.Metric) {
+	// c.podStats默认为kl.StatsProvider.ListPodStats
+	// 如果是kl.StatsProvider为cadvisorStatsProvider，则
+	//   返回所有pod的监控状态
+	//   其中Network为labels["io.kubernetes.container.name"]为"POD"的容器的网卡状态
+	//   其中Containers为pod里所有普通container的状态
+	//   其中VolumeStats为pod各个volume的获取目录使用量，inode使用量，文件系统的available bytes, byte capacity,total inodes, inodes free。状态分为两类EphemeralVolumes（EmptyDir且EmptyDir底层存储不是内存、ConfigMap、GitRepo）和PersistentVolumes
+	//   EphemeralStorage
+	//      其中AvailableBytes为rootFsInfo.Available
+	//      其中CapacityBytes为rootFsInfo.Capacity
+	//      其中InodesFree为rootFsInfo.InodesFree
+	//      其中Inodes为rootFsInfo.Inodes
+	//      其中Time为这些里面取最晚的时间，rootFsInfo.Timestamp、所有container里container.Rootfs.Time最晚的，所有ephemeralStats里volume.FsStats.Time最晚的
+	//      其中UsedBytes这些里面相加，所有container.Rootfs.UsedBytes相加、所有container.Logs.UsedBytes相加、所有ephemeralStats里volume.FsStats.UsedBytes相加
+	//      其中InodesUsed为这些相加，所有container.Rootfs.InodesUsed相加、所有ephemeralStats里volume.InodesUsed相加
+	//   PersistentVolumes
+	//     由各个驱动类型实现
+	//   CPU和Memory为pod cgroup监控信息
+	//   StartTime为pod status里的StartTime
 	podStats, err := c.podStats()
 	if err != nil {
 		klog.Errorf("failed to get pod stats: %v", err)

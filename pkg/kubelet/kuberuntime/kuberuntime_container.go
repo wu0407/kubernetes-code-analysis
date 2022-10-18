@@ -967,16 +967,20 @@ func findNextInitContainerToRun(pod *v1.Pod, podStatus *kubecontainer.PodStatus)
 }
 
 // GetContainerLogs returns logs of a specific container.
+// 调用cri获得容器的日志路径，读取容器日志文件，发送到stdout或stderr
 func (m *kubeGenericRuntimeManager) GetContainerLogs(ctx context.Context, pod *v1.Pod, containerID kubecontainer.ContainerID, logOptions *v1.PodLogOptions, stdout, stderr io.Writer) (err error) {
+	// 调用cri获得容器的ContainerStatus
 	status, err := m.runtimeService.ContainerStatus(containerID.ID)
 	if err != nil {
 		klog.V(4).Infof("failed to get container status for %v: %v", containerID.String(), err)
 		return fmt.Errorf("unable to retrieve container logs for %v", containerID.String())
 	}
+	// 读取容器日志文件，发送到stdout或stderr
 	return m.ReadLogs(ctx, status.GetLogPath(), containerID.ID, logOptions, stdout, stderr)
 }
 
 // GetExec gets the endpoint the runtime will serve the exec request from.
+// 调用cri接口，返回执行exec的url
 func (m *kubeGenericRuntimeManager) GetExec(id kubecontainer.ContainerID, cmd []string, stdin, stdout, stderr, tty bool) (*url.URL, error) {
 	req := &runtimeapi.ExecRequest{
 		ContainerId: id.ID,

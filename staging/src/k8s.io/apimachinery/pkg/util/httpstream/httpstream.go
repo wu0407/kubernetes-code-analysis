@@ -94,7 +94,9 @@ type Stream interface {
 }
 
 // IsUpgradeRequest returns true if the given request is a connection upgrade request
+// http request中的header里的"Connection"值，是否包含"Upgrade"
 func IsUpgradeRequest(req *http.Request) bool {
+	// http request中的header里的"Connection"值，包含"Upgrade"，则返回true
 	for _, h := range req.Header[http.CanonicalHeaderKey(HeaderConnection)] {
 		if strings.Contains(strings.ToLower(h), strings.ToLower(HeaderUpgrade)) {
 			return true
@@ -103,6 +105,7 @@ func IsUpgradeRequest(req *http.Request) bool {
 	return false
 }
 
+// 遍历clientProtocols中第一个在serverProtocols里的protocol
 func negotiateProtocol(clientProtocols, serverProtocols []string) string {
 	for i := range clientProtocols {
 		for j := range serverProtocols {
@@ -120,7 +123,11 @@ func negotiateProtocol(clientProtocols, serverProtocols []string) string {
 // indicating the chosen subprotocol. If no match is found, HTTP forbidden is
 // returned, along with a response header containing the list of protocols the
 // server can accept.
+// 从请求的头部"X-Stream-Protocol-Version"值，找到第一个在serverProtocols中的protocol
+// 如果找不到，则响应header中添加"X-Accepted-Stream-Protocol-Versions" header头部，值为服务端支持的protocol，http code为403
+// 否则响应header中添加key为"X-Stream-Protocol-Version"，值为第一个支持的版本
 func Handshake(req *http.Request, w http.ResponseWriter, serverProtocols []string) (string, error) {
+	// header中"X-Stream-Protocol-Version"值
 	clientProtocols := req.Header[http.CanonicalHeaderKey(HeaderProtocolVersion)]
 	if len(clientProtocols) == 0 {
 		return "", fmt.Errorf("unable to upgrade: %s is required", HeaderProtocolVersion)
@@ -130,7 +137,9 @@ func Handshake(req *http.Request, w http.ResponseWriter, serverProtocols []strin
 		panic(fmt.Errorf("unable to upgrade: serverProtocols is required"))
 	}
 
+	// 遍历clientProtocols中第一个在serverProtocols里的protocol
 	negotiatedProtocol := negotiateProtocol(clientProtocols, serverProtocols)
+	// 服务端不支持客户端请求的提供的protocol，则响应header中添加"X-Accepted-Stream-Protocol-Versions" header头部，值为服务端支持的protocol
 	if len(negotiatedProtocol) == 0 {
 		for i := range serverProtocols {
 			w.Header().Add(HeaderAcceptedProtocolVersions, serverProtocols[i])
@@ -140,6 +149,7 @@ func Handshake(req *http.Request, w http.ResponseWriter, serverProtocols []strin
 		return "", err
 	}
 
+	// 响应header中添加key为"X-Stream-Protocol-Version"，值为第一个支持的版本
 	w.Header().Add(HeaderProtocolVersion, negotiatedProtocol)
 	return negotiatedProtocol, nil
 }

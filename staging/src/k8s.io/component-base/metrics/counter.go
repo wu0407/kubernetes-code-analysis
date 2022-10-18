@@ -157,6 +157,7 @@ func (v *CounterVec) Delete(labels map[string]string) bool {
 	if !v.IsCreated() {
 		return false // since we haven't created the metric, we haven't deleted a metric with the passed in values
 	}
+	// 移除labels一样的metrics
 	return v.CounterVec.Delete(labels)
 }
 

@@ -69,16 +69,19 @@ func (l *log) Name() string {
 func (l *log) Check(_ *http.Request) error {
 	l.startOnce.Do(func() {
 		l.lastVerified.Store(time.Now())
+		// 启动一个goroutine，每一分钟进行log flush，然后记录完成时间
 		go wait.Forever(func() {
 			klog.Flush()
 			l.lastVerified.Store(time.Now())
 		}, time.Minute)
 	})
 
+	// log flush时间不超过2分钟，返回nil
 	lastVerified := l.lastVerified.Load().(time.Time)
 	if time.Since(lastVerified) < (2 * time.Minute) {
 		return nil
 	}
+	// log flush时间超过2分钟，返回错误
 	return fmt.Errorf("logging blocked")
 }
 
@@ -158,6 +161,7 @@ func InstallPathHandler(mux mux, path string, checks ...HealthChecker) {
 	klog.V(5).Infof("Installing health checkers for (%v): %v", path, formatQuoted(checkerNames(checks...)...))
 
 	mux.Handle(path,
+		// 包装handleRootHealthz(checks...)并记录请求metrics
 		metrics.InstrumentHandlerFunc("GET",
 			/* group = */ "",
 			/* version = */ "",
@@ -166,7 +170,9 @@ func InstallPathHandler(mux mux, path string, checks ...HealthChecker) {
 			/* scope = */ "",
 			/* component = */ "",
 			handleRootHealthz(checks...)))
+	// 注册url各个checker在path下子路径，比如"/healthz/ping"
 	for _, check := range checks {
+		// adaptCheckToHandler为包装check.Check，执行check.Check(req *http.Request)发生错误，则返回http 500和错误，否则返回http 200和"ok"
 		mux.Handle(fmt.Sprintf("%s/%v", path, check.Name()), adaptCheckToHandler(check.Check))
 	}
 }
@@ -193,6 +199,7 @@ func (c *healthzCheck) Check(r *http.Request) error {
 }
 
 // getExcludedChecks extracts the health check names to be excluded from the query param
+// 从url query参数里获取"exclude"值
 func getExcludedChecks(r *http.Request) sets.String {
 	checks, found := r.URL.Query()["exclude"]
 	if found {
@@ -202,18 +209,28 @@ func getExcludedChecks(r *http.Request) sets.String {
 }
 
 // handleRootHealthz returns an http.HandlerFunc that serves the provided checks.
+// 返回Healthz的http.HandlerFunc
 func handleRootHealthz(checks ...HealthChecker) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failed := false
+		// 从url query参数里获取"exclude"值
 		excluded := getExcludedChecks(r)
 		var verboseOut bytes.Buffer
 		for _, check := range checks {
 			// no-op the check if we've specified we want to exclude the check
+			// checker name在"exclude"值中，则跳过这个checker
 			if excluded.Has(check.Name()) {
 				excluded.Delete(check.Name())
 				fmt.Fprintf(&verboseOut, "[+]%v excluded: ok\n", check.Name())
 				continue
 			}
+			// 执行各个checker的check
+			// "ping" checker啥也没做
+			// "log" checker
+			//   启动一个goroutine，进行log flush，然后记录完成时间
+			//   检测上次log flush时间是否超过2分钟，超过2分钟，则返回错误，否则返回nil
+			// "syncloop" checker
+			//    执行最近一次sync loop开始时间或上次执行sync loop完时间离现在超过duration（默认为5分钟），则返回错误
 			if err := check.Check(r); err != nil {
 				// don't include the error since this endpoint is public.  If someone wants more detail
 				// they should have explicit permission to the detailed checks.
@@ -224,12 +241,14 @@ func handleRootHealthz(checks ...HealthChecker) http.HandlerFunc {
 				fmt.Fprintf(&verboseOut, "[+]%v ok\n", check.Name())
 			}
 		}
+		// excluded里有不在checks里的checker
 		if excluded.Len() > 0 {
 			fmt.Fprintf(&verboseOut, "warn: some health checks cannot be excluded: no matches for %v\n", formatQuoted(excluded.List()...))
 			klog.Warningf("cannot exclude some health checks, no health checks are installed matching %v",
 				formatQuoted(excluded.List()...))
 		}
 		// always be verbose on failure
+		// 至少一个checker执行Check失败，则返回http 500
 		if failed {
 			klog.V(2).Infof("%vhealthz check failed", verboseOut.String())
 			http.Error(httplog.Unlogged(r, w), fmt.Sprintf("%vhealthz check failed", verboseOut.String()), http.StatusInternalServerError)
@@ -238,6 +257,7 @@ func handleRootHealthz(checks ...HealthChecker) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
+		// url query里没有"verbose"，就返回ok
 		if _, found := r.URL.Query()["verbose"]; !found {
 			fmt.Fprint(w, "ok")
 			return
@@ -249,6 +269,7 @@ func handleRootHealthz(checks ...HealthChecker) http.HandlerFunc {
 }
 
 // adaptCheckToHandler returns an http.HandlerFunc that serves the provided checks.
+// 包装c，执行c发生错误，则返回http 500和错误，否则返回http 200和"ok"
 func adaptCheckToHandler(c func(r *http.Request) error) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		err := c(r)
@@ -261,6 +282,7 @@ func adaptCheckToHandler(c func(r *http.Request) error) http.HandlerFunc {
 }
 
 // checkerNames returns the names of the checks in the same order as passed in.
+// 返回所有HealthChecker的name集合
 func checkerNames(checks ...HealthChecker) []string {
 	// accumulate the names of checks for printing them out.
 	checkerNames := make([]string, 0, len(checks))
@@ -272,6 +294,7 @@ func checkerNames(checks ...HealthChecker) []string {
 
 // formatQuoted returns a formatted string of the health check names,
 // preserving the order passed in.
+// 所有names使用逗号分隔并添加双引号
 func formatQuoted(names ...string) string {
 	quoted := make([]string, 0, len(names))
 	for _, name := range names {

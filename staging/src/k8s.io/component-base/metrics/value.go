@@ -40,10 +40,13 @@ func (vt *ValueType) toPromValueType() prometheus.ValueType {
 // NewLazyConstMetric is a helper of MustNewConstMetric.
 //
 // Note: If the metrics described by the desc is hidden, the metrics will not be created.
+// 如果metrics不是隐藏的，则返回prometheus.constMetric，否则返回nil
 func NewLazyConstMetric(desc *Desc, valueType ValueType, value float64, labelValues ...string) Metric {
+	// 如果metrics是隐藏的，直接返回nil
 	if desc.IsHidden() {
 		return nil
 	}
+	// 返回prometheus.constMetric
 	return prometheus.MustNewConstMetric(desc.toPrometheusDesc(), valueType.toPromValueType(), value, labelValues...)
 }
 

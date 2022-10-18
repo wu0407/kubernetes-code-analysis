@@ -125,8 +125,11 @@ func (cgroupName CgroupName) ToCgroupfs() string {
 	return "/" + path.Join(cgroupName...)
 }
 
+// 对name去除"/"后，根据"/"分隔符进行分割，返回字符串切片，然后转成CgroupName
 func ParseCgroupfsToCgroupName(name string) CgroupName {
+	// 对name去除"/"后，根据"/"分隔符进行分割
 	components := strings.Split(strings.TrimPrefix(name, "/"), "/")
+	// 如果components为空，返回空CgroupName
 	if len(components) == 1 && components[0] == "" {
 		components = []string{}
 	}
@@ -224,10 +227,12 @@ func (m *cgroupManagerImpl) Name(name CgroupName) string {
 }
 
 // CgroupName converts the literal cgroupfs name on the host to an internal identifier.
+// 将name转成对应m.adapter.cgroupManagerType（systemd或cgroupfs）的CgroupName
 func (m *cgroupManagerImpl) CgroupName(name string) CgroupName {
 	if m.adapter.cgroupManagerType == libcontainerSystemd {
 		return ParseSystemdToCgroupName(name)
 	}
+	// 对name去除"/"后，根据"/"分隔符进行分割，返回字符串切片，然后转成CgroupName
 	return ParseCgroupfsToCgroupName(name)
 }
 

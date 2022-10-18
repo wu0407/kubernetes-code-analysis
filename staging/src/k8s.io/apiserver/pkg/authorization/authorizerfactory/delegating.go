@@ -37,6 +37,7 @@ type DelegatingAuthorizerConfig struct {
 	DenyCacheTTL time.Duration
 }
 
+// 返回staging\src\k8s.io\apiserver\plugin\pkg\authorizer\webhook\webhook.go里的WebhookAuthorizer
 func (c DelegatingAuthorizerConfig) New() (authorizer.Authorizer, error) {
 	return webhook.NewFromInterface(
 		c.SubjectAccessReviewClient,

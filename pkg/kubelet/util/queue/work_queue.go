@@ -47,7 +47,7 @@ func NewBasicWorkQueue(clock clock.Clock) WorkQueue {
 	return &basicWorkQueue{queue: queue, clock: clock}
 }
 
-// 获得queue中过期的uid列表
+// 获得queue中过期的uid列表，并从队列中移除
 func (q *basicWorkQueue) GetWork() []types.UID {
 	q.lock.Lock()
 	defer q.lock.Unlock()

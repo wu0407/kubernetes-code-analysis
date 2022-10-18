@@ -27,6 +27,7 @@ type simpleCache struct {
 	cache *utilcache.Expiring
 }
 
+// 包装cache.Expiring，cache存储cacheRecord类型
 func newSimpleCache(clock clock.Clock) cache {
 	return &simpleCache{cache: utilcache.NewExpiringWithClock(clock)}
 }

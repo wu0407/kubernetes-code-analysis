@@ -34,12 +34,17 @@ func New(auth authenticator.Token) *Authenticator {
 
 var invalidToken = errors.New("invalid bearer token")
 
+// 先从header中解析出"Authorization"的header值，在从这个header值中解析出token
+// 先通过缓存中查找未过期的认证响应，未找到则进行请求apiserver，进行token认证（一个token同一时时间只有一个请求）
 func (a *Authenticator) AuthenticateRequest(req *http.Request) (*authenticator.Response, bool, error) {
+	// 从request header头部获得"Authorization"的header值
 	auth := strings.TrimSpace(req.Header.Get("Authorization"))
+	// "Authorization"的header值为空
 	if auth == "" {
 		return nil, false, nil
 	}
 	parts := strings.Split(auth, " ")
+	// "Authorization"的header值不包含两个字段，或第一个字段不为"bearer"
 	if len(parts) < 2 || strings.ToLower(parts[0]) != "bearer" {
 		return nil, false, nil
 	}
@@ -51,14 +56,17 @@ func (a *Authenticator) AuthenticateRequest(req *http.Request) (*authenticator.R
 		return nil, false, nil
 	}
 
+	// 先通过缓存中查找未过期的认证响应，未找到则进行请求apiserver，进行token认证（一个token同一时时间只有一个请求）
 	resp, ok, err := a.auth.AuthenticateToken(req.Context(), token)
 	// if we authenticated successfully, go ahead and remove the bearer token so that no one
 	// is ever tempted to use it inside of the API server
+	// 认证成功则移除请求头部的"Authorization"
 	if ok {
 		req.Header.Del("Authorization")
 	}
 
 	// If the token authenticator didn't error, provide a default error
+	// 未发生错误，且认证不成功，则错误为"invalid bearer token"
 	if !ok && err == nil {
 		err = invalidToken
 	}

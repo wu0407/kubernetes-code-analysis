@@ -67,7 +67,7 @@ func ProbeVolumePlugins(featureGate featuregate.FeatureGate) ([]volume.VolumePlu
 	// Kubelet does not currently need to configure volume plugins.
 	// If/when it does, see kube-controller-manager/app/plugins.go for example of using volume.VolumeConfig
 	var err error
-	// 内置的aws ebs、Azure file、Azure disk、gce-pdgce-pd、cinder存储插件
+	// 内置的aws ebs、Azure file、Azure disk、gce-pd、cinder存储插件
 	allPlugins, err = appendLegacyProviderVolumes(allPlugins, featureGate)
 	if err != nil {
 		return allPlugins, err

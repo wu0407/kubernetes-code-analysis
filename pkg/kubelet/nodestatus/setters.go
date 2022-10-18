@@ -574,7 +574,7 @@ func ReadyCondition(
 					newNodeReadyCondition.LastTransitionTime = currentTime
 					needToRecordEvent = true
 				}
-				// node.Status.Conditions的type等于ready已经存在，更新condition
+				// node.Status.Conditions的type为ready，更新为新的newNodeReadyCondition
 				node.Status.Conditions[i] = newNodeReadyCondition
 				readyConditionUpdated = true
 				break

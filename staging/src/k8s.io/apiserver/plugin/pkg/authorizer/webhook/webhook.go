@@ -152,6 +152,8 @@ func newWithBackoff(subjectAccessReview subjectAccessReviewer, authorizedTTL, un
 // TODO(mikedanese): We should eventually support failing closed when we
 // encounter an error. We are failing open now to preserve backwards compatible
 // behavior.
+// 先从缓存中查询是否已经有相同的SubjectAccessReview，有的话则返回这个缓存中的授权结果
+// 没有的话，则访问apiserver创建authorizationv1.SubjectAccessReview进行授权，再将授权结果保存到缓存中，然后返回这个授权结果
 func (w *WebhookAuthorizer) Authorize(ctx context.Context, attr authorizer.Attributes) (decision authorizer.Decision, reason string, err error) {
 	r := &authorizationv1.SubjectAccessReview{}
 	if user := attr.GetUser(); user != nil {
@@ -159,10 +161,13 @@ func (w *WebhookAuthorizer) Authorize(ctx context.Context, attr authorizer.Attri
 			User:   user.GetName(),
 			UID:    user.GetUID(),
 			Groups: user.GetGroups(),
+			// 将map[string][]string转成map[string]authorizationv1.ExtraValue
+			// 其实就是将[]string转成authorizationv1.ExtraValue
 			Extra:  convertToSARExtra(user.GetExtra()),
 		}
 	}
 
+	// ResourceRequest资源类型请求，则设置r.Spec.ResourceAttributes字段
 	if attr.IsResourceRequest() {
 		r.Spec.ResourceAttributes = &authorizationv1.ResourceAttributes{
 			Namespace:   attr.GetNamespace(),
@@ -183,6 +188,8 @@ func (w *WebhookAuthorizer) Authorize(ctx context.Context, attr authorizer.Attri
 	if err != nil {
 		return w.decisionOnError, "", err
 	}
+	// 获取key在responseCache中的值，
+	// 如果获取到SubjectAccessReviewStatus，如果这个cacheEntry过期，就从responseCache中清理掉
 	if entry, ok := w.responseCache.Get(string(key)); ok {
 		r.Status = entry.(authorizationv1.SubjectAccessReviewStatus)
 	} else {
@@ -200,10 +207,13 @@ func (w *WebhookAuthorizer) Authorize(ctx context.Context, attr authorizer.Attri
 			return w.decisionOnError, "", err
 		}
 		r.Status = result.Status
+		// attr里namespace长度+verb长度+APIGroup长度+APIVersion长度+Resource（资源名称）长度+Name长度+Path长度小于10000，返回true
 		if shouldCache(attr) {
+			// 授权响应允许，则以key为key添加r.Status到w.responseCache，缓存时间为w.authorizedTTL
 			if r.Status.Allowed {
 				w.responseCache.Add(string(key), r.Status, w.authorizedTTL)
 			} else {
+				// 授权响应不允许，则以key为key添加r.Status到w.responseCache，缓存时间为w.unauthorizedTTL
 				w.responseCache.Add(string(key), r.Status, w.unauthorizedTTL)
 			}
 		}
@@ -231,6 +241,8 @@ func (w *WebhookAuthorizer) RulesFor(user user.Info, namespace string) ([]author
 	return resourceRules, nonResourceRules, incomplete, fmt.Errorf("webhook authorizer does not support user rule resolution")
 }
 
+// 将map[string][]string转成map[string]authorizationv1.ExtraValue
+// 其实就是将[]string转成authorizationv1.ExtraValue
 func convertToSARExtra(extra map[string][]string) map[string]authorizationv1.ExtraValue {
 	if extra == nil {
 		return nil
@@ -311,6 +323,7 @@ func (t *subjectAccessReviewV1beta1Client) Create(ctx context.Context, subjectAc
 
 // shouldCache determines whether it is safe to cache the given request attributes. If the
 // requester-controlled attributes are too large, this may be a DoS attempt, so we skip the cache.
+// attr里namespace长度+verb长度+APIGroup长度+APIVersion长度+Resource（资源名称）长度+Name长度+Path长度小于10000，返回true
 func shouldCache(attr authorizer.Attributes) bool {
 	controlledAttrSize := int64(len(attr.GetNamespace())) +
 		int64(len(attr.GetVerb())) +

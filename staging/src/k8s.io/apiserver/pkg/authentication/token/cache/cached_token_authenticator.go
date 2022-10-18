@@ -97,6 +97,8 @@ func newWithClock(authenticator authenticator.Token, cacheErrs bool, successTTL,
 		// used. Currently we advertise support 5k nodes and 10k
 		// namespaces; a 32k entry cache is therefore a 2x safety
 		// margin.
+		// cache第一层为stripedCache（32个simpleCache），第二层是simpleCache
+		// 第三层为staging\src\k8s.io\apimachinery\pkg\util\cache\expiring.go的Expiring
 		cache: newStripedCache(32, fnvHashFunc, func() cache { return newSimpleCache(clock) }),
 
 		hashPool: &sync.Pool{
@@ -108,12 +110,16 @@ func newWithClock(authenticator authenticator.Token, cacheErrs bool, successTTL,
 }
 
 // AuthenticateToken implements authenticator.Token
+// 先通过缓存中查找未过期的认证响应，未找到则进行请求apiserver，进行token认证（一个token同一时时间只有一个请求）
 func (a *cachedTokenAuthenticator) AuthenticateToken(ctx context.Context, token string) (*authenticator.Response, bool, error) {
+	// 统计命中监控信息的函数，记录metrics
 	doneAuthenticating := stats.authenticating()
 
 	auds, audsOk := authenticator.AudiencesFrom(ctx)
 
+	// 生成一个key（从a.hashPool区一个hash，根据auds, token进行hash生成string）
 	key := keyFunc(a.hashPool, auds, token)
+	// 缓存中有record，直接返回缓存中的响应
 	if record, ok := a.cache.get(key); ok {
 		// Record cache hit
 		doneAuthenticating(true)
@@ -157,18 +163,25 @@ func (a *cachedTokenAuthenticator) AuthenticateToken(ctx context.Context, token 
 		ctx, cancel := context.WithTimeout(context.Background(), sharedLookupTimeout)
 		defer cancel()
 
+		// 如果request里包含audience，则将audience重新包进context
 		if audsOk {
 			ctx = authenticator.WithAudiences(ctx, auds)
 		}
 
+		// 降级到真正的authenticator进行认证
+		// 如果staging\src\k8s.io\apiserver\plugin\pkg\authenticator\token\webhook\webhook.go里的WebhookTokenAuthenticator
+		// 请求apiserver根据token创建tokenReview，进行认证
 		resp, ok, err := a.authenticator.AuthenticateToken(ctx, token)
+		// 未启用缓存错误，且err不为nil，则直接返回nil，错误
 		if !a.cacheErrs && err != nil {
 			return nil, err
 		}
 
 		switch {
+		// 认证成功，且配置了缓存成功时间，则将认证响应保存到缓存中
 		case ok && a.successTTL > 0:
 			a.cache.set(key, &cacheRecord{resp: resp, ok: ok, err: err}, a.successTTL)
+		// 认证不成功，且配置了缓存不成功时间，则将认证响应保存到缓存中
 		case !ok && a.failureTTL > 0:
 			a.cache.set(key, &cacheRecord{resp: resp, ok: ok, err: err}, a.failureTTL)
 		}
@@ -196,14 +209,22 @@ func keyFunc(hashPool *sync.Pool, auds []string, token string) string {
 
 	// try to force stack allocation
 	var a [4]byte
+	// b的长度为4
 	b := a[:]
 
+	// 将token的长度值以uint32形式保存到b中，并将b写入到h
+	// 将token转成byte写入到h
 	writeLengthPrefixedString(h, b, token)
 	// encode the length of audiences to avoid ambiguities
+	// 将auds的长度值以uint32形式保存到b中，并将b写入到h
 	writeLength(h, b, len(auds))
 	for _, aud := range auds {
+		// 将aud的长度值以uint32形式保存到b中，并将b写入到h
+		// 将aud转成byte写入到h
 		writeLengthPrefixedString(h, b, aud)
 	}
+
+	// h里保存了：{token长度}{token}{auds长度}{aud1长度}{aud1}{aud2长度}{aud2}...
 
 	key := toString(h.Sum(nil)) // skip base64 encoding to save an allocation
 
@@ -215,7 +236,9 @@ func keyFunc(hashPool *sync.Pool, auds []string, token string) string {
 // writeLengthPrefixedString writes s with a length prefix to prevent ambiguities, i.e. "xy" + "z" == "x" + "yz"
 // the length of b is assumed to be 4 (b is mutated by this function to store the length of s)
 func writeLengthPrefixedString(w io.Writer, b []byte, s string) {
+	// 将s的长度值以uint32形式保存到b中，并将b写入到w
 	writeLength(w, b, len(s))
+	// 将s转成byte写入到w
 	if _, err := w.Write(toBytes(s)); err != nil {
 		panic(err) // Write() on hash never fails
 	}
@@ -224,7 +247,9 @@ func writeLengthPrefixedString(w io.Writer, b []byte, s string) {
 // writeLength encodes length into b and then writes it via the given writer
 // the length of b is assumed to be 4
 func writeLength(w io.Writer, b []byte, length int) {
+	// 将length以uint32形式保存到b中
 	binary.BigEndian.PutUint32(b, uint32(length))
+	// 将b写入到w中
 	if _, err := w.Write(b); err != nil {
 		panic(err) // Write() on hash never fails
 	}

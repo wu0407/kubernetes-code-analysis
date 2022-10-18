@@ -86,6 +86,7 @@ type statsCollector struct{}
 
 var stats = statsCollector{}
 
+// 返回统计命中监控信息的函数
 func (statsCollector) authenticating() func(hit bool) {
 	start := time.Now()
 	return func(hit bool) {

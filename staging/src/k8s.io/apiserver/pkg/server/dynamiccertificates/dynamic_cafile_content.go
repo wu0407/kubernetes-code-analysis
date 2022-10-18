@@ -94,6 +94,9 @@ func NewDynamicCAContentFromFile(purpose, filename string) (*DynamicFileCAConten
 		filename: filename,
 		queue:    workqueue.NewNamedRateLimitingQueue(workqueue.DefaultControllerRateLimiter(), fmt.Sprintf("DynamicCABundle-%s", purpose)),
 	}
+	// 从ret.filename文件中读取出caBundle，并生成caBundleAndVerifier（包含原始的caBundle byte和x509.verifyOptions的KeyUsages和Roots）
+	// 保存caBundleAndVerifier到ret.caBundle
+	// 遍历所有的listeners，执行listener.Enqueue()（通知ca证书已经改变）
 	if err := ret.loadCABundle(); err != nil {
 		return nil, err
 	}
@@ -107,6 +110,9 @@ func (c *DynamicFileCAContent) AddListener(listener Listener) {
 }
 
 // loadCABundle determines the next set of content for the file.
+// 从c.filename文件中读取出caBundle，并生成caBundleAndVerifier（包含原始的caBundle byte和x509.verifyOptions的KeyUsages和Roots）
+// 保存caBundleAndVerifier到c.caBundle
+// 遍历所有的listeners，执行listener.Enqueue()（通知ca证书已经改变）
 func (c *DynamicFileCAContent) loadCABundle() error {
 	caBundle, err := ioutil.ReadFile(c.filename)
 	if err != nil {
@@ -117,10 +123,12 @@ func (c *DynamicFileCAContent) loadCABundle() error {
 	}
 
 	// check to see if we have a change. If the values are the same, do nothing.
+	// caBundle与c.caBundle中的caBundle是否一样
 	if !c.hasCAChanged(caBundle) {
 		return nil
 	}
 
+	// 解析caBundle生成caBundleAndVerifier（包含原始的caBundle byte和x509.verifyOptions的KeyUsages和Roots）
 	caBundleAndVerifier, err := newCABundleAndVerifier(c.Name(), caBundle)
 	if err != nil {
 		return err
@@ -136,6 +144,7 @@ func (c *DynamicFileCAContent) loadCABundle() error {
 }
 
 // hasCAChanged returns true if the caBundle is different than the current.
+// caBundle与c.caBundle中的caBundle是否一样
 func (c *DynamicFileCAContent) hasCAChanged(caBundle []byte) bool {
 	uncastExisting := c.caBundle.Load()
 	if uncastExisting == nil {
@@ -168,9 +177,14 @@ func (c *DynamicFileCAContent) Run(workers int, stopCh <-chan struct{}) {
 	defer klog.Infof("Shutting down %s", c.name)
 
 	// doesn't matter what workers say, only start one.
+	// 读取workerQueue里消息，执行下面操作
+	// 从c.filename文件中读取出caBundle，并生成caBundleAndVerifier（包含原始的caBundle byte和x509.verifyOptions的KeyUsages和Roots）
+	// 保存caBundleAndVerifier到c.caBundle
+	// 遍历所有的listeners，执行listener.Enqueue()（通知ca证书已经改变）
 	go wait.Until(c.runWorker, time.Second, stopCh)
 
 	// start timer that rechecks every minute, just in case.  this also serves to prime the controller quickly.
+	// 每一分钟添加"key"到c.queue
 	go wait.PollImmediateUntil(FileRefreshDuration, func() (bool, error) {
 		c.queue.Add(workItemKey)
 		return false, nil
@@ -193,6 +207,9 @@ func (c *DynamicFileCAContent) processNextWorkItem() bool {
 	}
 	defer c.queue.Done(dsKey)
 
+	// 从c.filename文件中读取出caBundle，并生成caBundleAndVerifier（包含原始的caBundle byte和x509.verifyOptions的KeyUsages和Roots）
+	// 保存caBundleAndVerifier到c.caBundle
+	// 遍历所有的listeners，执行listener.Enqueue()（通知ca证书已经改变）
 	err := c.loadCABundle()
 	if err == nil {
 		c.queue.Forget(dsKey)
@@ -227,6 +244,7 @@ func (c *DynamicFileCAContent) VerifyOptions() (x509.VerifyOptions, bool) {
 
 // newVerifyOptions creates a new verification func from a file.  It reads the content and then fails.
 // It will return a nil function if you pass an empty CA file.
+// 解析caBundle生成caBundleAndVerifier（包含原始的caBundle byte和x509.verifyOptions的KeyUsages和Roots）
 func newCABundleAndVerifier(name string, caBundle []byte) (*caBundleAndVerifier, error) {
 	if len(caBundle) == 0 {
 		return nil, fmt.Errorf("missing content for CA bundle %q", name)
@@ -235,6 +253,7 @@ func newCABundleAndVerifier(name string, caBundle []byte) (*caBundleAndVerifier,
 	// Wrap with an x509 verifier
 	var err error
 	verifyOptions := defaultVerifyOptions()
+	// caBundle解析成x509.CertPool
 	verifyOptions.Roots, err = cert.NewPoolFromBytes(caBundle)
 	if err != nil {
 		return nil, fmt.Errorf("error loading CA bundle for %q: %v", name, err)

@@ -51,6 +51,8 @@ type nodeAuthorizerAttributesGetter struct {
 	nodeName types.NodeName
 }
 
+// subpath等于path（去除最后斜杆）
+// path（去除最后斜杆）是subpath的前缀，且前缀是一个完整路径（斜杆分隔），比如说subpath是"/a/b", path是"/a"，"/a"是第一级路径
 func isSubpath(subpath, path string) bool {
 	path = strings.TrimSuffix(path, "/")
 	return subpath == path || (strings.HasPrefix(subpath, path) && subpath[len(path)] == '/')
@@ -98,13 +100,17 @@ func (n nodeAuthorizerAttributesGetter) GetRequestAttributes(u user.Info, r *htt
 	// Override subresource for specific paths
 	// This allows subdividing access to the kubelet API
 	switch {
+	// requestPath匹配"/stats/*"
 	case isSubpath(requestPath, statsPath):
 		attrs.Subresource = "stats"
+	// requestPath匹配"/metrics/*"
 	case isSubpath(requestPath, metricsPath):
 		attrs.Subresource = "metrics"
+	// requestPath匹配"/logs/*"
 	case isSubpath(requestPath, logsPath):
 		// "log" to match other log subresources (pods/log, etc)
 		attrs.Subresource = "log"
+	// requestPath匹配"/spec/*"
 	case isSubpath(requestPath, specPath):
 		attrs.Subresource = "spec"
 	}

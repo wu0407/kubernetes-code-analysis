@@ -230,10 +230,45 @@ func NewServer(
 		redirectContainerStreaming: redirectContainerStreaming,
 	}
 	if auth != nil {
+		// 设置认证和授权
 		server.InstallAuthFilter()
 	}
+	// 设置
+	// "/healthz"
+	// "/pods"
+	// "/stats/summary"
+	// 如果enableCAdvisorJSONEndpoints为true，则注册"/stats"，"/stats/container"，"/stats/{podName}/{containerName}"、"/stats/{namespace}/{podName}/{uid}/{containerName}"的handler
+	// "/metrics"
+	// "/metrics/cadvisor"
+	// "metrics/probes"
+	// "metrics/resource/v1alpha1"
+	// "metrics/resource"
+	// "metrics/resource/v1alpha1"
+	// 如果启用cadvisor json，则注册"/spec"的handler
 	server.InstallDefaultHandlers(enableCAdvisorJSONEndpoints)
 	if enableDebuggingHandlers {
+		// 设置
+		// "/run"
+		//   /{podNamespace}/{podID}/{containerName}
+		//   /{podNamespace}/{podID}/{uid}/{containerName}
+		// "/exec"
+		//   /{podNamespace}/{podID}/{containerName}
+		//   /{podNamespace}/{podID}/{uid}/{containerName}
+		// "/attach"
+		//   /{podNamespace}/{podID}/{containerName}
+		//   /{podNamespace}/{podID}/{uid}/{containerName}
+		// "portForward"
+		//   /{podNamespace}/{podID}/{containerName}
+		//   /{podNamespace}/{podID}/{uid}/{containerName}
+		// "/logs/"
+		// /containerLogs
+		// /configz
+		// /debug/pprof/
+		// "/debug/flags/v"
+		// /runningpods/
+		// "/cri/exec/{token}"
+		// "/cri/attach/{token}"
+		// "/cri/portforward/{token}"
 		server.InstallDebuggingHandlers(criHandler)
 		if enableContentionProfiling {
 			goruntime.SetBlockProfileRate(1)
@@ -248,6 +283,15 @@ func NewServer(
 func (s *Server) InstallAuthFilter() {
 	s.restfulCont.Filter(func(req *restful.Request, resp *restful.Response, chain *restful.FilterChain) {
 		// Authenticate
+		// 其中根据header来进行认证，包装了requestHeaderAuthRequestHandler，先进行证书验证，然后进行header认证
+		// 其中根据证书进行认证，先验证客户端提供的证书，然后执行a.user从证书中提取认证信息
+		// 其中根据bearer token进行认证
+		//   先从header中解析出"Authorization"的header值，在从这个header值中解析出token
+		//   先通过缓存中查找未过期的认证响应，未找到则进行请求apiserver，进行token认证（一个token同一时时间只有一个请求）
+		// 其中websocket里根据bearer token进行认证
+		//   从websocket里的header里"Sec-WebSocket-Protocol"的值，进行逗号分割，解析出"base64url.bearer.authorization.k8s.io."前缀的值
+		//   再对这个值的后缀中进行url解码，解析出token
+		//   降级到真正的authenticator.Token进行认证（先通过缓存中查找未过期的认证响应，未找到则进行请求apiserver，进行token认证（一个token同一时时间只有一个请求）
 		info, ok, err := s.auth.AuthenticateRequest(req.Request)
 		if err != nil {
 			klog.Errorf("Unable to authenticate the request due to an error: %v", err)
@@ -260,16 +304,24 @@ func (s *Server) InstallAuthFilter() {
 		}
 
 		// Get authorization attributes
+		// 获得req.Request请求的attributes，在pkg\kubelet\server\auth.go里nodeAuthorizerAttributesGetter实现
 		attrs := s.auth.GetRequestAttributes(info.User, req.Request)
 
 		// Authorize
+		// s.auth最终实现是pkg\kubelet\server\auth.go里KubeletAuth
+		// 如果KubeletAuth.Authorizer是alwaysAllowAuthorizer，则返回authorizer.DecisionAllow, "", nil
+		// 如果KubeletAuth.Authorizer是WebhookAuthorizer
+		//   先从缓存中查询是否已经有相同的SubjectAccessReview，有的话则返回这个缓存中的授权结果
+		//   没有的话，则访问apiserver创建authorizationv1.SubjectAccessReview进行授权，再将授权结果保存到缓存中，然后返回这个授权结果
 		decision, _, err := s.auth.Authorize(req.Request.Context(), attrs)
 		if err != nil {
 			msg := fmt.Sprintf("Authorization error (user=%s, verb=%s, resource=%s, subresource=%s)", attrs.GetUser().GetName(), attrs.GetVerb(), attrs.GetResource(), attrs.GetSubresource())
 			klog.Errorf(msg, err)
+			// 进行授权出现错误，则响应resp的http code为500
 			resp.WriteErrorString(http.StatusInternalServerError, msg)
 			return
 		}
+		// 授权返回不允许，则响应resp的http code为403
 		if decision != authorizer.DecisionAllow {
 			msg := fmt.Sprintf("Forbidden (user=%s, verb=%s, resource=%s, subresource=%s)", attrs.GetUser().GetName(), attrs.GetVerb(), attrs.GetResource(), attrs.GetSubresource())
 			klog.V(2).Info(msg)
@@ -278,12 +330,14 @@ func (s *Server) InstallAuthFilter() {
 		}
 
 		// Continue
+		// 认证成功且授权允许，则执行剩下的Filter
 		chain.ProcessFilter(req, resp)
 	})
 }
 
 // addMetricsBucketMatcher adds a regexp matcher and the relevant bucket to use when
 // it matches. Please be aware this is not thread safe and should not be used dynamically
+// 将bucket添加到s.metricsBuckets里，并标记为true
 func (s *Server) addMetricsBucketMatcher(bucket string) {
 	s.metricsBuckets[bucket] = true
 }
@@ -301,6 +355,7 @@ func (s *Server) getMetricBucket(path string) string {
 // patterns with the restful Container.
 func (s *Server) InstallDefaultHandlers(enableCAdvisorJSONEndpoints bool) {
 	s.addMetricsBucketMatcher("healthz")
+	// 设置"/healthz"的handler，包含ping、log、syncloop的checker
 	healthz.InstallHandler(s.restfulCont,
 		healthz.PingHealthz,
 		healthz.LogHealthz,
@@ -313,11 +368,14 @@ func (s *Server) InstallDefaultHandlers(enableCAdvisorJSONEndpoints bool) {
 		Path("/pods").
 		Produces(restful.MIME_JSON)
 	ws.Route(ws.GET("").
+		// s.getPods 返回kubelet上所有pod和static pod，类型为v1.PodList
 		To(s.getPods).
 		Operation("getPods"))
 	s.restfulCont.Add(ws)
 
 	s.addMetricsBucketMatcher("stats")
+	// 注册处理"/stats/summary"的handler
+	// 如果enableCAdvisorJSONEndpoints为true，则注册"/stats"，"/stats/container"，"/stats/{podName}/{containerName}"、"/stats/{namespace}/{podName}/{uid}/{containerName}"的handler
 	s.restfulCont.Add(stats.CreateHandlers(statsPath, s.host, s.resourceAnalyzer, enableCAdvisorJSONEndpoints))
 
 	s.addMetricsBucketMatcher("metrics")
@@ -326,23 +384,41 @@ func (s *Server) InstallDefaultHandlers(enableCAdvisorJSONEndpoints bool) {
 	s.addMetricsBucketMatcher("metrics/resource/v1alpha1")
 	s.addMetricsBucketMatcher("metrics/resource")
 	//lint:ignore SA1019 https://github.com/kubernetes/enhancements/issues/1206
+	// 注册处理"/metrics"，（注册到legacyregistry.defaultRegistry的metrics）
+	// 这个在pkg\kubelet\kubelet.go里kl.initializeModules里注册的
 	s.restfulCont.Handle(metricsPath, legacyregistry.Handler())
 
 	// cAdvisor metrics are exposed under the secured handler as well
 	r := compbasemetrics.NewKubeRegistry()
 
 	includedMetrics := cadvisormetrics.MetricSet{
+		// cpu
 		cadvisormetrics.CpuUsageMetrics:         struct{}{},
+		// memory
 		cadvisormetrics.MemoryUsageMetrics:      struct{}{},
+		// "cpuLoad"
 		cadvisormetrics.CpuLoadMetrics:          struct{}{},
+		// "diskIO"
 		cadvisormetrics.DiskIOMetrics:           struct{}{},
+		// "disk"
 		cadvisormetrics.DiskUsageMetrics:        struct{}{},
+		// "network"
 		cadvisormetrics.NetworkUsageMetrics:     struct{}{},
+		// "accelerator"
 		cadvisormetrics.AcceleratorUsageMetrics: struct{}{},
+		// "app"
 		cadvisormetrics.AppMetrics:              struct{}{},
+		// "process"
 		cadvisormetrics.ProcessMetrics:          struct{}{},
 	}
+	// containerPrometheusLabelsFunc
+	// 返回函数（从ContainerInfo中获得image、container、namespace、name（容器名称）、container（pod中container名称）值）
+	//
+	// NewPrometheusCollector
+	// 直接调用prometheus.register.MustRegister方法进行注册
 	r.RawMustRegister(metrics.NewPrometheusCollector(prometheusHostAdapter{s.host}, containerPrometheusLabelsFunc(s.host), includedMetrics))
+	// 注册"/metrics/cadvisor"
+	// 使用promhttp.HandlerFor来生成http handler
 	s.restfulCont.Handle(cadvisorMetricsPath,
 		compbasemetrics.HandlerFor(r, compbasemetrics.HandlerOpts{ErrorHandling: compbasemetrics.ContinueOnError}),
 	)
@@ -350,6 +426,9 @@ func (s *Server) InstallDefaultHandlers(enableCAdvisorJSONEndpoints bool) {
 	// deprecated endpoint which will be removed in release 1.20.0+.
 	s.addMetricsBucketMatcher("metrics/resource/v1alpha1")
 	v1alpha1ResourceRegistry := compbasemetrics.NewKubeRegistry()
+	// v1alpha1.Config()返回stats.ResourceMetricsConfig（包含NodeMetrics和ContainerMetrics）
+	// stats.NewPrometheusResourceMetricCollector返回pkg\kubelet\server\stats\prometheus_resource_metrics.go里的resourceMetricCollector
+	// 进行封装的metrics的初始化和prometheus的registry注册非隐藏的Collector（隐藏的Collector不注册）
 	v1alpha1ResourceRegistry.CustomMustRegister(stats.NewPrometheusResourceMetricCollector(s.resourceAnalyzer, v1alpha1.Config()))
 	s.restfulCont.Handle(path.Join(resourceMetricsPath, v1alpha1.Version),
 		compbasemetrics.HandlerFor(v1alpha1ResourceRegistry, compbasemetrics.HandlerOpts{ErrorHandling: compbasemetrics.ContinueOnError}),
@@ -366,6 +445,7 @@ func (s *Server) InstallDefaultHandlers(enableCAdvisorJSONEndpoints bool) {
 
 	s.addMetricsBucketMatcher("metrics/probes")
 	p := compbasemetrics.NewKubeRegistry()
+	// 注册"process_start_time_seconds"到prometheus.register
 	_ = compbasemetrics.RegisterProcessStartTime(p.Register)
 	p.MustRegister(prober.ProberResults)
 	s.restfulCont.Handle(proberMetricsPath,
@@ -373,6 +453,7 @@ func (s *Server) InstallDefaultHandlers(enableCAdvisorJSONEndpoints bool) {
 	)
 
 	s.addMetricsBucketMatcher("spec")
+	// 如果启用cadvisor json，则注册"/spec"的handler为返回cadvisor里的MachineInfo
 	if enableCAdvisorJSONEndpoints {
 		ws := new(restful.WebService)
 		ws.
@@ -481,10 +562,12 @@ func (s *Server) InstallDebuggingHandlers(criHandler http.Handler) {
 	s.restfulCont.Add(ws)
 
 	s.addMetricsBucketMatcher("configz")
+	// 输出kubeletconfigv1beta1.KubeletConfiguration（staging\src\k8s.io\kubelet\config\v1beta1）配置
 	configz.InstallHandler(s.restfulCont)
 
 	s.addMetricsBucketMatcher("debug")
 	handlePprofEndpoint := func(req *restful.Request, resp *restful.Response) {
+		// 请求路径移除"/debug/pprof/"，获得pprof子项
 		name := strings.TrimPrefix(req.Request.URL.Path, pprofBasePath)
 		switch name {
 		case "profile":
@@ -508,6 +591,8 @@ func (s *Server) InstallDebuggingHandlers(criHandler http.Handler) {
 
 	// Setup flags handlers.
 	// so far, only logging related endpoints are considered valid to add for these debug flags.
+	// logs.GlogSetter是设置klog日志级别
+	// 只支持PUT方法，将body以字符串传给setter，响应text/plain的setter返回值
 	s.restfulCont.Handle("/debug/flags/v", routes.StringFlagPutHandler(logs.GlogSetter))
 
 	// The /runningpods endpoint is used for testing only.
@@ -522,7 +607,12 @@ func (s *Server) InstallDebuggingHandlers(criHandler http.Handler) {
 	s.restfulCont.Add(ws)
 
 	s.addMetricsBucketMatcher("cri")
+	// 设置RedirectContainerStreaming为true，且runtime是docker，criHandler则不为nil
 	if criHandler != nil {
+		// 监听dockershim的streamServer
+		// "/cri/exec/{token}"
+		// "/cri/attach/{token}"
+		// "/cri/portforward/{token}"
 		s.restfulCont.Handle("/cri/", criHandler)
 	}
 }
@@ -550,13 +640,17 @@ func (s *Server) InstallDebuggingDisabledHandlers() {
 }
 
 // Checks if kubelet's sync loop  that updates containers is working.
+// 执行最近一次sync loop开始时间或上次执行sync loop完时间超过duration（默认为5分钟），则返回错误
 func (s *Server) syncLoopHealthCheck(req *http.Request) error {
+	// 默认为1分钟*2 = 2分钟
 	duration := s.host.ResyncInterval() * 2
 	minDuration := time.Minute * 5
 	if duration < minDuration {
 		duration = minDuration
 	}
+	// 读取最后的sync loop之前或完成之后的时间
 	enterLoopTime := s.host.LatestLoopEntryTime()
+	// 执行最近一次sync loop开始时间或上次执行sync loop完时间超过duration（默认为5分钟），则返回错误
 	if !enterLoopTime.IsZero() && time.Now().After(enterLoopTime.Add(duration)) {
 		return fmt.Errorf("sync Loop took longer than expected")
 	}
@@ -589,6 +683,7 @@ func (s *Server) getContainerLogs(request *restful.Request, response *restful.Re
 
 	query := request.Request.URL.Query()
 	// backwards compatibility for the "tail" query parameter
+	// url里query参数有"tail"，且值不为"all"，则设置为query["tailLines"]的值
 	if tail := request.QueryParameter("tail"); len(tail) > 0 {
 		query["tailLines"] = []string{tail}
 		// "all" is the same as omitting tail
@@ -603,18 +698,26 @@ func (s *Server) getContainerLogs(request *restful.Request, response *restful.Re
 		return
 	}
 	logOptions.TypeMeta = metav1.TypeMeta{}
+	// 有opts.TailLines，值必须大于等于0
+	// 有opts.LimitBytes，值必须大于等于1
+	// 不能同时设置opts.SinceSeconds和opts.SinceTime
+	// 设了opts.SinceSeconds，值必须大于等于1
 	if errs := validation.ValidatePodLogOptions(logOptions); len(errs) > 0 {
 		response.WriteError(http.StatusUnprocessableEntity, fmt.Errorf(`{"message": "Invalid request."}`))
 		return
 	}
 
+	// 从kl.podManager中获得pod
 	pod, ok := s.host.GetPodByName(podNamespace, podID)
+	// pod不存在返回错误
 	if !ok {
 		response.WriteError(http.StatusNotFound, fmt.Errorf("pod %q does not exist", podID))
 		return
 	}
 	// Check if containerName is valid.
+	// 从pod信息中获取container信息（类型为v1.Container）
 	if kubecontainer.GetContainerSpec(pod, containerName) == nil {
+		// container不存在返回错误
 		response.WriteError(http.StatusNotFound, fmt.Errorf("container %q not found in pod %q", containerName, podID))
 		return
 	}
@@ -623,8 +726,15 @@ func (s *Server) getContainerLogs(request *restful.Request, response *restful.Re
 		response.WriteError(http.StatusInternalServerError, fmt.Errorf("unable to convert %v into http.Flusher, cannot show logs", reflect.TypeOf(response)))
 		return
 	}
+	// 返回flushWriter包装了response.ResponseWriter，提供每次调用write，都会进行Flush()
 	fw := flushwriter.Wrap(response.ResponseWriter)
 	response.Header().Set("Transfer-Encoding", "chunked")
+	// 先从kl.PodManager获得pod uid，再从kl.StatusManager里获取container id
+	// 根据container id
+	// 如果runtime为docker，且非json-file格式的日志，则dockerLegacyService不为nil
+	//   执行docker logs {container id}
+	//   如果容器有tty则拷贝resp到outputStream，否则拷贝resp到outputStream和errorStream
+	// 如果runtime为cri，则调用cri获得容器的日志路径，读取容器日志文件，发送到stdout或stderr
 	if err := s.host.GetKubeletContainerLogs(ctx, kubecontainer.GetPodFullName(pod), containerName, logOptions, fw, fw); err != nil {
 		response.WriteError(http.StatusBadRequest, err)
 		return
@@ -633,6 +743,7 @@ func (s *Server) getContainerLogs(request *restful.Request, response *restful.Re
 
 // encodePods creates an v1.PodList object from pods and returns the encoded
 // PodList.
+// 将[]*v1.Pod encode成v1.PodList的byte流
 func encodePods(pods []*v1.Pod) (data []byte, err error) {
 	podList := new(v1.PodList)
 	for _, pod := range pods {
@@ -647,7 +758,9 @@ func encodePods(pods []*v1.Pod) (data []byte, err error) {
 
 // getPods returns a list of pods bound to the Kubelet and their spec.
 func (s *Server) getPods(request *restful.Request, response *restful.Response) {
+	// 所有普通pod和static pod，如果static pod，则从status manager中获取最新状态赋值给pod的Status字段
 	pods := s.host.GetPods()
+	// 将[]*v1.Pod encode成v1.PodList的byte流
 	data, err := encodePods(pods)
 	if err != nil {
 		response.WriteError(http.StatusInternalServerError, err)
@@ -660,11 +773,13 @@ func (s *Server) getPods(request *restful.Request, response *restful.Response) {
 // provided by the container runtime, and is different from the list returned
 // by getPods, which is a set of desired pods to run.
 func (s *Server) getRunningPods(request *restful.Request, response *restful.Response) {
+	// 从kl.runtimeCache获取所有运行的pod
 	pods, err := s.host.GetRunningPods()
 	if err != nil {
 		response.WriteError(http.StatusInternalServerError, err)
 		return
 	}
+	// 将[]*v1.Pod encode成v1.PodList的byte流
 	data, err := encodePods(pods)
 	if err != nil {
 		response.WriteError(http.StatusInternalServerError, err)
@@ -674,12 +789,16 @@ func (s *Server) getRunningPods(request *restful.Request, response *restful.Resp
 }
 
 // getLogs handles logs requests against the Kubelet.
+// 提供访问节点上日志（/var/log/目录）
 func (s *Server) getLogs(request *restful.Request, response *restful.Response) {
+	// 提供访问节点上日志（/var/log/目录）
 	s.host.ServeLogs(response, request.Request)
 }
 
 // getSpec handles spec requests against the Kubelet.
 func (s *Server) getSpec(request *restful.Request, response *restful.Response) {
+	// 在kubelet中c.infoProvider是在pkg\kubelet\server\server.go里的prometheusHostAdapter.GetMachineInfo()
+	// 它是调用kl.GetCachedMachineInfo，从cadvisor中获取MachineInfo
 	info, err := s.host.GetCachedMachineInfo()
 	if err != nil {
 		response.WriteError(http.StatusInternalServerError, err)
@@ -696,6 +815,7 @@ type execRequestParams struct {
 	cmd           []string
 }
 
+// 从url路径和query中，获得podNamespace、podName、podUID、containerName、cmd
 func getExecRequestParams(req *restful.Request) execRequestParams {
 	return execRequestParams{
 		podNamespace:  req.PathParameter("podNamespace"),
@@ -736,64 +856,80 @@ func proxyStream(w http.ResponseWriter, r *http.Request, url *url.URL) {
 
 // getAttach handles requests to attach to a container.
 func (s *Server) getAttach(request *restful.Request, response *restful.Response) {
+	// 从url路径和query中，获得podNamespace、podName、podUID、containerName、cmd
 	params := getExecRequestParams(request)
+	// 根据http.request解析出是否启用tty、stdin、stdout、stderr
 	streamOpts, err := remotecommandserver.NewOptions(request.Request)
 	if err != nil {
 		utilruntime.HandleError(err)
 		response.WriteError(http.StatusBadRequest, err)
 		return
 	}
+	// 从kl.podManager中获得pod
 	pod, ok := s.host.GetPodByName(params.podNamespace, params.podName)
 	if !ok {
 		response.WriteError(http.StatusNotFound, fmt.Errorf("pod does not exist"))
 		return
 	}
 
+	// 返回"{pod name}_{pod namespace}"
 	podFullName := kubecontainer.GetPodFullName(pod)
+	// 调用cri接口，获得并返回执行attach的url
 	url, err := s.host.GetAttach(podFullName, params.podUID, params.containerName, *streamOpts)
 	if err != nil {
 		streaming.WriteError(err, response.ResponseWriter)
 		return
 	}
 
+	// 如果启用redirectContainerStreaming（默认为false），则返回302重定向请求到这个地址
 	if s.redirectContainerStreaming {
 		http.Redirect(response.ResponseWriter, request.Request, url.String(), http.StatusFound)
 		return
 	}
+	// 使用代理进行websocket请求
 	proxyStream(response.ResponseWriter, request.Request, url)
 }
 
 // getExec handles requests to run a command inside a container.
 func (s *Server) getExec(request *restful.Request, response *restful.Response) {
+	// 从url路径和query中，获得podNamespace、podName、podUID、containerName、cmd
 	params := getExecRequestParams(request)
+	// 根据http.request解析出是否启用tty、stdin、stdout、stderr
 	streamOpts, err := remotecommandserver.NewOptions(request.Request)
 	if err != nil {
 		utilruntime.HandleError(err)
 		response.WriteError(http.StatusBadRequest, err)
 		return
 	}
+	// 从kl.podManager中获得pod
 	pod, ok := s.host.GetPodByName(params.podNamespace, params.podName)
 	if !ok {
 		response.WriteError(http.StatusNotFound, fmt.Errorf("pod does not exist"))
 		return
 	}
 
+	// 返回"{pod name}_{pod namespace}"
 	podFullName := kubecontainer.GetPodFullName(pod)
+	// 调用cri接口，获得并返回执行exec的url
 	url, err := s.host.GetExec(podFullName, params.podUID, params.containerName, params.cmd, *streamOpts)
 	if err != nil {
 		streaming.WriteError(err, response.ResponseWriter)
 		return
 	}
+	// 如果启用redirectContainerStreaming（默认为false），则返回302重定向请求到这个地址
 	if s.redirectContainerStreaming {
 		http.Redirect(response.ResponseWriter, request.Request, url.String(), http.StatusFound)
 		return
 	}
+	// 使用代理进行websocket请求
 	proxyStream(response.ResponseWriter, request.Request, url)
 }
 
 // getRun handles requests to run a command inside a container.
 func (s *Server) getRun(request *restful.Request, response *restful.Response) {
+	// 从url路径和query中，获得podNamespace、podName、podUID、containerName、cmd
 	params := getExecRequestParams(request)
+	// 从kl.podManager中获得pod
 	pod, ok := s.host.GetPodByName(params.podNamespace, params.podName)
 	if !ok {
 		response.WriteError(http.StatusNotFound, fmt.Errorf("pod does not exist"))
@@ -802,6 +938,7 @@ func (s *Server) getRun(request *restful.Request, response *restful.Response) {
 
 	// For legacy reasons, run uses different query param than exec.
 	params.cmd = strings.Split(request.QueryParameter("cmd"), " ")
+	// 调用runtime（同步调用）执行cmd，没有超时时间，并将stderr append到stdout（也就是说命令输出没有保证顺序）
 	data, err := s.host.RunInContainer(kubecontainer.GetPodFullName(pod), params.podUID, params.containerName, params.cmd)
 	if err != nil {
 		response.WriteError(http.StatusInternalServerError, err)
@@ -811,7 +948,11 @@ func (s *Server) getRun(request *restful.Request, response *restful.Response) {
 }
 
 // Derived from go-restful writeJSON.
+// 设置header里"Content-Type"为"application/json"
+// 响应http code 200
+// 响应body里数据为data
 func writeJSONResponse(response *restful.Response, data []byte) {
+	// 没有数据，返回http 200
 	if data == nil {
 		response.WriteHeader(http.StatusOK)
 		// do not write a nil representation
@@ -829,12 +970,14 @@ func writeJSONResponse(response *restful.Response, data []byte) {
 func (s *Server) getPortForward(request *restful.Request, response *restful.Response) {
 	params := getPortForwardRequestParams(request)
 
+	// 校验header中"Upgrade"的值是不是"websocket"，或header中"Connection"匹不匹配"(^|.*,\\s*)upgrade($|\\s*,)
 	portForwardOptions, err := portforward.NewV4Options(request.Request)
 	if err != nil {
 		utilruntime.HandleError(err)
 		response.WriteError(http.StatusBadRequest, err)
 		return
 	}
+	// 从kl.podManager中获得pod
 	pod, ok := s.host.GetPodByName(params.podNamespace, params.podName)
 	if !ok {
 		response.WriteError(http.StatusNotFound, fmt.Errorf("pod does not exist"))
@@ -845,6 +988,7 @@ func (s *Server) getPortForward(request *restful.Request, response *restful.Resp
 		return
 	}
 
+	// 调用cri接口，获得并返回执行portForward的url
 	url, err := s.host.GetPortForward(pod.Name, pod.Namespace, pod.UID, *portForwardOptions)
 	if err != nil {
 		streaming.WriteError(err, response.ResponseWriter)
@@ -854,6 +998,7 @@ func (s *Server) getPortForward(request *restful.Request, response *restful.Resp
 		http.Redirect(response.ResponseWriter, request.Request, url.String(), http.StatusFound)
 		return
 	}
+	// 使用代理进行websocket请求
 	proxyStream(response.ResponseWriter, request.Request, url)
 }
 
@@ -929,7 +1074,11 @@ type prometheusHostAdapter struct {
 	host HostInterface
 }
 
+// 从cadvisor中获得containerName的containerInfo，包含在query.start到query.end时间范围内，最多query.maxStats个ContainerStats
+// 返回containerName和所有子container的containerInfo
 func (a prometheusHostAdapter) SubcontainersInfo(containerName string, query *cadvisorapi.ContainerInfoRequest) ([]*cadvisorapi.ContainerInfo, error) {
+	// 从cadvisor中获得containerName的containerInfo，包含在query.start到query.end时间范围内，最多query.maxStats个ContainerStats
+	// 返回containerName和所有子container的containerInfo
 	all, err := a.host.GetRawContainerInfo(containerName, query, true)
 	items := make([]*cadvisorapi.ContainerInfo, 0, len(all))
 	for _, v := range all {
@@ -937,13 +1086,16 @@ func (a prometheusHostAdapter) SubcontainersInfo(containerName string, query *ca
 	}
 	return items, err
 }
+// a.host是kubelet，从cadvisor中获得cadvisor版本信息（在kubelet里没有初始化版本信息，所以都是空，只有kernelVersion和ContainerOsVersion有值）
 func (a prometheusHostAdapter) GetVersionInfo() (*cadvisorapi.VersionInfo, error) {
 	return a.host.GetVersionInfo()
 }
+// a.host是kubelet，从cadvisor中获取MachineInfo
 func (a prometheusHostAdapter) GetMachineInfo() (*cadvisorapi.MachineInfo, error) {
 	return a.host.GetCachedMachineInfo()
 }
 
+// 返回函数（从ContainerInfo中获得image、container、namespace、name（容器名称）、container（pod中container名称）值）
 func containerPrometheusLabelsFunc(s stats.Provider) metrics.ContainerLabelsFunc {
 	// containerPrometheusLabels maps cAdvisor labels to prometheus labels.
 	return func(c *cadvisorapi.ContainerInfo) map[string]string {
@@ -953,18 +1105,25 @@ func containerPrometheusLabelsFunc(s stats.Provider) metrics.ContainerLabelsFunc
 		if len(c.Aliases) > 0 {
 			name = c.Aliases[0]
 		}
+		// 镜像名称
 		image = c.Spec.Image
+		// container label里"io.kubernetes.pod.name"的值
 		if v, ok := c.Spec.Labels[kubelettypes.KubernetesPodNameLabel]; ok {
 			podName = v
 		}
+		// "io.kubernetes.pod.namespace"的值
 		if v, ok := c.Spec.Labels[kubelettypes.KubernetesPodNamespaceLabel]; ok {
 			namespace = v
 		}
+		// "io.kubernetes.container.name"的值
 		if v, ok := c.Spec.Labels[kubelettypes.KubernetesContainerNameLabel]; ok {
 			containerName = v
 		}
 		// Associate pod cgroup with pod so we have an accurate accounting of sandbox
+		// 当podName和namespace为空，则说明这个cgroup路径不为container的cgroup路径。可能为pod cgroup路径
 		if podName == "" && namespace == "" {
+			// 如果是pod cgroup路径
+			// 根据cgroupfs获得pod的uid，并从kl.podManager中根据uid返回非mirror pod（普通pod和static pod）
 			if pod, found := s.GetPodByCgroupfs(c.Name); found {
 				podName = pod.Name
 				namespace = pod.Namespace

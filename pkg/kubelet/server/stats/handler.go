@@ -108,6 +108,7 @@ type handler struct {
 }
 
 // CreateHandlers creates the REST handlers for the stats.
+// 注册处理"/{rootPath}/summary"，"/{rootPath}"，"/{rootPath}/container"，"/{rootPath}/{podName}/{containerName}"、"/{rootPath}/{namespace}/{podName}/{uid}/{containerName}"的handler
 func CreateHandlers(rootPath string, provider Provider, summaryProvider SummaryProvider, enableCAdvisorJSONEndpoints bool) *restful.WebService {
 	h := &handler{provider, summaryProvider}
 
@@ -173,6 +174,7 @@ type statsRequest struct {
 	Subcontainers bool `json:"subcontainers,omitempty"`
 }
 
+// statsRequest转成*cadvisorapi.ContainerInfoRequest
 func (r *statsRequest) cadvisorRequest() *cadvisorapi.ContainerInfoRequest {
 	return &cadvisorapi.ContainerInfoRequest{
 		NumStats: r.NumStats,
@@ -181,6 +183,7 @@ func (r *statsRequest) cadvisorRequest() *cadvisorapi.ContainerInfoRequest {
 	}
 }
 
+// 从request.Request.Body中解析出statsRequest
 func parseStatsRequest(request *restful.Request) (statsRequest, error) {
 	// Default request.
 	query := statsRequest{
@@ -196,6 +199,7 @@ func parseStatsRequest(request *restful.Request) (statsRequest, error) {
 
 // Handles root container stats requests to /stats
 func (h *handler) handleStats(request *restful.Request, response *restful.Response) {
+	// 从request.Request.Body中解析出statsRequest
 	query, err := parseStatsRequest(request)
 	if err != nil {
 		handleError(response, "/stats", err)
@@ -203,6 +207,7 @@ func (h *handler) handleStats(request *restful.Request, response *restful.Respon
 	}
 
 	// Root container stats.
+	// 从cadvisor中获得containerName的containerInfo，包含在req.start到req.end时间范围内，最多req.maxStats个ContainerStats
 	statsMap, err := h.provider.GetRawContainerInfo("/", query.cadvisorRequest(), false)
 	if err != nil {
 		handleError(response, fmt.Sprintf("/stats %v", query), err)
@@ -215,6 +220,7 @@ func (h *handler) handleStats(request *restful.Request, response *restful.Respon
 // If "only_cpu_and_memory" GET param is true then only cpu and memory is returned in response.
 func (h *handler) handleSummary(request *restful.Request, response *restful.Response) {
 	onlyCPUAndMemory := false
+	// 解析出Content-Type为"application/x-www-form-urlencodedr"的body
 	request.Request.ParseForm()
 	if onlyCluAndMemoryParam, found := request.Request.Form["only_cpu_and_memory"]; found &&
 		len(onlyCluAndMemoryParam) == 1 && onlyCluAndMemoryParam[0] == "true" {
@@ -223,10 +229,12 @@ func (h *handler) handleSummary(request *restful.Request, response *restful.Resp
 	var summary *statsapi.Summary
 	var err error
 	if onlyCPUAndMemory {
+		// 返回node的cpu和memory监控状态，nodeConfig里的定义的cgroup类别的cpu和memory监控状态和所有pod的cpu和memory监控状态和所有pod的container的cpu、内存监控状态
 		summary, err = h.summaryProvider.GetCPUAndMemoryStats()
 	} else {
 		// external calls to the summary API use cached stats
 		forceStatsUpdate := false
+		// 返回node状态和所有pod的状态监控信息，包括cpu、内存、磁盘大小、网卡状态、pid和运行的进程数
 		summary, err = h.summaryProvider.Get(forceStatsUpdate)
 	}
 	if err != nil {
@@ -238,6 +246,7 @@ func (h *handler) handleSummary(request *restful.Request, response *restful.Resp
 
 // Handles non-kubernetes container stats requests to /stats/container/
 func (h *handler) handleSystemContainer(request *restful.Request, response *restful.Response) {
+	// 从request.Request.Body中解析出statsRequest
 	query, err := parseStatsRequest(request)
 	if err != nil {
 		handleError(response, "/stats/container", err)
@@ -246,6 +255,8 @@ func (h *handler) handleSystemContainer(request *restful.Request, response *rest
 
 	// Non-Kubernetes container stats.
 	containerName := path.Join("/", query.ContainerName)
+	// 从cadvisor中获得containerName的containerInfo，包含在req.start到req.end时间范围内，最多req.maxStats个ContainerStats
+	// 如果query.Subcontainers为true，返回containerName和所有子container的containerInfo
 	stats, err := h.provider.GetRawContainerInfo(
 		containerName, query.cadvisorRequest(), query.Subcontainers)
 	if err != nil {
@@ -264,6 +275,7 @@ func (h *handler) handleSystemContainer(request *restful.Request, response *rest
 // /stats/<pod name>/<container name>
 // /stats/<namespace>/<pod name>/<uid>/<container name>
 func (h *handler) handlePodContainer(request *restful.Request, response *restful.Response) {
+	// 从request.Request.Body中解析出statsRequest
 	query, err := parseStatsRequest(request)
 	if err != nil {
 		handleError(response, request.Request.URL.String(), err)
@@ -279,19 +291,23 @@ func (h *handler) handlePodContainer(request *restful.Request, response *restful
 		params[k] = v
 	}
 
+	// 路径里既没有提供"podName"，也没有"containerName"
 	if params["podName"] == "" || params["containerName"] == "" {
 		response.WriteErrorString(http.StatusBadRequest,
 			fmt.Sprintf("Invalid pod container request: %v", params))
 		return
 	}
 
+	// 从kl.podManager中获得pod
 	pod, ok := h.provider.GetPodByName(params["namespace"], params["podName"])
 	if !ok {
 		klog.V(4).Infof("Container not found: %v", params)
 		response.WriteError(http.StatusNotFound, kubecontainer.ErrContainerNotFound)
 		return
 	}
+	// 根据podFullName、containerName、podUID和req，返回info.ContainerInfo（包括在req.start到req.end时间范围内，最多req.maxStats个ContainerStats）
 	stats, err := h.provider.GetContainerInfo(
+		// 返回"{pod name}_{pod namespace}"
 		kubecontainer.GetPodFullName(pod),
 		types.UID(params["uid"]),
 		params["containerName"],

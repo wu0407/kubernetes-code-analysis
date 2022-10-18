@@ -72,6 +72,7 @@ func (c *LRUExpireCache) Add(key interface{}, value interface{}, ttl time.Durati
 
 // Get returns the value at the specified key from the cache if it exists and is not
 // expired, or returns false.
+// 获取key在LRUExpireCache中的值，如果这个cacheEntry过期，就清理掉
 func (c *LRUExpireCache) Get(key interface{}) (interface{}, bool) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -79,6 +80,7 @@ func (c *LRUExpireCache) Get(key interface{}) (interface{}, bool) {
 	if !ok {
 		return nil, false
 	}
+	// 缓存过期了，就清理掉这个cacheEntry
 	if c.clock.Now().After(e.(*cacheEntry).expireTime) {
 		c.cache.Remove(key)
 		return nil, false

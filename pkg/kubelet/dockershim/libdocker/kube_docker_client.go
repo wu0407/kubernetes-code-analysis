@@ -426,6 +426,8 @@ func (d *kubeDockerClient) RemoveImage(image string, opts dockertypes.ImageRemov
 	return resp, err
 }
 
+// 执行docker logs {container id}
+// 如果有tty（sopts.RawTerminal为true）则拷贝resp到outputStream，否则拷贝resp到outputStream和errorStream
 func (d *kubeDockerClient) Logs(id string, opts dockertypes.ContainerLogsOptions, sopts StreamOptions) error {
 	ctx, cancel := d.getCancelableContext()
 	defer cancel()
@@ -437,6 +439,7 @@ func (d *kubeDockerClient) Logs(id string, opts dockertypes.ContainerLogsOptions
 		return err
 	}
 	defer resp.Close()
+	// 如果有tty则拷贝resp到outputStream，否则拷贝resp到outputStream和errorStream
 	return d.redirectResponseToOutputStream(sopts.RawTerminal, sopts.OutputStream, sopts.ErrorStream, resp)
 }
 
@@ -581,6 +584,7 @@ func (d *kubeDockerClient) GetContainerStats(id string) (*dockertypes.StatsJSON,
 
 // redirectResponseToOutputStream redirect the response stream to stdout and stderr. When tty is true, all stream will
 // only be redirected to stdout.
+// 如果有tty则拷贝resp到outputStream，否则拷贝resp到outputStream和errorStream
 func (d *kubeDockerClient) redirectResponseToOutputStream(tty bool, outputStream, errorStream io.Writer, resp io.Reader) error {
 	if outputStream == nil {
 		outputStream = ioutil.Discard

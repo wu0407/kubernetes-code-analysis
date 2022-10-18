@@ -39,6 +39,7 @@ type Attacher interface {
 // ServeAttach handles requests to attach to a container. After creating/receiving the required
 // streams, it delegates the actual attaching to attacher.
 func ServeAttach(w http.ResponseWriter, req *http.Request, attacher Attacher, podName string, uid types.UID, container string, streamOpts *Options, idleTimeout, streamCreationTimeout time.Duration, supportedProtocols []string) {
+	// 创建stream server，返回包含各个fd stream的context
 	ctx, ok := createStreams(req, w, streamOpts, supportedProtocols, idleTimeout, streamCreationTimeout)
 	if !ok {
 		// error is handled by createStreams
@@ -46,6 +47,9 @@ func ServeAttach(w http.ResponseWriter, req *http.Request, attacher Attacher, po
 	}
 	defer ctx.conn.Close()
 
+	// attacher实现在pkg\kubelet\dockershim\docker_streaming.go里的streamingRuntime
+	// 启动一个goroutine，读取resize里的消息，执行resizeFunc（调用docker客户端进行重置container tty）
+	// 调用docker客户端执行attach
 	err := attacher.AttachContainer(podName, uid, container, ctx.stdinStream, ctx.stdoutStream, ctx.stderrStream, ctx.tty, ctx.resizeChan)
 	if err != nil {
 		err = fmt.Errorf("error attaching to container: %v", err)

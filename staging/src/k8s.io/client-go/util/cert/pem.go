@@ -32,6 +32,7 @@ const (
 
 // ParseCertsPEM returns the x509.Certificates contained in the given PEM-encoded byte array
 // Returns an error if a certificate could not be parsed, or if the data does not contain any certificates
+// pemCerts解析成x509.Certificate列表
 func ParseCertsPEM(pemCerts []byte) ([]*x509.Certificate, error) {
 	ok := false
 	certs := []*x509.Certificate{}

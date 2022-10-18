@@ -70,6 +70,7 @@ func (c *Expiring) Get(key interface{}) (val interface{}, ok bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	e, ok := c.cache[key]
+	// 不存在或过期了，返回nil和false
 	if !ok || !c.clock.Now().Before(e.expiry) {
 		return nil, false
 	}
@@ -126,6 +127,8 @@ func (c *Expiring) del(key interface{}, generation uint64) {
 	if !ok {
 		return
 	}
+	// 如果generation为0，不检查generation是否匹配
+	// 否则，检查generation是否等于e.generation，不等于则返回
 	if generation != 0 && generation != e.generation {
 		return
 	}
@@ -148,10 +151,13 @@ func (c *Expiring) gc(now time.Time) {
 		// from looking at the (*expiringHeap).Pop() implmentation below.
 		// heap.Pop() swaps the first entry with the last entry of the heap, then
 		// calls (*expiringHeap).Pop() which returns the last element.
+		// 过期队列为空，或第一个（最早过期的元素）未过期，直接返回
 		if len(c.heap) == 0 || now.Before(c.heap[0].expiry) {
 			return
 		}
+		// 弹出第一个过期的元素
 		cleanup := heap.Pop(&c.heap).(*expiringHeapEntry)
+		// 从缓存中删除这个过期元素
 		c.del(cleanup.key, cleanup.generation)
 	}
 }
@@ -165,6 +171,8 @@ type expiringHeapEntry struct {
 // expiringHeap is a min-heap ordered by expiration time of its entries. The
 // expiring cache uses this as a priority queue to efficiently organize entries
 // which will be garbage collected once they expire.
+// 按照过期时间早的排在前面，但是这里按照调用Push的顺序来决定元素的顺序，而且调用Pop()和Push都会造成顺序打乱
+// 即一个排序好的expiringHeap，在Set之后顺序不是排序好的
 type expiringHeap []*expiringHeapEntry
 
 var _ heap.Interface = &expiringHeap{}
@@ -185,6 +193,10 @@ func (cq *expiringHeap) Push(c interface{}) {
 	*cq = append(*cq, c.(*expiringHeapEntry))
 }
 
+// 弹出最后一个元素
+// 这里没有弹出第一个元素（最早过期的）？
+// 因为heap包里的Pop，先将第一个元素与最后一个元素进行交换，将第一个元素进行下沉，由于是最小堆，所以下沉到左节点
+// 然后再调用实现的Pop()
 func (cq *expiringHeap) Pop() interface{} {
 	c := (*cq)[cq.Len()-1]
 	*cq = (*cq)[:cq.Len()-1]

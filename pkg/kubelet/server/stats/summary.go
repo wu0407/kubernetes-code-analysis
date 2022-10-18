@@ -65,7 +65,7 @@ func NewSummaryProvider(statsProvider Provider) SummaryProvider {
 	}
 }
 
-// 返回node状态和所有pod的状态监控信息
+// 返回node状态和所有pod的状态监控信息，包括cpu、内存、磁盘大小、网卡状态、pid和运行的进程数
 func (sp *summaryProviderImpl) Get(updateStats bool) (*statsapi.Summary, error) {
 	// TODO(timstclair): Consider returning a best-effort response if any of
 	// the following errors occur.
@@ -149,19 +149,25 @@ func (sp *summaryProviderImpl) Get(updateStats bool) (*statsapi.Summary, error) 
 	return &summary, nil
 }
 
+// 返回node的cpu和memory监控状态，nodeConfig里的定义的cgroup类别的cpu和memory监控状态和所有pod的cpu和memory监控状态和所有pod的container的cpu、内存监控状态
 func (sp *summaryProviderImpl) GetCPUAndMemoryStats() (*statsapi.Summary, error) {
 	// TODO(timstclair): Consider returning a best-effort response if any of
 	// the following errors occur.
+	// sp.provider为kubelet，当kubelet.kubeClient为nil，从kubelet.initialNode手动生成的初始的node对象，否则从informer中获取本机的node对象
 	node, err := sp.provider.GetNode()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get node info: %v", err)
 	}
+	// 返回kubelet.containerManager.NodeConfig
 	nodeConfig := sp.provider.GetNodeConfig()
+	// 从cadvisor中memoryCache直接获取container的StartTime（创建时间）、最后的cpu和memory的使用情况
 	rootStats, err := sp.provider.GetCgroupCPUAndMemoryStats("/", false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get root cgroup stats: %v", err)
 	}
 
+	// 如果是cadvisor中获取监控信息，从cadvisor的memoryCache中，获取所有pod的监控状态，包括pod的cpu和memory监控状态和所有pod的container的cpu、内存监控状态
+	// 从cri获取监控信息，待补
 	podStats, err := sp.provider.ListPodCPUAndMemoryStats()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pod stats: %v", err)
@@ -172,6 +178,9 @@ func (sp *summaryProviderImpl) GetCPUAndMemoryStats() (*statsapi.Summary, error)
 		CPU:              rootStats.CPU,
 		Memory:           rootStats.Memory,
 		StartTime:        rootStats.StartTime,
+		// 返回nodeConfig里的KubeletCgroupsName、RuntimeCgroupsName、SystemCgroupsName和pod cgroup root（比如"/kubepods.slice"）
+		// 如果上面类别中在nodeConfig未定义或为""，则忽略
+		// 这些container最近的cpu和memory的使用情况，并将Name（cgroup路径）改为对应的类型名
 		SystemContainers: sp.GetSystemContainersCPUAndMemoryStats(nodeConfig, podStats, false),
 	}
 	summary := statsapi.Summary{

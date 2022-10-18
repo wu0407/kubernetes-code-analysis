@@ -289,9 +289,17 @@ func RecordLongRunning(req *http.Request, requestInfo *request.RequestInfo, comp
 // MonitorRequest handles standard transformations for client and the reported verb and then invokes Monitor to record
 // a request. verb must be uppercase to be backwards compatible with existing monitoring tooling.
 func MonitorRequest(req *http.Request, verb, group, version, resource, subresource, scope, component, contentType string, httpCode, respSize int, elapsed time.Duration) {
+	// 如果verb是"LIST"，且query里面有"watch"，且值不为0或者false，则设置reportedVerb为"WATCH"
+	// verb是"WATCHLIST"，则reportedVerb为"WATCH"
+	// verb是"PATCH"，且"Content-Type"为"application/apply-patch+yaml"，且启用"ServerSideApply"，则reportedVerb为"APPLY"
+	// 否则reportedVerb为传入的verb
+	// 如果reportedVer为"APPLY","CONNECT","CREATE","DELETE","DELETECOLLECTION","GET","LIST","PATCH","POST","PROXY","PUT","UPDATE","WATCH","WATCHLIST"，则返回reportedVer值
+	// 否则返回"other"
 	reportedVerb := cleanVerb(verb, req)
+	// 对query里"dryRun"的值进行验证，如果不为"All"，则返回"invalid"，否则返回相应的值
 	dryRun := cleanDryRun(req.URL)
 	elapsedSeconds := elapsed.Seconds()
+	// 规整化content-type
 	cleanContentType := cleanContentType(contentType)
 	requestCounter.WithLabelValues(reportedVerb, dryRun, group, version, resource, subresource, scope, component, cleanContentType, codeToString(httpCode)).Inc()
 	requestLatencies.WithLabelValues(reportedVerb, dryRun, group, version, resource, subresource, scope, component).Observe(elapsedSeconds)
@@ -344,6 +352,7 @@ func InstrumentHandlerFunc(verb, group, version, resource, subresource, scope, c
 
 		handler(w, req)
 
+		// 记录相应的request metrics
 		MonitorRequest(req, verb, group, version, resource, subresource, scope, component, delegate.Header().Get("Content-Type"), delegate.Status(), delegate.ContentLength(), time.Since(now))
 	}
 }
@@ -352,9 +361,11 @@ func InstrumentHandlerFunc(verb, group, version, resource, subresource, scope, c
 // bounded set of known/expected content-types.
 func cleanContentType(contentType string) string {
 	normalizedContentType := strings.ToLower(contentType)
+	// contentType包含后缀" stream=watch"或" charset=utf-8"，则对contentType进行去除空格
 	if strings.HasSuffix(contentType, " stream=watch") || strings.HasSuffix(contentType, " charset=utf-8") {
 		normalizedContentType = strings.ReplaceAll(contentType, " ", "")
 	}
+	// normalizedContentType是所有已知的content-type，则返回normalizedContentType
 	if knownMetricContentTypes.Has(normalizedContentType) {
 		return normalizedContentType
 	}
@@ -388,10 +399,17 @@ func canonicalVerb(verb string, scope string) string {
 	}
 }
 
+// 如果verb是"LIST"，且query里面有"watch"，且值不为0或者false，则设置reportedVerb为"WATCH"
+// verb是"WATCHLIST"，则reportedVerb为"WATCH"
+// verb是"PATCH"，且"Content-Type"为"application/apply-patch+yaml"，且启用"ServerSideApply"，则reportedVerb为"APPLY"
+// 否则reportedVerb为传入的verb
+// 如果reportedVer为"APPLY","CONNECT","CREATE","DELETE","DELETECOLLECTION","GET","LIST","PATCH","POST","PROXY","PUT","UPDATE","WATCH","WATCHLIST"，则返回reportedVer值
+// 否则返回"other"
 func cleanVerb(verb string, request *http.Request) string {
 	reportedVerb := verb
 	if verb == "LIST" {
 		// see apimachinery/pkg/runtime/conversion.go Convert_Slice_string_To_bool
+		// query里面有"watch"，且值不为0或者false，则设置reportedVerb为"WATCH"
 		if values := request.URL.Query()["watch"]; len(values) > 0 {
 			if value := strings.ToLower(values[0]); value != "0" && value != "false" {
 				reportedVerb = "WATCH"
@@ -402,6 +420,7 @@ func cleanVerb(verb string, request *http.Request) string {
 	if verb == "WATCHLIST" {
 		reportedVerb = "WATCH"
 	}
+	// verb是"PATCH"，且"Content-Type"为"application/apply-patch+yaml"，且启用"ServerSideApply"，则reportedVerb为"APPLY"
 	if verb == "PATCH" && request.Header.Get("Content-Type") == string(types.ApplyPatchType) && utilfeature.DefaultFeatureGate.Enabled(features.ServerSideApply) {
 		reportedVerb = "APPLY"
 	}
@@ -411,12 +430,16 @@ func cleanVerb(verb string, request *http.Request) string {
 	return OtherRequestMethod
 }
 
+// 对query里"dryRun"的值进行验证，如果不为"All"，则返回"invalid"，否则返回相应的值
 func cleanDryRun(u *url.URL) string {
 	// avoid allocating when we don't see dryRun in the query
+	// 如果query不里包含"dryRun"，则直接返回空字符串
 	if !strings.Contains(u.RawQuery, "dryRun") {
 		return ""
 	}
+	// query里"dryRun"的值
 	dryRun := u.Query()["dryRun"]
+	// 如果dryRun的值不为[]string{"All"}，则返回"invalid"
 	if errs := validation.ValidateDryRun(nil, dryRun); len(errs) > 0 {
 		return "invalid"
 	}

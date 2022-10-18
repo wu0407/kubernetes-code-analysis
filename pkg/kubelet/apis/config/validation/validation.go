@@ -157,6 +157,9 @@ func ValidateKubeletConfiguration(kc *kubeletconfig.KubeletConfiguration) error 
 	if err := validateKubeletOSConfiguration(kc); err != nil {
 		allErrors = append(allErrors, err)
 	}
+	// 在kubelet里pkg\kubelet\apis\config\validation\validation.go里会调用
+	// 验证kc.ShowHiddenMetricsForVersion是否是当前kubernetes的上一个版本，是的话返回nil，不是返回错误
+	// kc.ShowHiddenMetricsForVersion为空，则返回nil
 	allErrors = append(allErrors, metrics.ValidateShowHiddenMetricsVersion(kc.ShowHiddenMetricsForVersion)...)
 	return utilerrors.NewAggregate(allErrors)
 }
