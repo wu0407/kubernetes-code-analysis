@@ -80,6 +80,9 @@ func NewBalancedAllocation(baArgs runtime.Object, h framework.Handle, fts featur
 
 	resToWeightMap := make(resourceToWeightMap)
 
+	// 在pkg\scheduler\apis\config\v1beta2\defaults.go（pkg\scheduler\apis\config\v1beta3\defaults.go）里默认为
+	// ResourceSpec{Name: string(v1.ResourceCPU), Weight: 1},
+	// ResourceSpec{Name: string(v1.ResourceMemory), Weight: 1},
 	for _, resource := range args.Resources {
 		resToWeightMap[v1.ResourceName(resource.Name)] = resource.Weight
 	}
@@ -100,6 +103,7 @@ func balancedResourceScorer(requested, allocable resourceToValueMap) int64 {
 	var resourceToFractions []float64
 	var totalFraction float64
 	for name, value := range requested {
+		// request占allocable的比值
 		fraction := float64(value) / float64(allocable[name])
 		if fraction > 1 {
 			fraction = 1
@@ -113,9 +117,11 @@ func balancedResourceScorer(requested, allocable resourceToValueMap) int64 {
 	// For most cases, resources are limited to cpu and memory, the std could be simplified to std := (fraction1-fraction2)/2
 	// len(fractions) > 2: calculate std based on the well-known formula - root square of Σ((fraction(i)-mean)^2)/len(fractions)
 	// Otherwise, set the std to zero is enough.
+	// 大部分情况是只有cpu和memory的request占allocable的比值，直接是两个相差
 	if len(resourceToFractions) == 2 {
 		std = math.Abs((resourceToFractions[0] - resourceToFractions[1]) / 2)
 
+		// 如果大于两种资源
 	} else if len(resourceToFractions) > 2 {
 		mean := totalFraction / float64(len(resourceToFractions))
 		var sum float64

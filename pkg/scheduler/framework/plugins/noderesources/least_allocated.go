@@ -31,6 +31,7 @@ func leastResourceScorer(resToWeightMap resourceToWeightMap) func(resourceToValu
 		var nodeScore, weightSum int64
 		for resource := range requested {
 			weight := resToWeightMap[resource]
+			// 剩余资源（allocable - requested分配request后剩余资源）占capacity比率
 			resourceScore := leastRequestedScore(requested[resource], allocable[resource])
 			nodeScore += resourceScore * weight
 			weightSum += weight
@@ -45,6 +46,7 @@ func leastResourceScorer(resToWeightMap resourceToWeightMap) func(resourceToValu
 // The unused capacity is calculated on a scale of 0-MaxNodeScore
 // 0 being the lowest priority and `MaxNodeScore` being the highest.
 // The more unused resources the higher the score is.
+// 剩余资源（capacity - requested分配request后剩余资源）占capacity比率
 func leastRequestedScore(requested, capacity int64) int64 {
 	if capacity == 0 {
 		return 0

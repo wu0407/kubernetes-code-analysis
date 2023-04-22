@@ -60,6 +60,7 @@ func (r *resourceAllocationScorer) score(
 	requested := make(resourceToValueMap)
 	allocatable := make(resourceToValueMap)
 	for resource := range r.resourceToWeightMap {
+		// 在node当前的resource的allocatable资源总量和添加pod request资源后总的resource的资源总量
 		alloc, req := r.calculateResourceAllocatableRequest(nodeInfo, pod, resource)
 		if alloc != 0 {
 			// Only fill the extended resource entry when it's non-zero.
@@ -83,6 +84,7 @@ func (r *resourceAllocationScorer) score(
 // - 1st param: quantity of allocatable resource on the node.
 // - 2nd param: aggregated quantity of requested resource on the node.
 // Note: if it's an extended resource, and the pod doesn't request it, (0, 0) is returned.
+// 在node当前的resource的allocatable资源总量和添加pod request资源后的总的request资源总量
 func (r *resourceAllocationScorer) calculateResourceAllocatableRequest(nodeInfo *framework.NodeInfo, pod *v1.Pod, resource v1.ResourceName) (int64, int64) {
 	requested := nodeInfo.NonZeroRequested
 	if r.useRequested {

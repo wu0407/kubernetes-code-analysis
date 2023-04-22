@@ -117,6 +117,12 @@ func NewFit(plArgs runtime.Object, h framework.Handle, fts feature.Features) (fr
 		return nil, fmt.Errorf("scoring strategy not specified")
 	}
 
+	// 在pkg\scheduler\apis\config\v1beta3\defaults.go
+	// 默认的args.ScoringStrategy为
+	// v1beta3.ScoringStrategy{
+	// 	Type:      v1beta3.ScoringStrategyType(config.LeastAllocated), //"LeastAllocated"
+	// 	Resources: defaultResourceSpec, // []v1beta3.ResourceSpec{{Name: string(v1.ResourceCPU), Weight: 1}, {Name: string(v1.ResourceMemory), Weight: 1}}
+	// }
 	strategy := args.ScoringStrategy.Type
 	scorePlugin, exists := nodeResourceStrategyTypeMap[strategy]
 	if !exists {

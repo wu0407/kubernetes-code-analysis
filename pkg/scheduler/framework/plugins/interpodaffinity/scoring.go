@@ -46,6 +46,7 @@ func (s *preScoreState) Clone() framework.StateData {
 	return s
 }
 
+// term.TopologyKey名称和term.TopologyKey的值，对应weight * multiplier
 func (m scoreMap) processTerm(term *framework.AffinityTerm, weight int32, pod *v1.Pod, nsLabels labels.Set, node *v1.Node, multiplier int32, enableNamespaceSelector bool) {
 	if term.Matches(pod, nsLabels, enableNamespaceSelector) {
 		if tpValue, tpValueExist := node.Labels[term.TopologyKey]; tpValueExist {
@@ -57,8 +58,10 @@ func (m scoreMap) processTerm(term *framework.AffinityTerm, weight int32, pod *v
 	}
 }
 
+// 遍历terms里所有WeightedAffinityTerm，将WeightedAffinityTerm.TopologyKey名称和WeightedAffinityTerm.TopologyKey的值，对应weight * multiplier，保存到m scoreMap
 func (m scoreMap) processTerms(terms []framework.WeightedAffinityTerm, pod *v1.Pod, nsLabels labels.Set, node *v1.Node, multiplier int32, enableNamespaceSelector bool) {
 	for _, term := range terms {
+		// term.TopologyKey名称和term.TopologyKey的值，对应weight * multiplier
 		m.processTerm(&term.AffinityTerm, term.Weight, pod, nsLabels, node, multiplier, enableNamespaceSelector)
 	}
 }
@@ -93,6 +96,8 @@ func (pl *InterPodAffinity) processExistingPod(
 	// value as that of <existingPods>`s node by the term`s weight.
 	// Note that the incoming pod's terms have the namespaceSelector merged into the namespaces, and so
 	// here we don't lookup the existing pod's namespace labels, hence passing nil for nsLabels.
+	// 遍历state.podInfo.PreferredAffinityTerms里所有WeightedAffinityTerm，将WeightedAffinityTerm.TopologyKey名称和WeightedAffinityTerm.TopologyKey的值，对应weight * multiplier，保存到topoScore
+	// PreferredAffinityTerms的multiplier为1
 	topoScore.processTerms(state.podInfo.PreferredAffinityTerms, existingPod.Pod, nil, existingPodNode, 1, pl.enableNamespaceSelector)
 
 	// For every soft pod anti-affinity term of <pod>, if <existingPod> matches the term,
@@ -100,11 +105,18 @@ func (pl *InterPodAffinity) processExistingPod(
 	// value as that of <existingPod>`s node by the term`s weight.
 	// Note that the incoming pod's terms have the namespaceSelector merged into the namespaces, and so
 	// here we don't lookup the existing pod's namespace labels, hence passing nil for nsLabels.
+	// 遍历state.podInfo.PreferredAffinityTerms里所有WeightedAffinityTerm，将WeightedAffinityTerm.TopologyKey名称和WeightedAffinityTerm.TopologyKey的值，对应weight * multiplier，保存到topoScore
+	// PreferredAffinityTerms的multiplier为-1
 	topoScore.processTerms(state.podInfo.PreferredAntiAffinityTerms, existingPod.Pod, nil, existingPodNode, -1, pl.enableNamespaceSelector)
 
 	// For every hard pod affinity term of <existingPod>, if <pod> matches the term,
 	// increment <p.counts> for every node in the cluster with the same <term.TopologyKey>
 	// value as that of <existingPod>'s node by the constant <args.hardPodAffinityWeight>
+	// 如果待调度的pod匹配node上已有pod的RequiredAffinity的条件（pod的namespace匹配NamespaceSelector，pod的label匹配RequiredAffinityTerm里的labelSelector），则topoScore里WeightedAffinityTerm.TopologyKey名称和WeightedAffinityTerm.TopologyKey的值加上1
+	// 默认pl.args.HardPodAffinityWeight为1
+	// 如果pl.args.HardPodAffinityWeight大于0，且node上（匹配条件）的pod有label
+	// 遍历existingPod.RequiredAffinityTerms里的RequiredAffinityTerm，将RequiredAffinityTerm.TopologyKey名称和WeightedAffinityTerm.TopologyKey的值，对应weight * multiplier，保存到topoScore
+	// multiplier为1
 	if pl.args.HardPodAffinityWeight > 0 && len(existingPodNode.Labels) != 0 {
 		for _, t := range existingPod.RequiredAffinityTerms {
 			topoScore.processTerm(&t, pl.args.HardPodAffinityWeight, incomingPod, state.namespaceLabels, existingPodNode, 1, pl.enableNamespaceSelector)
@@ -114,11 +126,13 @@ func (pl *InterPodAffinity) processExistingPod(
 	// For every soft pod affinity term of <existingPod>, if <pod> matches the term,
 	// increment <p.counts> for every node in the cluster with the same <term.TopologyKey>
 	// value as that of <existingPod>'s node by the term's weight.
+	// 待调度的pod匹配node上（匹配条件）的pod的PreferredAffinity（待调度的pod的namespace匹配NamespaceSelector，待调度的pod的label匹配PreferredAffinityTerm里的labelSelector）
 	topoScore.processTerms(existingPod.PreferredAffinityTerms, incomingPod, state.namespaceLabels, existingPodNode, 1, pl.enableNamespaceSelector)
 
 	// For every soft pod anti-affinity term of <existingPod>, if <pod> matches the term,
 	// decrement <pm.counts> for every node in the cluster with the same <term.TopologyKey>
 	// value as that of <existingPod>'s node by the term's weight.
+	// 待调度的pod匹配node上（匹配条件）的pod的PreferredAntiAffinity
 	topoScore.processTerms(existingPod.PreferredAntiAffinityTerms, incomingPod, state.namespaceLabels, existingPodNode, -1, pl.enableNamespaceSelector)
 }
 
@@ -170,6 +184,8 @@ func (pl *InterPodAffinity) PreScore(
 
 	if pl.enableNamespaceSelector {
 		for i := range state.podInfo.PreferredAffinityTerms {
+			// 如果NamespaceSelector为空，则直接返回
+			// 如果NamespaceSelector不为空，则从pl.nsLister获取匹配NamespaceSelector的namespace，设置到state.podInfo.PreferredAffinityTerms[i].AffinityTerm.Namespaces，并设置state.podInfo.PreferredAffinityTerms[i].AffinityTerm.NamespaceSelector为labels.Nothing()
 			if err := pl.mergeAffinityTermNamespacesIfNotEmpty(&state.podInfo.PreferredAffinityTerms[i].AffinityTerm); err != nil {
 				return framework.AsStatus(fmt.Errorf("updating PreferredAffinityTerms: %w", err))
 			}
@@ -179,6 +195,7 @@ func (pl *InterPodAffinity) PreScore(
 				return framework.AsStatus(fmt.Errorf("updating PreferredAntiAffinityTerms: %w", err))
 			}
 		}
+		// 获取待调度pod.Namespace的label
 		state.namespaceLabels = GetNamespaceLabelsSnapshot(pod.Namespace, pl.nsLister)
 	}
 
@@ -191,6 +208,8 @@ func (pl *InterPodAffinity) PreScore(
 		}
 		// Unless the pod being scheduled has preferred affinity terms, we only
 		// need to process pods with affinity in the node.
+		// 如果pod有preferred affinity/Preferred AntiAffinity，则需要执行node上的所有pod
+		// 否则执行node上有Affinity的pod
 		podsToProcess := nodeInfo.PodsWithAffinity
 		if hasPreferredAffinityConstraints || hasPreferredAntiAffinityConstraints {
 			// We need to process all the pods.

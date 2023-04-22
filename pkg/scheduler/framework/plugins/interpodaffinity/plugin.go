@@ -112,6 +112,8 @@ func getArgs(obj runtime.Object) (config.InterPodAffinityArgs, error) {
 // is set to Nothing()) or is Empty(), which means match everything. Therefore,
 // there when matching against this term, there is no need to lookup the existing
 // pod's namespace labels to match them against term's namespaceSelector explicitly.
+// 如果NamespaceSelector为空，则直接返回
+// 如果NamespaceSelector不为空，则从pl.nsLister获取匹配NamespaceSelector的namespace，设置到at.Namespaces，并设置at.NamespaceSelector为labels.Nothing()
 func (pl *InterPodAffinity) mergeAffinityTermNamespacesIfNotEmpty(at *framework.AffinityTerm) error {
 	if at.NamespaceSelector.Empty() {
 		return nil
@@ -129,6 +131,7 @@ func (pl *InterPodAffinity) mergeAffinityTermNamespacesIfNotEmpty(at *framework.
 
 // GetNamespaceLabelsSnapshot returns a snapshot of the labels associated with
 // the namespace.
+// 获取namespace的label
 func GetNamespaceLabelsSnapshot(ns string, nsLister listersv1.NamespaceLister) (nsLabels labels.Set) {
 	podNS, err := nsLister.Get(ns)
 	if err == nil {
