@@ -128,7 +128,9 @@ func (e *eventBroadcasterImpl) refreshExistingEventSeries() {
 	defer e.mu.Unlock()
 	for isomorphicKey, event := range e.eventCache {
 		if event.Series != nil {
+			// 进行同步event到apiserver，如果不需要重新记录
 			if recordedEvent, retry := recordEvent(e.sink, event); !retry {
+				// 同步event到apiserver操作是进行创建的新event，则更新到eventCache
 				if recordedEvent != nil {
 					e.eventCache[isomorphicKey] = recordedEvent
 				}
@@ -140,6 +142,8 @@ func (e *eventBroadcasterImpl) refreshExistingEventSeries() {
 // finishSeries checks if a series has ended and either:
 // - write final count to the apiserver
 // - delete a singleton event (i.e. series field is nil) from the cache
+// 在cache中有6分钟之前发现，则重新记录一下（同步到apiserver）。如果不需要再次记录，则从e.eventCache删除
+// 或单次事件（event.Series为nil）且event生成已经过了6分钟，则从e.eventCache中删除
 func (e *eventBroadcasterImpl) finishSeries() {
 	// TODO: Investigate whether lock contention won't be a problem
 	e.mu.Lock()
@@ -147,11 +151,14 @@ func (e *eventBroadcasterImpl) finishSeries() {
 	for isomorphicKey, event := range e.eventCache {
 		eventSerie := event.Series
 		if eventSerie != nil {
+			// LastObservedTime时间超过6分钟
 			if eventSerie.LastObservedTime.Time.Before(time.Now().Add(-finishTime)) {
+				// 重新记录一下，如果不需要再次记录，则从e.eventCache删除
 				if _, retry := recordEvent(e.sink, event); !retry {
 					delete(e.eventCache, isomorphicKey)
 				}
 			}
+			// 单次事件（event.Series为nil）且第一次事件发生的时间，超过了6分钟，则从e.eventCache中删除
 		} else if event.EventTime.Time.Before(time.Now().Add(-finishTime)) {
 			delete(e.eventCache, isomorphicKey)
 		}
@@ -165,32 +172,42 @@ func (e *eventBroadcasterImpl) NewRecorder(scheme *runtime.Scheme, reportingCont
 	return &recorderImpl{scheme, reportingController, reportingInstance, e.Broadcaster, clock.RealClock{}}
 }
 
+// 将e.eventCache已经存在的且之前只发生一次event和新的event同步到apiserver
+// 之前已经发生超过两次的event，只要后面没有一样的event，会在至少6分钟后，在e.finishSeries里被同步
 func (e *eventBroadcasterImpl) recordToSink(event *eventsv1.Event, clock clock.Clock) {
 	// Make a copy before modification, because there could be multiple listeners.
 	eventCopy := event.DeepCopy()
 	go func() {
+		// 返回e.eventCache已经存在的且之前只发生一次event，或之前已经发生超过两次的event，则返回nil，或不存在则返回eventCopy
 		evToRecord := func() *eventsv1.Event {
 			e.mu.Lock()
 			defer e.mu.Unlock()
 			eventKey := getKey(eventCopy)
 			isomorphicEvent, isIsomorphic := e.eventCache[eventKey]
+			// 在eventCache中已经存在
 			if isIsomorphic {
+				// 如果是之前已经发生超过两次的event，则Series.Count进行累加，更新Series.LastObservedTime为现在
 				if isomorphicEvent.Series != nil {
 					isomorphicEvent.Series.Count++
 					isomorphicEvent.Series.LastObservedTime = metav1.MicroTime{Time: clock.Now()}
 					return nil
 				}
+				// 之前是只发生一次event，则生成Series（其中count为1，LastObservedTime为现在）
 				isomorphicEvent.Series = &eventsv1.EventSeries{
 					Count:            1,
 					LastObservedTime: metav1.MicroTime{Time: clock.Now()},
 				}
 				return isomorphicEvent
 			}
+			// 在eventCache中不存在，说明是新的event，则保存到e.eventCache中
 			e.eventCache[eventKey] = eventCopy
 			return eventCopy
 		}()
+		// event不为已经发生超过两次的event，则进行最多12次重试的同步event到apiserver
+		// 之前已经发生超过两次的event，只要后面没有一样的event，会在至少6分钟后，在e.finishSeries里被同步
 		if evToRecord != nil {
 			recordedEvent := e.attemptRecording(evToRecord)
+			// 同步到apiserver成功，则更新e.eventCache
 			if recordedEvent != nil {
 				recordedEventKey := getKey(recordedEvent)
 				e.mu.Lock()
@@ -201,6 +218,7 @@ func (e *eventBroadcasterImpl) recordToSink(event *eventsv1.Event, clock clock.C
 	}()
 }
 
+// 最多12次重试的同步event到apiserver
 func (e *eventBroadcasterImpl) attemptRecording(event *eventsv1.Event) *eventsv1.Event {
 	tries := 0
 	for {
@@ -223,6 +241,7 @@ func recordEvent(sink EventSink, event *eventsv1.Event) (*eventsv1.Event, bool) 
 	var err error
 	isEventSeries := event.Series != nil
 	if isEventSeries {
+		// 生成去除event.Series字段的strategic patch
 		patch, patchBytesErr := createPatchBytesForSeries(event)
 		if patchBytesErr != nil {
 			klog.Errorf("Unable to calculate diff, no merge is possible: %v", patchBytesErr)
@@ -231,6 +250,7 @@ func recordEvent(sink EventSink, event *eventsv1.Event) (*eventsv1.Event, bool) 
 		newEvent, err = sink.Patch(event, patch)
 	}
 	// Update can fail because the event may have been removed and it no longer exists.
+	// 第一次遇到这个事件，或已经存在这个事件且patch时候报404，则进行创建
 	if !isEventSeries || (isEventSeries && util.IsKeyNotFoundError(err)) {
 		// Making sure that ResourceVersion is empty on creation
 		event.ResourceVersion = ""
@@ -263,6 +283,7 @@ func recordEvent(sink EventSink, event *eventsv1.Event) (*eventsv1.Event, bool) 
 	return nil, true
 }
 
+// 生成去除event.Series字段的strategic patch
 func createPatchBytesForSeries(event *eventsv1.Event) ([]byte, error) {
 	oldEvent := event.DeepCopy()
 	oldEvent.Series = nil
@@ -321,6 +342,10 @@ func (e *eventBroadcasterImpl) StartEventWatcher(eventHandler func(event runtime
 	return watcher.Stop
 }
 
+// 生成新的watcher来消费event，并交给e.recordToSink进行处理
+// e.recordToSink：
+//   将e.eventCache已经存在的且之前只发生一次event和新的event同步到apiserver
+//   之前已经发生超过两次的event，只要后面没有一样的event，会在至少6分钟后，在e.finishSeries里被同步
 func (e *eventBroadcasterImpl) startRecordingEvents(stopCh <-chan struct{}) {
 	eventHandler := func(obj runtime.Object) {
 		event, ok := obj.(*eventsv1.Event)
@@ -339,8 +364,13 @@ func (e *eventBroadcasterImpl) startRecordingEvents(stopCh <-chan struct{}) {
 
 // StartRecordingToSink starts sending events received from the specified eventBroadcaster to the given sink.
 func (e *eventBroadcasterImpl) StartRecordingToSink(stopCh <-chan struct{}) {
+	// 每30分钟执行更新已经cache中的event有series
 	go wait.Until(e.refreshExistingEventSeries, refreshTime, stopCh)
+	// 每6分钟执行
+	// 在cache中有6分钟之前发现，则重新记录一下（同步到apiserver）。如果不需要再次记录，则从e.eventCache删除
+	// 或单次事件（event.Series为nil）且event生成已经过了6分钟，则从e.eventCache中删除
 	go wait.Until(e.finishSeries, finishTime, stopCh)
+	// 处理实时生成的event
 	e.startRecordingEvents(stopCh)
 }
 
