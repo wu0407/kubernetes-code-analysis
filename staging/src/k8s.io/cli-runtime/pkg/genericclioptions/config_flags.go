@@ -281,9 +281,14 @@ func (f *ConfigFlags) toDiscoveryClient() (discovery.CachedDiscoveryInterface, e
 	if f.CacheDir != nil {
 		cacheDir = *f.CacheDir
 	}
+	// ~/.kube/cache/http
 	httpCacheDir := filepath.Join(cacheDir, "http")
+	// 比如~/.kube/cache/discovery/k8s_apiserver.internal.weimobqa.com_8443/autoscaling.k8s.io/v1/serverresources.json
+	// discoveryCacheDir为~/.kube/cache/discovery/k8s_apiserver.internal.weimobqa.com_8443
+	// 将apiserver里"http://"或"https://"删除，并把`[^(\w/.)]`（a-z0-9A-Z/.）之外的字符替换成"_"
 	discoveryCacheDir := computeDiscoverCacheDir(filepath.Join(cacheDir, "discovery"), config.Host)
 
+	// 返回带http cache（类似浏览器的缓存）的CachedDiscoveryClient，且将结果保存到discoveryCacheDir里（10分钟过期）
 	return diskcached.NewCachedDiscoveryClientForConfig(config, discoveryCacheDir, httpCacheDir, time.Duration(10*time.Minute))
 }
 

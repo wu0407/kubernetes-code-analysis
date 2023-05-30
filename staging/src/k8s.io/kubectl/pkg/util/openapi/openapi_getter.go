@@ -44,6 +44,7 @@ func NewOpenAPIGetter(openAPIClient discovery.OpenAPISchemaInterface) *CachedOpe
 }
 
 // OpenAPISchema implements OpenAPISchemaInterface.
+// 访问"/openapi/v2"，获得openapi_v2.Document
 func (g *CachedOpenAPIGetter) OpenAPISchema() (*openapi_v2.Document, error) {
 	g.Do(func() {
 		g.openAPISchema, g.err = g.openAPIClient.OpenAPISchema()
@@ -68,6 +69,8 @@ func NewOpenAPIParser(openAPIClient discovery.OpenAPISchemaInterface) *CachedOpe
 	}
 }
 
+// 访问"/openapi/v2"，获得openapi_v2.Document
+// 从openapi_v2.Document解析出models和resources（key为GroupVersionKind，value为modelName）
 func (p *CachedOpenAPIParser) Parse() (Resources, error) {
 	p.Do(func() {
 		oapi, err := p.openAPIClient.OpenAPISchema()

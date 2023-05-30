@@ -46,6 +46,7 @@ func (p *OmitManagedFieldsPrinter) PrintObj(obj runtime.Object, w io.Writer) err
 	if obj == nil {
 		return p.Delegate.PrintObj(obj, w)
 	}
+	// obj不是nil
 	if meta.IsListType(obj) {
 		obj = obj.DeepCopyObject()
 		_ = meta.EachListItem(obj, func(item runtime.Object) error {

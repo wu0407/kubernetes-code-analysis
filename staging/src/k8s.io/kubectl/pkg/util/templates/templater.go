@@ -33,6 +33,7 @@ type FlagExposer interface {
 	ExposeFlags(cmd *cobra.Command, flags ...string) FlagExposer
 }
 
+// 设置根命令的usageFunc，设置根命令的HelpFunc，并返回templater
 func ActsAsRootCommand(cmd *cobra.Command, filters []string, groups ...CommandGroup) FlagExposer {
 	if cmd == nil {
 		panic("nil root command")
@@ -46,7 +47,9 @@ func ActsAsRootCommand(cmd *cobra.Command, filters []string, groups ...CommandGr
 	}
 	cmd.SetFlagErrorFunc(templater.FlagErrorFunc())
 	cmd.SilenceUsage = true
+	// 设置根命令的usageFunc
 	cmd.SetUsageFunc(templater.UsageFunc())
+	// 设置根命令的HelpFunc
 	cmd.SetHelpFunc(templater.HelpFunc())
 	return templater
 }
@@ -98,6 +101,7 @@ func (templater *templater) HelpFunc() func(*cobra.Command, []string) {
 	}
 }
 
+// 返回command的usageFunc
 func (templater *templater) UsageFunc(exposedFlags ...string) func(*cobra.Command) error {
 	return func(c *cobra.Command) error {
 		t := template.New("usage")

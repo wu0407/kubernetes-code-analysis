@@ -39,9 +39,11 @@ func NewTypeSetter(typer runtime.ObjectTyper) *TypeSetterPrinter {
 // PrintObj is an implementation of ResourcePrinter.PrintObj which sets type information on the obj for the duration
 // of printing.  It is NOT threadsafe.
 func (p *TypeSetterPrinter) PrintObj(obj runtime.Object, w io.Writer) error {
+	// obj为空指针
 	if obj == nil {
 		return p.Delegate.PrintObj(obj, w)
 	}
+	// obj有group version kind
 	if !obj.GetObjectKind().GroupVersionKind().Empty() {
 		return p.Delegate.PrintObj(obj, w)
 	}
@@ -51,12 +53,14 @@ func (p *TypeSetterPrinter) PrintObj(obj runtime.Object, w io.Writer) error {
 		obj.GetObjectKind().SetGroupVersionKind(schema.GroupVersionKind{})
 	}()
 
+	// 利用runtime.Scheme（p.Typer）来寻找所有可能的group version kind
 	gvks, _, err := p.Typer.ObjectKinds(obj)
 	if err != nil {
 		// printers wrapped by us expect to find the type information present
 		return fmt.Errorf("missing apiVersion or kind and cannot assign it; %v", err)
 	}
 
+	// 找到第一个非空的、不是internal的group、version、kind，设置object的group version kind
 	for _, gvk := range gvks {
 		if len(gvk.Kind) == 0 {
 			continue

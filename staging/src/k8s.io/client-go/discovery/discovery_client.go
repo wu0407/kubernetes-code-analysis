@@ -421,6 +421,7 @@ func (d *DiscoveryClient) ServerVersion() (*version.Info, error) {
 }
 
 // OpenAPISchema fetches the open api schema using a rest client and parses the proto.
+// 访问"/openapi/v2"，获得openapi_v2.Document
 func (d *DiscoveryClient) OpenAPISchema() (*openapi_v2.Document, error) {
 	data, err := d.restClient.Get().AbsPath("/openapi/v2").SetHeader("Accept", mimePb).Do(context.TODO()).Raw()
 	if err != nil {

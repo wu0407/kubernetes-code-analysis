@@ -49,6 +49,7 @@ type illegalPackageSourceChecker struct {
 	disallowedPrefixes []string
 }
 
+// pkgPath是否包含前缀"k8s.io/kubernetes/pkg/apis/"或包含"/vendor/k8s.io/kubernetes/pkg/apis/"
 func (c *illegalPackageSourceChecker) IsForbidden(pkgPath string) bool {
 	for _, forbiddenPrefix := range c.disallowedPrefixes {
 		if strings.HasPrefix(pkgPath, forbiddenPrefix) || strings.Contains(pkgPath, "/vendor/"+forbiddenPrefix) {

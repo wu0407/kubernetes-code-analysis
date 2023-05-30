@@ -36,6 +36,7 @@ type NamePrintFlags struct {
 }
 
 // Complete sets NamePrintFlags operation flag from sucessTemplate
+// 设置NamePrintFlags.Operation为successTemplate与NamePrintFlags.Operation渲染出来的字符串
 func (f *NamePrintFlags) Complete(successTemplate string) error {
 	f.Operation = fmt.Sprintf(successTemplate, f.Operation)
 	return nil
@@ -53,6 +54,7 @@ func (f *NamePrintFlags) AllowedFormats() []string {
 // handling --output=name printing.
 // Returns false if the specified outputFormat does not match a supported format.
 // Supported format types can be found in pkg/printers/printers.go
+// outputFormat只支持"name"和""
 func (f *NamePrintFlags) ToPrinter(outputFormat string) (printers.ResourcePrinter, error) {
 	namePrinter := &printers.NamePrinter{
 		Operation: f.Operation,

@@ -646,11 +646,17 @@ func GetDryRunStrategy(cmd *cobra.Command) (DryRunStrategy, error) {
 // a PrintFlags struct that binds the --dry-run flag, and whose
 // ToPrinter method returns a printer that understands how to print
 // this success message.
+// 当启用dry-run
+//   client端dry-run，设置printFlags.NamePrintFlags.Operation为"%s (dry run)"与printFlags.NamePrintFlags.Operation渲染出来的字符串，返回printFlags
+//   server端dry-run，设置printFlags.NamePrintFlags.Operation为"%s (server dry run)"与printFlags.NamePrintFlags.Operation渲染出来的字符串，返回printFlags
+// 不启用，则直接返回printFlags
 func PrintFlagsWithDryRunStrategy(printFlags *genericclioptions.PrintFlags, dryRunStrategy DryRunStrategy) *genericclioptions.PrintFlags {
 	switch dryRunStrategy {
 	case DryRunClient:
+		// 设置printFlags.NamePrintFlags.Operation为"%s (dry run)"与printFlags.NamePrintFlags.Operation渲染出来的字符串
 		printFlags.Complete("%s (dry run)")
 	case DryRunServer:
+		// 设置printFlags.NamePrintFlags.Operation为"%s (server dry run)"与printFlags.NamePrintFlags.Operation渲染出来的字符串
 		printFlags.Complete("%s (server dry run)")
 	}
 	return printFlags

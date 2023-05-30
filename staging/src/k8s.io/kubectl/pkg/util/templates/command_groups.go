@@ -27,6 +27,7 @@ type CommandGroup struct {
 
 type CommandGroups []CommandGroup
 
+// 将CommandGroups.Commands里的command添加到c，即CommandGroups.Commands里的command为c的子命令
 func (g CommandGroups) Add(c *cobra.Command) {
 	for _, group := range g {
 		c.AddCommand(group.Commands...)

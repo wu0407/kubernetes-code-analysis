@@ -29,6 +29,7 @@ import (
 
 func NewDryRunVerifier(dynamicClient dynamic.Interface, openAPIGetter discovery.OpenAPISchemaInterface) *DryRunVerifier {
 	return &DryRunVerifier{
+		// CRDFromDynamic返回获得所有crd的GroupKind的func
 		finder:        NewCRDFinder(CRDFromDynamic(dynamicClient)),
 		openAPIGetter: openAPIGetter,
 	}

@@ -225,6 +225,7 @@ func (flags *ApplyFlags) AddFlags(cmd *cobra.Command) {
 func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []string) (*ApplyOptions, error) {
 	serverSideApply := cmdutil.GetServerSideApplyFlag(cmd)
 	forceConflicts := cmdutil.GetForceConflictsFlag(cmd)
+	// --dry-run命令行参数，支持client、server、none、空值和bool值（已经废弃）
 	dryRunStrategy, err := cmdutil.GetDryRunStrategy(cmd)
 	if err != nil {
 		return nil, err
@@ -235,17 +236,28 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 		return nil, err
 	}
 
+	// 返回DryRunVerifier
 	dryRunVerifier := resource.NewDryRunVerifier(dynamicClient, flags.Factory.OpenAPIGetter())
+	// 设置了--field-manager那就使用这个值
+	// 否则，如果启用了server-side apply，那么field manager值为"kubectl"（为了向前兼容）
+	// 其他情况，field manager值为"kubectl-client-side-apply"
 	fieldManager := GetApplyFieldManagerFlag(cmd, serverSideApply)
 
 	// allow for a success message operation to be specified at print time
 	toPrinter := func(operation string) (printers.ResourcePrinter, error) {
 		flags.PrintFlags.NamePrintFlags.Operation = operation
+		// 当启用dry-run
+		//   client端dry-run，设置flags.printFlags.NamePrintFlags.Operation为"%s (dry run)"与f.NamePrintFlags.Operation渲染出来的字符串，返回printFlags
+		//   server端dry-run，设置flags.printFlags.NamePrintFlags.Operation为"%s (server dry run)"与f.NamePrintFlags.Operation渲染出来的字符串，返回printFlags
+		// 不启用，则直接返回printFlags
 		cmdutil.PrintFlagsWithDryRunStrategy(flags.PrintFlags, dryRunStrategy)
 		return flags.PrintFlags.ToPrinter()
 	}
 
+	// 设置flags.RecordFlags.changeCause为{命令行路径}+{non-flag arguments...}+{flag arguments (--xxx=xxx,-xxx=xxx)}
 	flags.RecordFlags.Complete(cmd)
+	// --record=false或没有这个命令参数，则recorder为NoopRecorder{}
+	// 否则返回ChangeCauseRecorder{changeCause: flags.RecordFlags.changeCause}
 	recorder, err := flags.RecordFlags.ToRecorder()
 	if err != nil {
 		return nil, err
@@ -256,6 +268,7 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 		return nil, err
 	}
 
+	// 检查必须设置-f、--file，或-k、--kustomize
 	err = deleteOptions.FilenameOptions.RequireFilenameOrKustomize()
 	if err != nil {
 		return nil, err
@@ -272,6 +285,7 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 		return nil, err
 	}
 
+	// kubeconfig里默认配置的namespace
 	namespace, enforceNamespace, err := flags.Factory.ToRawKubeConfigLoader().Namespace()
 	if err != nil {
 		return nil, err
@@ -380,6 +394,7 @@ func isIncompatibleServerError(err error) bool {
 // the ApplyOptions is filled in and valid.
 func (o *ApplyOptions) GetObjects() ([]*resource.Info, error) {
 	var err error = nil
+	// 从apiserver中获取资源
 	if !o.objectsCached {
 		r := o.Builder.
 			Unstructured().
@@ -421,6 +436,7 @@ func (o *ApplyOptions) Run() error {
 	// Generates the objects using the resource builder if they have not
 	// already been stored by calling "SetObjects()" in the pre-processor.
 	errs := []error{}
+	// 从apiserver获取资源
 	infos, err := o.GetObjects()
 	if err != nil {
 		errs = append(errs, err)
@@ -551,6 +567,7 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 		return cmdutil.AddSourceToErr(fmt.Sprintf("retrieving modified configuration from:\n%s\nfor:", info.String()), info.Source, err)
 	}
 
+	// 从apiserver上获取资源
 	if err := info.Get(); err != nil {
 		if !errors.IsNotFound(err) {
 			return cmdutil.AddSourceToErr(fmt.Sprintf("retrieving current configuration of:\n%s\nfrom server for:", info.String()), info.Source, err)
@@ -753,6 +770,9 @@ const (
 //
 // The default field manager is not `kubectl-apply` to distinguish between
 // client-side and server-side apply.
+// 设置了--field-manager那就使用这个值
+// 否则，如果启用了server-side apply，那么field manager值为"kubectl"（为了向前兼容）
+// 其他情况，field manager值为"kubectl-client-side-apply"
 func GetApplyFieldManagerFlag(cmd *cobra.Command, serverSide bool) string {
 	// The field manager flag was set
 	if cmd.Flag("field-manager").Changed {

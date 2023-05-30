@@ -122,6 +122,8 @@ func NewDiscoveryRESTMapper(groupResources []*APIGroupResources) meta.RESTMapper
 		}
 	}
 
+	// 最后添加任意version、任意resource在resourcePriority最后
+	// 添加任意version、任意kind在kindPriority最后
 	for _, group := range groupPriority {
 		resourcePriority = append(resourcePriority, schema.GroupVersionResource{
 			Group:    group,

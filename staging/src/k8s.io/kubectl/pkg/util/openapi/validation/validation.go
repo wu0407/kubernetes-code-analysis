@@ -43,11 +43,14 @@ func NewSchemaValidation(resources openapi.Resources) *SchemaValidation {
 // ValidateBytes will validates the object against using the Resources
 // object.
 func (v *SchemaValidation) ValidateBytes(data []byte) error {
+	// 如果是yaml转成json，json格式不用转了
+	// 然后json.Unmarshal为interface{}
 	obj, err := parse(data)
 	if err != nil {
 		return err
 	}
 
+	// object从interface{}转成map[string]interface{}，然后读取出"apiVersion"和"kind"，解析成schema.GroupVersionKind
 	gvk, errs := getObjectKind(obj)
 	if errs != nil {
 		return utilerrors.NewAggregate(errs)
@@ -60,6 +63,7 @@ func (v *SchemaValidation) ValidateBytes(data []byte) error {
 	return utilerrors.NewAggregate(v.validateResource(obj, gvk))
 }
 
+// object从interface{}转成map[string]interface{}，然后读取key为"items"的数据interface{}，解析出group version kind，进行v.validateResource
 func (v *SchemaValidation) validateList(object interface{}) []error {
 	fields, ok := object.(map[string]interface{})
 	if !ok || fields == nil {
@@ -90,6 +94,8 @@ func (v *SchemaValidation) validateResource(obj interface{}, gvk schema.GroupVer
 	return validation.ValidateModel(obj, resource, gvk.Kind)
 }
 
+// 如果是yaml转成json，json格式不用转了
+// 然后json.Unmarshal为interface{}
 func parse(data []byte) (interface{}, error) {
 	var obj interface{}
 	out, err := yaml.ToJSON(data)
@@ -102,6 +108,7 @@ func parse(data []byte) (interface{}, error) {
 	return obj, nil
 }
 
+// object从interface{}转成map[string]interface{}，然后读取出"apiVersion"和"kind"，解析成schema.GroupVersionKind
 func getObjectKind(object interface{}) (schema.GroupVersionKind, []error) {
 	var listErrors []error
 	fields, ok := object.(map[string]interface{})

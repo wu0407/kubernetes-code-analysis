@@ -65,6 +65,7 @@ func (f *factoryImpl) ToRESTMapper() (meta.RESTMapper, error) {
 	return f.clientGetter.ToRESTMapper()
 }
 
+// 返回带http cache（类似浏览器的缓存）的CachedDiscoveryClient，且将结果保存到discoveryCacheDir里（10分钟过期）
 func (f *factoryImpl) ToDiscoveryClient() (discovery.CachedDiscoveryInterface, error) {
 	return f.clientGetter.ToDiscoveryClient()
 }
@@ -153,6 +154,7 @@ func (f *factoryImpl) Validator(validate bool) (validation.Schema, error) {
 
 	return validation.ConjunctiveSchema{
 		openapivalidation.NewSchemaValidation(resources),
+		// 检查.metadata.labels和metadata.annotations是否有重复的key
 		validation.NoDoubleKeySchema{},
 	}, nil
 }
@@ -168,13 +170,17 @@ func (f *factoryImpl) OpenAPISchema() (openapi.Resources, error) {
 	// Lazily initialize the OpenAPIParser once
 	f.parser.Do(func() {
 		// Create the caching OpenAPIParser
+		// 返回CachedOpenAPIParser包了CachedOpenAPIGetter
 		f.openAPIParser = openapi.NewOpenAPIParser(f.OpenAPIGetter())
 	})
 
 	// Delegate to the OpenAPIPArser
+	// 访问"/openapi/v2"，获得openapi_v2.Document
+	// 从openapi_v2.Document解析出models和resources（key为GroupVersionKind，value为modelName）
 	return f.openAPIParser.Parse()
 }
 
+// 返回CachedOpenAPIGetter
 func (f *factoryImpl) OpenAPIGetter() discovery.OpenAPISchemaInterface {
 	discovery, err := f.clientGetter.ToDiscoveryClient()
 	if err != nil {

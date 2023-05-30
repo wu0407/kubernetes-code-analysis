@@ -268,6 +268,7 @@ func (d *CachedDiscoveryClient) Invalidate() {
 // CachedDiscoveryClient cache data. If httpCacheDir is empty, the restconfig's transport will not
 // be updated with a roundtripper that understands cache responses.
 // If discoveryCacheDir is empty, cached server resource data will be looked up in the current directory.
+// 返回带http cache（类似浏览器的缓存）的CachedDiscoveryClient，且将结果保存到discoveryCacheDir里（10分钟过期）
 func NewCachedDiscoveryClientForConfig(config *restclient.Config, discoveryCacheDir, httpCacheDir string, ttl time.Duration) (*CachedDiscoveryClient, error) {
 	if len(httpCacheDir) > 0 {
 		// update the given restconfig with a custom roundtripper that

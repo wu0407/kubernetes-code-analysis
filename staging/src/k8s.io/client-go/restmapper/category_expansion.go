@@ -56,6 +56,8 @@ func NewDiscoveryCategoryExpander(client discovery.DiscoveryInterface) CategoryE
 }
 
 // Expand fulfills CategoryExpander
+// 从e.discoveryClient.ServerGroupsAndResources获得[]*v1.APIResourceList，然后组装成key为category（v1.APIResourceList里的字段），value为schema.GroupResource，即map[string][]schema.GroupResource（按category查找所有schema.GroupResource）
+// 然后从map[string][]schema.GroupResource查找category对应的[]schema.GroupResource
 func (e discoveryCategoryExpander) Expand(category string) ([]schema.GroupResource, bool) {
 	// Get all supported resources for groups and versions from server, if no resource found, fallback anyway.
 	_, apiResourceLists, _ := e.discoveryClient.ServerGroupsAndResources()

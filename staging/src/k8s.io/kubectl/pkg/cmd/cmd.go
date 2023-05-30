@@ -409,6 +409,7 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 			},
 		},
 	}
+	// 将CommandGroups.Commands里的command添加到c，即CommandGroups.Commands里的command为c的子命令
 	groups.Add(cmds)
 
 	filters := []string{"options"}
@@ -419,17 +420,27 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 		filters = append(filters, alpha.Name())
 	}
 
+	// 设置根命令的usageFunc，设置根命令的HelpFunc，并返回templater
 	templates.ActsAsRootCommand(cmds, filters, groups...)
 
+	// 设置staging\src\k8s.io\kubectl\pkg\util\completion.go里factory为f
 	util.SetFactoryForCompletion(f)
+	// 设置"namespace"、"context"、"cluster"、"user"参数自动补全命令
 	registerCompletionFuncForGlobalFlags(cmds, f)
 
+	// kubectl alpha相关命令
 	cmds.AddCommand(alpha)
+	// kubectl config相关命令
 	cmds.AddCommand(cmdconfig.NewCmdConfig(clientcmd.NewDefaultPathOptions(), o.IOStreams))
+	// kubectl plugin相关命令
 	cmds.AddCommand(plugin.NewCmdPlugin(o.IOStreams))
+	// kubectl version相关命令
 	cmds.AddCommand(version.NewCmdVersion(f, o.IOStreams))
+	// kubectl api-versions相关命令
 	cmds.AddCommand(apiresources.NewCmdAPIVersions(f, o.IOStreams))
+	// kubectl api-resources相关命令
 	cmds.AddCommand(apiresources.NewCmdAPIResources(f, o.IOStreams))
+	// kubectl options相关命令
 	cmds.AddCommand(options.NewCmdOptions(o.IOStreams.Out))
 
 	// Stop warning about normalization of flags. That makes it possible to
@@ -489,6 +500,7 @@ func runHelp(cmd *cobra.Command, args []string) {
 	cmd.Help()
 }
 
+// 设置"namespace"、"context"、"cluster"、"user"参数自动补全命令
 func registerCompletionFuncForGlobalFlags(cmd *cobra.Command, f cmdutil.Factory) {
 	cmdutil.CheckErr(cmd.RegisterFlagCompletionFunc(
 		"namespace",

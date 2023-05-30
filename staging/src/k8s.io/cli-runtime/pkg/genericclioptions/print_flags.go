@@ -74,6 +74,7 @@ type PrintFlags struct {
 }
 
 // Complete sets NamePrintFlags operation flag from sucessTemplate
+// 设置f.NamePrintFlags.Operation为successTemplate与f.NamePrintFlags.Operation渲染出来的字符串
 func (f *PrintFlags) Complete(successTemplate string) error {
 	return f.NamePrintFlags.Complete(successTemplate)
 }
@@ -108,18 +109,25 @@ func (f *PrintFlags) ToPrinter() (printers.ResourcePrinter, error) {
 	}
 
 	if f.JSONYamlPrintFlags != nil {
+		// 根据outputFormat返回对应得printers.ResourcePrinter
+		// "json"为printers.JSONPrinter{}，如果f.showManagedFields为true，则返回printers.OmitManagedFieldsPrinter（包装printers.JSONPrinter{}）
+		// "yaml"为printers.YAMLPrinter{}，如果f.showManagedFields为true，则返回printers.OmitManagedFieldsPrinter（包装printers.JSONPrinter{}）
 		if p, err := f.JSONYamlPrintFlags.ToPrinter(outputFormat); !IsNoCompatiblePrinterError(err) {
+			// 返回包装了p的TypeSetterPrinter
 			return f.TypeSetterPrinter.WrapToPrinter(p, err)
 		}
 	}
 
 	if f.NamePrintFlags != nil {
+		// outputFormat只支持"name"和""，命令行--output=name，--output=""
 		if p, err := f.NamePrintFlags.ToPrinter(outputFormat); !IsNoCompatiblePrinterError(err) {
 			return f.TypeSetterPrinter.WrapToPrinter(p, err)
 		}
 	}
 
 	if f.TemplatePrinterFlags != nil {
+		// --output=jsonpath="{xxx}", --output=jsonpath-file="{xxx}", --output=jsonpath-as-json="{xxx}"
+		// --output=template="{xxx}", --output=go-template="{xxx}", --output=go-template-file="{xxx}", --output=templatefile="{xxx}"
 		if p, err := f.TemplatePrinterFlags.ToPrinter(outputFormat); !IsNoCompatiblePrinterError(err) {
 			return f.TypeSetterPrinter.WrapToPrinter(p, err)
 		}

@@ -78,6 +78,8 @@ func (f *DeleteFlags) ToOptions(dynamicClient dynamic.Interface, streams generic
 	}
 	if f.CascadingStrategy != nil {
 		var err error
+		// 支持--cascade=true/false（已经废弃），--cascade=orphan/foreground/background
+		// 返回metav1.DeletionPropagation（字符串）
 		options.CascadingStrategy, err = parseCascadingFlag(streams, *f.CascadingStrategy)
 		if err != nil {
 			return nil, err
@@ -225,6 +227,8 @@ func NewDeleteFlags(usage string) *DeleteFlags {
 	}
 }
 
+// 支持--cascade=true/false（已经废弃），--cascade=orphan/foreground/background
+// 返回metav1.DeletionPropagation（字符串）
 func parseCascadingFlag(streams genericclioptions.IOStreams, cascadingFlag string) (metav1.DeletionPropagation, error) {
 	boolValue, err := strconv.ParseBool(cascadingFlag)
 	// The flag is not a boolean

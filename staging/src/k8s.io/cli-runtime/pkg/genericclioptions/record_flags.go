@@ -43,6 +43,8 @@ type RecordFlags struct {
 
 // ToRecorder returns a ChangeCause recorder if --record=false was not
 // explicitly given by the user
+// --record=false或没有这个命令参数，则recorder为NoopRecorder{}
+// 否则返回ChangeCauseRecorder{changeCause: f.changeCause}
 func (f *RecordFlags) ToRecorder() (Recorder, error) {
 	if f == nil {
 		return NoopRecorder{}, nil
@@ -70,6 +72,7 @@ func (f *RecordFlags) Complete(cmd *cobra.Command) error {
 		return nil
 	}
 
+	// 返回{命令行路径}+{non-flag arguments...}+{flag arguments (--xxx=xxx,-xxx=xxx)}
 	f.changeCause = parseCommandArguments(cmd)
 	return nil
 }
@@ -98,6 +101,7 @@ func (f *RecordFlags) AddFlags(cmd *cobra.Command) {
 }
 
 // NewRecordFlags provides a RecordFlags with reasonable default values set for use
+// kubectl命令行记录到资源的annotation上
 func NewRecordFlags() *RecordFlags {
 	record := false
 
@@ -142,6 +146,7 @@ func (r *ChangeCauseRecorder) Record(obj runtime.Object) error {
 	if annotations == nil {
 		annotations = make(map[string]string)
 	}
+	// annotations["kubernetes.io/change-cause"]
 	annotations[ChangeCauseAnnotation] = r.changeCause
 	accessor.SetAnnotations(annotations)
 	return nil
@@ -170,6 +175,7 @@ func (r *ChangeCauseRecorder) MakeRecordMergePatch(obj runtime.Object) ([]byte, 
 // parseCommandArguments will stringify and return all environment arguments ie. a command run by a client
 // using the factory.
 // Set showSecrets false to filter out stuff like secrets.
+// 返回{命令行路径}+{non-flag arguments...}+{flag arguments (--xxx=xxx,-xxx=xxx)}
 func parseCommandArguments(cmd *cobra.Command) string {
 	if len(os.Args) == 0 {
 		return ""

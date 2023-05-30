@@ -80,6 +80,7 @@ func (e shortcutExpander) RESTMappings(gk schema.GroupKind, versions ...string) 
 // First the list of potential resources will be taken from the API server.
 // Next we will append the hardcoded list of resources - to be backward compatible with old servers.
 // NOTE that the list is ordered by group priority.
+// 返回[]*metav1.APIResourceList和[]resourceShortcuts（所有APIResources里ShortForm（resource字段为shortName的schema.GroupResource）和LongForm（resource字段为完整名字的schema.GroupResource））
 func (e shortcutExpander) getShortcutMappings() ([]*metav1.APIResourceList, []resourceShortcuts, error) {
 	res := []resourceShortcuts{}
 	// get server resources
@@ -112,10 +113,17 @@ func (e shortcutExpander) getShortcutMappings() ([]*metav1.APIResourceList, []re
 // (something that a pkg/api/meta.RESTMapper can understand), if it is
 // indeed a shortcut. If no match has been found, we will match on group prefixing.
 // Lastly we will return resource unmodified.
+// 验证resource.Group和resource.Resource是否在apiserver返回的[]*metav1.APIResourceList里，如果在apiserver返回的[]*metav1.APIResourceList里则直接返回原来的
+// 如果resource.Group在shortcutResources里，且resource.Resource是shortName，那么将resource.Resource转成完整名字，返回resource
+// resource.Group为空，则直接返回
+// resource.Group前缀匹配shortcutResources的ShortForm的group，且resource.Resource是shortName，那么将resource.Resource转成完整名字，返回resource
+// 其他情况，直接返回原来的resource schema.GroupVersionResource
 func (e shortcutExpander) expandResourceShortcut(resource schema.GroupVersionResource) schema.GroupVersionResource {
 	// get the shortcut mappings and return on first match.
+	// 返回[]*metav1.APIResourceList和[]resourceShortcuts（所有APIResources里ShortForm（resource字段为shortName的schema.GroupResource）和LongForm（resource字段为完整名字的schema.GroupResource））
 	if allResources, shortcutResources, err := e.getShortcutMappings(); err == nil {
 		// avoid expanding if there's an exact match to a full resource name
+		// 验证resource.Group和resource.Resource，如果在allResources里则直接返回原来的
 		for _, apiResources := range allResources {
 			gv, err := schema.ParseGroupVersion(apiResources.GroupVersion)
 			if err != nil {
@@ -134,6 +142,7 @@ func (e shortcutExpander) expandResourceShortcut(resource schema.GroupVersionRes
 			}
 		}
 
+		// 如果resource.Group在shortcutResources里，且resource.Resource是shortName，那么将resource.Resource转成完整名字，返回resource
 		for _, item := range shortcutResources {
 			if len(resource.Group) != 0 && resource.Group != item.ShortForm.Group {
 				continue
@@ -146,9 +155,13 @@ func (e shortcutExpander) expandResourceShortcut(resource schema.GroupVersionRes
 		}
 
 		// we didn't find exact match so match on group prefixing. This allows autoscal to match autoscaling
+		// resource.Group为空，则直接返回
 		if len(resource.Group) == 0 {
 			return resource
 		}
+		// resource.Group不在allResources，且（在shortcutResources里且resource.Resource也不是shortName，或不在shortcutResources）
+
+		// resource.Group前缀匹配shortcutResources的ShortForm的group，且resource.Resource是shortName，那么将resource.Resource转成完整名字，返回resource
 		for _, item := range shortcutResources {
 			if !strings.HasPrefix(item.ShortForm.Group, resource.Group) {
 				continue

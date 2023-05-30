@@ -31,6 +31,7 @@ import (
 // CRDs.
 type CRDGetter func() ([]schema.GroupKind, error)
 
+// 返回获得所有crd的GroupKind的func
 func CRDFromDynamic(client dynamic.Interface) CRDGetter {
 	return func() ([]schema.GroupKind, error) {
 		list, err := client.Resource(schema.GroupVersionResource{

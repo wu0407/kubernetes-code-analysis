@@ -67,6 +67,7 @@ func (f *JSONPathPrintFlags) ToPrinter(templateFormat string) (printers.Resource
 	templateValue := ""
 
 	if f.TemplateArgument == nil || len(*f.TemplateArgument) == 0 {
+		// --output=jsonpath="{xxx}", --output=jsonpath-file="{xxx}", --output=jsonpath-as-json="{xxx}"
 		for format := range jsonFormats {
 			format = format + "="
 			if strings.HasPrefix(templateFormat, format) {
