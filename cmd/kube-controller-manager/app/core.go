@@ -509,6 +509,7 @@ func startGarbageCollectorController(ctx ControllerContext) (http.Handler, bool,
 	}
 
 	// Get an initial set of deletable resources to prime the garbage collector.
+	// 返回支持"delete", "list", "watch"的schema.GroupVersionResource
 	deletableResources := garbagecollector.GetDeletableResources(discoveryClient)
 	ignoredResources := make(map[schema.GroupResource]struct{})
 	for _, r := range ctx.ComponentConfig.GarbageCollectorController.GCIgnoredResources {

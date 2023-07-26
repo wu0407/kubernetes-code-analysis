@@ -152,12 +152,12 @@ func (p *cadvisorStatsProvider) ListPodStats() ([]statsapi.PodStats, error) {
 			// cadvisorInfoToNetworkStats返回最近的网卡状态
 			podStats.Network = cadvisorInfoToNetworkStats("pod:"+ref.Namespace+"_"+ref.Name, &cinfo)
 		} else {
-			// cadvisorInfoToContainerStats返回最近的cpu和memory的使用情况，容器日志所在文件系统的状态，容器根文件系统的使用状态，Accelerators状态、UserDefinedMetrics
+			// cadvisorInfoToContainerStats返回最近的cpu和memory的使用情况，容器日志所在文件系统的状态，容器读写层文件系统的使用状态，Accelerators状态、UserDefinedMetrics
 
 			// 其中StartTime为info.Spec.CreationTime
 			// 其中CPU和memory为info中cpu和memory使用情况
-			// Logs里的文件系统大小、使用量、inode总数、inode剩余量、inode使用量为rootFsInfo中的，UsedBytes（容器的读写层的存储使用量）为cinfo中最近一个cstat.Filesystem里TotalUsageBytes - BaseUsageBytes
-			// Rootfs里文件系统大小、使用量、inode总数、inode剩余量使用imageFsInfo中的，UsedBytes为cinfo中最近一个cstat.BaseUsageBytes（docker存储的目录使用量），InodesUsed为cinfo中最近一个cstat.InodeUsage
+			// Logs里的文件系统大小、使用量、inode总数、inode剩余量、inode使用量为rootFsInfo中的，UsedBytes（docker里/var/lib/docker/containers/{container id}目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据）的使用量）为cinfo中最近一个cstat.Filesystem里TotalUsageBytes - BaseUsageBytes
+			// Rootfs里文件系统大小、使用量、inode总数、inode剩余量使用imageFsInfo中的，UsedBytes为cinfo中最近一个cstat.BaseUsageBytes（docker读写层使用量），InodesUsed为cinfo中最近一个cstat.InodeUsage（docker容器的读写层inode数量）
 			// 添加普通container的状态到podStats.Containers
 			podStats.Containers = append(podStats.Containers, *cadvisorInfoToContainerStats(containerName, &cinfo, &rootFsInfo, &imageFsInfo))
 		}

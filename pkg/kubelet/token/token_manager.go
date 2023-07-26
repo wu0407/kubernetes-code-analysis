@@ -75,6 +75,7 @@ func NewManager(c clientset.Interface) *Manager {
 		cache: make(map[string]*authenticationv1.TokenRequest),
 		clock: clock.RealClock{},
 	}
+	// 每一分钟，遍历m.cache中所有TokenRequest，移除已经过期的TokenRequest
 	go wait.Forever(m.cleanup, gcPeriod)
 	return m
 }
@@ -137,10 +138,12 @@ func (m *Manager) DeleteServiceAccountToken(podUID types.UID) {
 	}
 }
 
+// 遍历m.cache中所有TokenRequest，移除已经过期的TokenRequest
 func (m *Manager) cleanup() {
 	m.cacheMutex.Lock()
 	defer m.cacheMutex.Unlock()
 	for k, tr := range m.cache {
+		// 如果TokenRequest已经过期，则从m.cache中删除
 		if m.expired(tr) {
 			delete(m.cache, k)
 		}

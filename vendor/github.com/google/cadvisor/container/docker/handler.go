@@ -161,7 +161,8 @@ func newDockerContainerHandler(
 
 	// Add the Containers dir where the log files are stored.
 	// FIXME: Give `otherStorageDir` a more descriptive name.
-	// 比如/var/lib/docker/containers
+	// 比如/var/lib/docker/containers/{container id}，这个目录下面包含这些文件：
+	// checkpoints/  config.v2.json  fe6906df4041f32ced3e637711c1815f61d9209ae9ff3a7dd092b11c3c38e5a7-json.log  hostconfig.json  hostname  hosts  mounts/  resolv.conf
 	otherStorageDir := path.Join(storageDir, pathToContainersDir, id)
 
 	// 读取/var/lib/docker/image/overlay2/layerdb/mounts/{container id}/mount-id获得读写层目录的id
@@ -301,7 +302,7 @@ type dockerFsHandler struct {
 var _ common.FsHandler = &dockerFsHandler{}
 
 // 启动goroutine，周期性的更新h.fsHandler.usage
-// 以dockerContainerHandler为例，其中h.fsHandler.usage.InodeUsage为docker存储的目录的inode数量，h.fsHandler.usage.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量。h.fsHandler.usage.BaseUsageBytes为docker存储的目录使用量
+// 以dockerContainerHandler为例，其中h.fsHandler.usage.InodeUsage为docker容器的读写层的inode数量，h.fsHandler.usage.TotalUsageBytes为docker的/var/lib/docker/containers/{container id}目录和容器的读写层的存储使用量。h.fsHandler.usage.BaseUsageBytes为docker容器的读写层使用量
 func (h *dockerFsHandler) Start() {
 	h.fsHandler.Start()
 }
@@ -344,7 +345,7 @@ func (h *dockerFsHandler) Usage() common.FsUsage {
 }
 
 // 启动goroutine，周期性的更新h.fsHandler.usage
-// 以dockerContainerHandler为例，其中self.fsHandler.fsHandler.usage.InodeUsage为docker存储的目录的inode数量，self.fsHandler.fsHandler.usage.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量。self.fsHandler.fsHandler.usage.BaseUsageBytes为docker存储的目录使用量
+// 以dockerContainerHandler为例，其中self.fsHandler.fsHandler.usage.InodeUsage为docker容器的读写层的inode数量，self.fsHandler.fsHandler.usage.TotalUsageBytes为docker的/var/lib/docker/containers/{container id}和容器的读写层的存储使用量。self.fsHandler.fsHandler.usage.BaseUsageBytes为docker容器的读写层使用量
 func (self *dockerContainerHandler) Start() {
 	if self.fsHandler != nil {
 		self.fsHandler.Start()
@@ -382,8 +383,8 @@ func (self *dockerContainerHandler) GetSpec() (info.ContainerSpec, error) {
 	return spec, err
 }
 
-// 设置stats.Filesystem，stats.Filesystem.BaseUsage为docker存储的目录使用量，stats.Filesystem.Usage为docker存储的目录和容器的读写层的存储使用量
-// stats.Filesystem.Inodes为docker存储的目录的inode数量
+// 设置stats.Filesystem，stats.Filesystem.BaseUsage为docker容器的读写层使用量，stats.Filesystem.Usage为docker的/var/lib/docker/containers/{container id}（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））的使用量和容器的读写层的存储使用量
+// stats.Filesystem.Inodes为docker容器的读写层的inode数量
 func (self *dockerContainerHandler) getFsStats(stats *info.ContainerStats) error {
 	mi, err := self.machineInfoFactory.GetMachineInfo()
 	if err != nil {
@@ -439,11 +440,11 @@ func (self *dockerContainerHandler) getFsStats(stats *info.ContainerStats) error
 	fsStat := info.FsStats{Device: device, Type: fsType, Limit: limit}
 	// 返回容器的文件系统使用量
 	usage := self.fsHandler.Usage()
-	// usage.BaseUsageBytes为docker存储的目录使用量
+	// usage.BaseUsageBytes为docker容器的读写层使用量
 	fsStat.BaseUsage = usage.BaseUsageBytes
-	// usage.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量
+	// usage.TotalUsageBytes为docker的/var/lib/docker/containers/{container id}（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））的使用量和容器的读写层的存储使用量
 	fsStat.Usage = usage.TotalUsageBytes
-	// usage.InodeUsage为docker存储的目录的inode数量
+	// usage.InodeUsage为docker容器的读写层的inode数量
 	fsStat.Inodes = usage.InodeUsage
 
 	stats.Filesystem = append(stats.Filesystem, fsStat)
@@ -470,8 +471,8 @@ func (self *dockerContainerHandler) GetStats() (*info.ContainerStats, error) {
 	// Get filesystem stats.
 	// 文件系统状态（比如磁盘大小、剩余空间、inode数量、inode可用数量）和补全stats.DiskIo里磁盘io读写状态项的设备名
 	// 通过遍历所有目录下的文件，执行stat系统调用获取的，类似du命令来获取文件夹的使用情况
-	// 设置stats.Filesystem，stats.Filesystem.BaseUsage为docker存储的目录使用量，stats.Filesystem.Usage为docker存储的目录和容器的读写层的存储使用量
-	// stats.Filesystem.Inodes为docker存储的目录的inode数量
+	// 设置stats.Filesystem，stats.Filesystem.BaseUsage为docker读写层目录使用量，stats.Filesystem.Usage为docker的/var/lib/docker/containers/{container id}（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））的使用量和容器的读写层的存储使用量
+	// stats.Filesystem.Inodes为docker容器的读写层的inode数量
 	err = self.getFsStats(stats)
 	if err != nil {
 		return stats, err

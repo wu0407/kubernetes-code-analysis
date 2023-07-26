@@ -84,12 +84,12 @@ func cadvisorInfoToCPUandMemoryStats(info *cadvisorapiv2.ContainerInfo) (*statsa
 
 // cadvisorInfoToContainerStats returns the statsapi.ContainerStats converted
 // from the container and filesystem info.
-// 返回最近的cpu和memory的使用情况，容器日志所在文件系统的状态，容器根文件系统的使用状态，Accelerators状态、UserDefinedMetrics
+// 返回最近的cpu和memory的使用情况，容器日志所在文件系统的状态，容器读写层文件系统的使用状态，Accelerators状态、UserDefinedMetrics
 // 返回statsapi.ContainerStats
 // 其中StartTime为info.Spec.CreationTime
 // 其中CPU和memory为info中cpu和memory使用情况
-// Logs里的文件系统大小、使用量、inode总数、inode剩余量、inode使用量为rootfs中的，UsedBytes（容器的读写层的存储使用量）为info中最近一个cstat.Filesystem里TotalUsageBytes - BaseUsageBytes
-// Rootfs里文件系统大小、使用量、inode总数、inode剩余量使用imageFs中的，UsedBytes为info中最近一个cstat.BaseUsageBytes（docker存储的目录使用量），InodesUsed为info中最近一个cstat.InodeUsage
+// Logs里的文件系统大小、使用量、inode总数、inode剩余量、inode使用量为rootfs中的，UsedBytes（docker里/var/lib/docker/containers/{container id}目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据）的使用量）为info中最近一个cstat.Filesystem里TotalUsageBytes - BaseUsageBytes
+// Rootfs里文件系统大小、使用量、inode总数、inode剩余量使用imageFs中的，UsedBytes为info中最近一个cstat.BaseUsageBytes（docker容器的读写层使用量），InodesUsed为info中最近一个cstat.InodeUsage（docker容器的读写层inode数量）
 func cadvisorInfoToContainerStats(name string, info *cadvisorapiv2.ContainerInfo, rootFs, imageFs *cadvisorapiv2.FsInfo) *statsapi.ContainerStats {
 	result := &statsapi.ContainerStats{
 		StartTime: metav1.NewTime(info.Spec.CreationTime),
@@ -109,13 +109,15 @@ func cadvisorInfoToContainerStats(name string, info *cadvisorapiv2.ContainerInfo
 	if rootFs != nil {
 		// The container logs live on the node rootfs device
 		// 返回文件系统状态信息（大小、使用量、inode总数、inode剩余量、inode使用量）
-		// cstat只用来获取最近的监控采集时间，其他值都是rootFs
+		// cstat只用来获取最近的监控采集时间，其他值都是rootFs，没有设置UsedBytes字段
+		// 将rootFs里的Available、Capacity、InodesFree、Inodes设置到result.Logs，根据InodesFree、Inodes计算出值设置为InodesUsed、没有设置UsedBytes字段
 		result.Logs = buildLogsStats(cstat, rootFs)
 	}
 
 	if imageFs != nil {
 		// The container rootFs lives on the imageFs devices (which may not be the node root fs)
 		// 返回文件系统状态信息（大小、使用量、inode总数、inode剩余量）
+		// 将imageFs的Available、Capacity、InodesFree、Inodes设置到result.Rootfs
 		result.Rootfs = buildRootfsStats(cstat, imageFs)
 	}
 
@@ -124,18 +126,18 @@ func cadvisorInfoToContainerStats(name string, info *cadvisorapiv2.ContainerInfo
 	if cfs != nil {
 		if cfs.BaseUsageBytes != nil {
 			if result.Rootfs != nil {
-				// 如果runtime为docker，*cfs.BaseUsageBytes为docker存储的目录使用量
+				// 如果runtime为docker，*cfs.BaseUsageBytes为docker读写层的使用量
 				rootfsUsage := *cfs.BaseUsageBytes
 				result.Rootfs.UsedBytes = &rootfsUsage
 			}
-			// runtime为docker，则cfs.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量
+			// runtime为docker，则cfs.TotalUsageBytes为docker的/var/lib/docker/containers/{container id}的目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））和容器的读写层的存储使用量
 			if cfs.TotalUsageBytes != nil && result.Logs != nil {
 				logsUsage := *cfs.TotalUsageBytes - *cfs.BaseUsageBytes
-				// 容器的读写层的存储使用量
+				// docker的/var/lib/docker/containers/{container id}的目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））的使用量
 				result.Logs.UsedBytes = &logsUsage
 			}
 		}
-		// runtime为docker，则cfs.InodeUsage为docker存储的目录的inode数量
+		// runtime为docker，则cfs.InodeUsage为docker容器读写层的inode数量
 		if cfs.InodeUsage != nil && result.Rootfs != nil {
 			rootInodes := *cfs.InodeUsage
 			result.Rootfs.InodesUsed = &rootInodes
@@ -337,7 +339,8 @@ func getCgroupStats(cadvisor cadvisor.Interface, containerName string, updateSta
 	return stats, nil
 }
 
-// 返回文件系统状态信息，比buildRootfsStats增加InodesUsed字段
+// 返回文件系统状态信息，比buildRootfsStats增加InodesUsed字段，没有设置UsedBytes字段
+// 将rootFs里的Available、Capacity、InodesFree、Inodes设置到statsapi.FsStats，根据InodesFree、Inodes计算出值设置为InodesUsed、没有设置UsedBytes字段
 func buildLogsStats(cstat *cadvisorapiv2.ContainerStats, rootFs *cadvisorapiv2.FsInfo) *statsapi.FsStats {
 	fsStats := &statsapi.FsStats{
 		Time:           metav1.NewTime(cstat.Timestamp),
@@ -355,6 +358,7 @@ func buildLogsStats(cstat *cadvisorapiv2.ContainerStats, rootFs *cadvisorapiv2.F
 }
 
 // 返回文件系统状态信息
+// 将imageFs的Available、Capacity、InodesFree、Inodes设置到statsapi.FsStats
 func buildRootfsStats(cstat *cadvisorapiv2.ContainerStats, imageFs *cadvisorapiv2.FsInfo) *statsapi.FsStats {
 	return &statsapi.FsStats{
 		Time:           metav1.NewTime(cstat.Timestamp),

@@ -75,6 +75,7 @@ type GraphBuilder struct {
 
 	// each monitor list/watches a resource, the results are funneled to the
 	// dependencyGraphBuilder
+	// 当前watch监听的资源
 	monitors    monitors
 	monitorLock sync.RWMutex
 	// informersStarted is closed after after all of the controllers have been initialized and are running.
@@ -124,6 +125,8 @@ func (m *monitor) Run() {
 
 type monitors map[schema.GroupVersionResource]*monitor
 
+// 创建resource相关的informer，并添加eventHandler，将事件添加到gb.graphChanges（workqueue中）
+// 返回informer的controller和store
 func (gb *GraphBuilder) controllerFor(resource schema.GroupVersionResource, kind schema.GroupVersionKind) (cache.Controller, cache.Store, error) {
 	handlers := cache.ResourceEventHandlerFuncs{
 		// add the event to the dependencyGraphBuilder's graphChanges.
@@ -176,14 +179,17 @@ func (gb *GraphBuilder) controllerFor(resource schema.GroupVersionResource, kind
 // instead of immediately exiting on an error. It may be called before or after
 // Run. Monitors are NOT started as part of the sync. To ensure all existing
 // monitors are started, call startMonitors.
+// 将resource里的资源列表与gb.monitors（之前的资源列表）进行对比，得到增加和删除的resource，进行新建informer或停止informer
 func (gb *GraphBuilder) syncMonitors(resources map[schema.GroupVersionResource]struct{}) error {
 	gb.monitorLock.Lock()
 	defer gb.monitorLock.Unlock()
 
+	// 总的需要被移除资源列表
 	toRemove := gb.monitors
 	if toRemove == nil {
 		toRemove = monitors{}
 	}
+	// 当前informer监听的资源列表
 	current := monitors{}
 	errs := []error{}
 	kept := 0
@@ -192,27 +198,34 @@ func (gb *GraphBuilder) syncMonitors(resources map[schema.GroupVersionResource]s
 		if _, ok := gb.ignoredResources[resource.GroupResource()]; ok {
 			continue
 		}
+		// 资源还存在，则保留这个资源类型（保存在current里面，kept累加）
 		if m, ok := toRemove[resource]; ok {
 			current[resource] = m
 			delete(toRemove, resource)
 			kept++
 			continue
 		}
+		// 资源不在toRemove里，说明是新的资源
 		kind, err := gb.restMapper.KindFor(resource)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("couldn't look up resource %q: %v", resource, err))
 			continue
 		}
+		// 创建resource相关的informer，并添加eventHandler，将事件添加到gb.graphChanges（workqueue中）
+		// 返回informer的controller和store
 		c, s, err := gb.controllerFor(resource, kind)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("couldn't start monitor for resource %q: %v", resource, err))
 			continue
 		}
+		// 添加到current中
 		current[resource] = &monitor{store: s, controller: c}
 		added++
 	}
+	// 更新gb.monitors
 	gb.monitors = current
 
+	// 先停止需要移除的informer，通过关闭informer的Run(stopCh <-chan struct{})的参数stopCh
 	for _, monitor := range toRemove {
 		if monitor.stopCh != nil {
 			close(monitor.stopCh)
@@ -246,7 +259,9 @@ func (gb *GraphBuilder) startMonitors() {
 	for _, monitor := range monitors {
 		if monitor.stopCh == nil {
 			monitor.stopCh = make(chan struct{})
+			// 启动SharedInformerFactory（其实也是启动informer）
 			gb.sharedInformers.Start(gb.stopCh)
+			// 启动单独的resource资源的informer
 			go monitor.Run()
 			started++
 		}

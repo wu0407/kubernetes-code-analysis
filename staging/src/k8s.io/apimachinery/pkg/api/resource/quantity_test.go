@@ -211,6 +211,13 @@ func TestParseQuantityString(t *testing.T) {
 	}
 }
 
+
+func TestBin(t *testing.T) {
+	if v, err := ParseQuantity("9000.2Mi"); err == nil {
+		t.Logf("v is %#v，v.d.Dec is %#v, v.d.Dec.big is %#v", v, v.d.Dec.Scale(), v.d.Dec.UnscaledBig())
+	}
+}
+
 func TestQuantityParse(t *testing.T) {
 	if _, err := ParseQuantity(""); err == nil {
 		t.Errorf("expected empty string to return error")

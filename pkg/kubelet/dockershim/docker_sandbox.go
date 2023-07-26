@@ -172,7 +172,7 @@ func (ds *dockerService) RunPodSandbox(ctx context.Context, r *runtimeapi.RunPod
 	// after sandbox creation to override docker's behaviour. This resolv.conf
 	// file is shared by all containers of the same pod, and needs to be modified
 	// only once per pod.
-	// 容器的/etc/reslove.conf文件在sandbox启动之后修改，而且pod里的所有容器共享同一个/etc/reslove.conf文件，每个pod只会修改一次
+	// 容器的/etc/resolv.conf文件在sandbox启动之后修改，而且pod里的所有容器共享同一个/etc/resolv.conf文件，每个pod只会修改一次
 	if dnsConfig := config.GetDnsConfig(); dnsConfig != nil {
 		containerInfo, err := ds.client.InspectContainer(createResp.ID)
 		if err != nil {

@@ -55,9 +55,11 @@ func GetDynamicPluginProber(pluginDir string, runner exec.Interface) volume.Dyna
 }
 
 func (prober *flexVolumeProber) Init() error {
+	// 设置prober.probeAllNeeded为true，返回原来prober.probeAllNeeded的值
 	prober.testAndSetProbeAllNeeded(true)
 	prober.eventsMap = map[string]volume.ProbeOperation{}
 
+	// 如果prober.pluginDir目录不存在，则创建这个目录
 	if err := prober.createPluginDir(); err != nil {
 		return err
 	}
@@ -148,6 +150,15 @@ func (prober *flexVolumeProber) newProbeEvent(driverDirName string, op volume.Pr
 	return probeEvent, nil
 }
 
+// 如果是prober.pluginDir目录事件
+//   且是目录删除事件，则重新创建prober.pluginDir目录，并监听prober.pluginDir目录下的所有文件（包括子文件夹和子文件）的inotify事件
+//   其他类型的事件，直接返回
+// 如果是prober.pluginDir目录下的子目录事件
+//   1. 如果是创建事件，则监听这个目录下的所有文件（包括子文件夹和子文件）的inotify事件
+//   无论什么事件类型，都执行下面
+//   如果prober.probeAllNeeded为false
+// 	   如果是驱动目录移除，且删除的目录是可执行文件路径(类似"aaa~bb/bb")，且父目录是prober.pluginDir，则设置prober.eventsMap[eventDirAbs]为volume.ProbeRemove，否则设置prober.eventsMap[eventDirAbs]为volume.ProbeAddOrUpdate
+//    如果prober.probeAllNeeded为true，则不做任何事情
 func (prober *flexVolumeProber) handleWatchEvent(event fsnotify.Event) error {
 	// event.Name is the watched path.
 	if filepath.Base(event.Name)[0] == '.' {
@@ -169,10 +180,13 @@ func (prober *flexVolumeProber) handleWatchEvent(event fsnotify.Event) error {
 	if eventPathAbs == pluginDirAbs {
 		// If the Flexvolume plugin directory is removed, need to recreate it
 		// in order to keep it under watch.
+		// prober.pluginDir目录删除事件
 		if eventOpIs(event, fsnotify.Remove) {
+			// 如果prober.pluginDir目录不存在，则创建这个目录
 			if err := prober.createPluginDir(); err != nil {
 				return err
 			}
+			// 监听prober.pluginDir目录下的所有文件（包括子文件夹和子文件）的inotify事件
 			if err := prober.addWatchRecursive(pluginDirAbs); err != nil {
 				return err
 			}
@@ -181,7 +195,9 @@ func (prober *flexVolumeProber) handleWatchEvent(event fsnotify.Event) error {
 	}
 
 	// watch newly added subdirectories inside a driver directory
+	// prober.pluginDir下面的子目录创建
 	if eventOpIs(event, fsnotify.Create) {
+		// 监听这个目录下的所有文件（包括子文件夹和子文件）的inotify事件
 		if err := prober.addWatchRecursive(eventPathAbs); err != nil {
 			return err
 		}
@@ -197,6 +213,7 @@ func (prober *flexVolumeProber) handleWatchEvent(event fsnotify.Event) error {
 		driverDirName := strings.Split(eventRelPathToPluginDir, string(os.PathSeparator))[0]
 		driverDirAbs := filepath.Join(pluginDirAbs, driverDirName)
 		// executable is removed, will trigger ProbeRemove event
+		// 如果是驱动目录移除，且删除的目录是可执行文件路径(类似"aaa~bb/bb")，且父目录是prober.pluginDir
 		if eventOpIs(event, fsnotify.Remove) && (eventRelPathToPluginDir == getExecutablePathRel(driverDirName) || parentPathAbs == pluginDirAbs) {
 			prober.updateEventsMap(driverDirAbs, volume.ProbeRemove)
 		} else {
@@ -208,6 +225,7 @@ func (prober *flexVolumeProber) handleWatchEvent(event fsnotify.Event) error {
 }
 
 // getExecutableName returns the executableName of a flex plugin
+// 比如driverDirName为"aaa~bb"，返回"aaa~bb/bb"
 func getExecutablePathRel(driverDirName string) string {
 	parts := strings.Split(driverDirName, "~")
 	return filepath.Join(driverDirName, parts[len(parts)-1])
@@ -230,6 +248,7 @@ func (prober *flexVolumeProber) updateEventsMap(eventDirAbs string, op volume.Pr
 func (prober *flexVolumeProber) addWatchRecursive(filename string) error {
 	addWatch := func(path string, info os.FileInfo, err error) error {
 		if err == nil && info.IsDir() {
+			// 增加监听目录的事件
 			if err := prober.watcher.AddWatch(path); err != nil {
 				klog.Errorf("Error recursively adding watch: %v", err)
 			}
@@ -242,6 +261,7 @@ func (prober *flexVolumeProber) addWatchRecursive(filename string) error {
 // Creates a new filesystem watcher and adds watches for the plugin directory
 // and all of its subdirectories.
 func (prober *flexVolumeProber) initWatcher() error {
+	// 初始化设置prober.watcher.watcher、prober.watcher.eventHandler、prober.watcher.errorHandler
 	err := prober.watcher.Init(func(event fsnotify.Event) {
 		if err := prober.handleWatchEvent(event); err != nil {
 			klog.Errorf("Flexvolume prober watch: %s", err)
@@ -257,13 +277,17 @@ func (prober *flexVolumeProber) initWatcher() error {
 		return fmt.Errorf("Error adding watch on Flexvolume directory: %s", err)
 	}
 
+	// 启动一个goroutine，接收prober.watcher.watcher.Events通道消息进行处理，接收prober.watcher.watcher.Errors通道消息进行处理
 	prober.watcher.Run()
 
 	return nil
 }
 
 // Creates the plugin directory, if it doesn't already exist.
+// 如果prober.pluginDir目录不存在，则创建这个目录
 func (prober *flexVolumeProber) createPluginDir() error {
+	// prober.pluginDir默认为"/usr/libexec/kubernetes/kubelet-plugins/volume/exec/"
+	// 如果prober.pluginDir目录不存在，则创建这个目录
 	if _, err := prober.fs.Stat(prober.pluginDir); os.IsNotExist(err) {
 		klog.Warningf("Flexvolume plugin directory at %s does not exist. Recreating.", prober.pluginDir)
 		err := prober.fs.MkdirAll(prober.pluginDir, 0755)

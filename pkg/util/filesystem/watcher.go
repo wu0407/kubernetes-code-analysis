@@ -58,6 +58,7 @@ func (w *fsnotifyWatcher) AddWatch(path string) error {
 	return w.watcher.Add(path)
 }
 
+// 初始化设置w.watcher、w.eventHandler、w.errorHandler
 func (w *fsnotifyWatcher) Init(eventHandler FSEventHandler, errorHandler FSErrorHandler) error {
 	var err error
 	w.watcher, err = fsnotify.NewWatcher()
@@ -70,6 +71,7 @@ func (w *fsnotifyWatcher) Init(eventHandler FSEventHandler, errorHandler FSError
 	return nil
 }
 
+// 启动一个goroutine，接收w.watcher.Events通道消息进行处理，接收w.watcher.Errors通道消息进行处理
 func (w *fsnotifyWatcher) Run() {
 	go func() {
 		defer w.watcher.Close()

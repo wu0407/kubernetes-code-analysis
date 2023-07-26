@@ -72,20 +72,20 @@ func NewFsHandler(period time.Duration, rootfs, extraDir string, fsInfo fs.FsInf
 }
 
 // 更新fh.usage
-// 以dockerContainerHandler为例，其中InodeUsage为docker存储的目录的inode数量，TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量。BaseUsageBytes为docker存储的目录使用量
+// 以dockerContainerHandler为例，其中fh.usage.InodeUsage为容器读写层的inode数量，TotalUsageBytes为docker的/var/lib/docker/containers/{container id}的目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））和容器的读写层的存储使用量。BaseUsageBytes为docker的/var/lib/docker/containers/{container id}的目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））使用量
 func (fh *realFsHandler) update() error {
 	var (
 		rootUsage, extraUsage fs.UsageInfo
 		rootErr, extraErr     error
 	)
 	// TODO(vishh): Add support for external mounts.
-	// 如果是dockerContainerHandler里的fsHandler，则获取docker储存目录的使用量
+	// 如果是dockerContainerHandler里的fsHandler，则获取docker容器的读写层（/var/lib/docker/overlay2/{rwLayerID}/diff）的使用量
 	// 成功获得令牌后，执行遍历目录下所有子目录，统计总的磁盘空间和inode使用（类型du命令的算法）
 	if fh.rootfs != "" {
 		rootUsage, rootErr = fh.fsInfo.GetDirUsage(fh.rootfs)
 	}
 
-	// 如果是dockerContainerHandler里的fsHandler，则是docker容器的读写层目录
+	// 如果是dockerContainerHandler里的fsHandler，则是docker容器containers的目录(/var/lib/docker/containers/{container id})，包含容器日志、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据）
 	// 成功获得令牌后，执行遍历目录下所有子目录，统计总的磁盘空间和inode使用（类型du命令的算法）
 	if fh.extraDir != "" {
 		extraUsage, extraErr = fh.fsInfo.GetDirUsage(fh.extraDir)
@@ -112,10 +112,10 @@ func (fh *realFsHandler) update() error {
 }
 
 // 周期性的更新fh.usage
-// 以dockerContainerHandler为例，其中fh.usage.InodeUsage为docker存储的目录的inode数量，fh.usage.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量。fh.usage.BaseUsageBytes为docker存储的目录使用量
+// 以dockerContainerHandler为例，其中fh.usage.InodeUsage为docker容器读写层的inode数量，fh.usage.TotalUsageBytes为docker的/var/lib/docker/containers/{container id}的目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））和容器的读写层的存储使用量。fh.usage.BaseUsageBytes为docker的/var/lib/docker/containers/{container id}的目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））使用量
 func (fh *realFsHandler) trackUsage() {
 	// 更新fh.usage
-	// 以dockerContainerHandler为例，其中fh.usage.InodeUsage为docker存储的目录的inode数量，fh.usage.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量。fh.usage.BaseUsageBytes为docker存储的目录使用量
+	// 以dockerContainerHandler为例，其中fh.usage.InodeUsage为docker容器读写层的inode数量，fh.usage.TotalUsageBytes为docker的/var/lib/docker/containers/{container id}的目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））和容器的读写层的存储使用量。fh.usage.BaseUsageBytes为docker的/var/lib/docker/containers/{container id}的目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））使用量
 	fh.update()
 	longOp := time.Second
 	for {
@@ -146,7 +146,7 @@ func (fh *realFsHandler) trackUsage() {
 }
 
 // 启动goroutine，周期性的更新fh.usage
-// 以dockerContainerHandler为例，其中fh.usage.InodeUsage为docker存储的目录的inode数量，fh.usage.TotalUsageBytes为docker存储的目录和容器的读写层的存储使用量。fh.usage.BaseUsageBytes为docker存储的目录使用量
+// 以dockerContainerHandler为例，其中fh.usage.InodeUsage为容器读写层的inode数量，fh.usage.TotalUsageBytes为docker的/var/lib/docker/containers/{container id}的目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））和容器的读写层的存储使用量。fh.usage.BaseUsageBytes为docker的/var/lib/docker/containers/{container id}的目录（主要包含日志文件、hosts、reslov.conf、hostname、hostconfig.json（docker inspect里hostconfig数据））使用量
 func (fh *realFsHandler) Start() {
 	go fh.trackUsage()
 }

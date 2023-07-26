@@ -414,6 +414,7 @@ func UnsecuredDependencies(s *options.KubeletServer, featureGate featuregate.Fea
 		VolumePlugins:       plugins,
 		// flexvolume插件动态发现
 		// VolumePluginDir默认为/usr/libexec/kubernetes/kubelet-plugins/volume/exec/
+		// 目前只支持flexVolumeProber（在pkg\volume\flexvolume\probe.go）
 		DynamicPluginProber: GetDynamicPluginProber(s.VolumePluginDir, pluginRunner),
 		TLSOptions:          tlsOptions}, nil
 }

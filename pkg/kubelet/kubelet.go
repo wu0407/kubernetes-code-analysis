@@ -870,6 +870,9 @@ func NewMainKubelet(kubeCfg *kubeletconfiginternal.KubeletConfiguration,
 	// which affects node ready status. This function must be called before Kubelet is initialized so that the Node
 	// ReadyState is accurate with the storage state.
 	klet.volumePluginMgr, err =
+		// kubeDeps.VolumePlugins为在cmd\kubelet\app\plugins.go 包含所有支持的存储插件且会注册内置的cloud provider
+		// DynamicPluginProber目前为flexVolumeProber（在pkg\volume\flexvolume\probe.go）
+		// 在cmd\kubelet\app\server.go里的UnsecuredDependencies函数初始化kubeDeps.VolumePlugins和DynamicPluginProber
 		NewInitializedVolumePluginMgr(klet, secretManager, configMapManager, tokenManager, kubeDeps.VolumePlugins, kubeDeps.DynamicPluginProber)
 	if err != nil {
 		return nil, err

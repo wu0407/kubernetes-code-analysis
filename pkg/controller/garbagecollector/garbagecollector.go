@@ -105,6 +105,7 @@ func NewGarbageCollector(
 		sharedInformers:  sharedInformers,
 		ignoredResources: ignoredResources,
 	}
+	// 将deletableResources里的资源列表与gb.monitors（之前的资源列表）进行对比，得到增加和删除的resource，进行新建informer或停止informer
 	if err := gb.syncMonitors(deletableResources); err != nil {
 		utilruntime.HandleError(fmt.Errorf("failed to sync all monitors: %v", err))
 	}
@@ -116,6 +117,7 @@ func NewGarbageCollector(
 // resyncMonitors starts or stops resource monitors as needed to ensure that all
 // (and only) those resources present in the map are monitored.
 func (gc *GarbageCollector) resyncMonitors(deletableResources map[schema.GroupVersionResource]struct{}) error {
+	// 将deletableResources里的资源列表与gb.monitors（之前的资源列表）进行对比，得到增加和删除的resource，进行新建informer或停止informer
 	if err := gc.dependencyGraphBuilder.syncMonitors(deletableResources); err != nil {
 		return err
 	}
@@ -168,6 +170,7 @@ func (gc *GarbageCollector) Sync(discoveryClient discovery.ServerResourcesInterf
 	oldResources := make(map[schema.GroupVersionResource]struct{})
 	wait.Until(func() {
 		// Get the current resource list from discovery.
+		// 返回支持"delete", "list", "watch"的schema.GroupVersionResource
 		newResources := GetDeletableResources(discoveryClient)
 
 		// This can occur if there is an internal error in GetDeletableResources.
@@ -637,6 +640,7 @@ func (gc *GarbageCollector) GraphHasUID(u types.UID) bool {
 // All discovery errors are considered temporary. Upon encountering any error,
 // GetDeletableResources will log and return any discovered resources it was
 // able to process (which may be none).
+// 返回支持"delete", "list", "watch"的schema.GroupVersionResource
 func GetDeletableResources(discoveryClient discovery.ServerResourcesInterface) map[schema.GroupVersionResource]struct{} {
 	preferredResources, err := discoveryClient.ServerPreferredResources()
 	if err != nil {
