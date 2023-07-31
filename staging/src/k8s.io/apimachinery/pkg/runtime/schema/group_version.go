@@ -299,6 +299,7 @@ func (gvk GroupVersionKind) ToAPIVersionAndKind() (string, string) {
 // do not use TypeMeta. This method exists to support test types and legacy serializations
 // that have a distinct group and kind.
 // TODO: further reduce usage of this method.
+// 从apiVersion解析出group version, 如果解析成功，则返回group version kind。否则，返回GroupVersionKind{Kind: kind}
 func FromAPIVersionAndKind(apiVersion, kind string) GroupVersionKind {
 	if gv, err := ParseGroupVersion(apiVersion); err == nil {
 		return GroupVersionKind{Group: gv.Group, Version: gv.Version, Kind: kind}

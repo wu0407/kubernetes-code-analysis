@@ -54,9 +54,14 @@ func (m MultiRESTMapper) ResourceSingularizer(resource string) (singular string,
 	return
 }
 
+// 对MultiRESTMapper里所有RESTMapper执行ResourcesFor(resource)，对返回的结果进行去重
 func (m MultiRESTMapper) ResourcesFor(resource schema.GroupVersionResource) ([]schema.GroupVersionResource, error) {
 	allGVRs := []schema.GroupVersionResource{}
 	for _, t := range m {
+		// t如果是*DefaultRESTMapper在staging\src\k8s.io\apimachinery\pkg\api\meta\restmapper.go
+		// 首先对输入的input schema.GroupVersionResource进行规整化（确保input.Resource是小写，如果input.Version是"__internal"，则变成空""）
+		// 然后从m.pluralToSingular查找，至少resource匹配的plural，越多匹配的放在前面
+		// 然后对所有匹配的GroupVersionResource进行排序
 		gvrs, err := t.ResourcesFor(resource)
 		// ignore "no match" errors, but any other error percolates back up
 		if IsNoMatchError(err) {
@@ -67,6 +72,7 @@ func (m MultiRESTMapper) ResourcesFor(resource schema.GroupVersionResource) ([]s
 		}
 
 		// walk the existing values to de-dup
+		// 对MultiRESTMapper里所有RESTMapper的ResourcesFor(resource)返回结果进行去重
 		for _, curr := range gvrs {
 			found := false
 			for _, existing := range allGVRs {
@@ -124,7 +130,10 @@ func (m MultiRESTMapper) KindsFor(resource schema.GroupVersionResource) (gvk []s
 	return allGVKs, nil
 }
 
+// 对m MultiRESTMapper里所有RESTMapper执行ResourcesFor(resource)，对返回的结果进行去重
+// 如果返回多个结果，则返回错误，否则返回这个结果
 func (m MultiRESTMapper) ResourceFor(resource schema.GroupVersionResource) (schema.GroupVersionResource, error) {
+	// 对m MultiRESTMapper里所有RESTMapper执行ResourcesFor(resource)，对返回的结果进行去重
 	resources, err := m.ResourcesFor(resource)
 	if err != nil {
 		return schema.GroupVersionResource{}, err
@@ -151,11 +160,19 @@ func (m MultiRESTMapper) KindFor(resource schema.GroupVersionResource) (schema.G
 // RESTMapping provides the REST mapping for the resource based on the
 // kind and version. This implementation supports multiple REST schemas and
 // return the first match.
+// 遍历所有的RESTMapper，查找所有匹配的RESTMapping，如果只存在一个则返回，否则返回错误
 func (m MultiRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*RESTMapping, error) {
 	allMappings := []*RESTMapping{}
 	errors := []error{}
 
+	// 遍历所有的RESTMapper
 	for _, t := range m {
+		// DefaultRESTMapper（staging\src\k8s.io\apimachinery\pkg\api\meta\restmapper.go）
+		// 从t.kindToPluralResource里查找第一个存在的group version kind
+		// 如果没有提供versions，或者version没有在m.kindToPluralResource里，或version为"__internal"
+		// 则使用t.defaultGroupVersions查找group与gk的group一样，将所有version与gk组成group version kind
+		// 根据这个group version kind，从t.kindToPluralResource查找GroupVersionResource，从t.kindToScope查找scope。最后组成RESTMapping
+		// 返回第一个RESTMapping
 		currMapping, err := t.RESTMapping(gk, versions...)
 		// ignore "no match" errors, but any other error percolates back up
 		if IsNoMatchError(err) {
@@ -173,6 +190,7 @@ func (m MultiRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*
 	if len(allMappings) == 1 {
 		return allMappings[0], nil
 	}
+	// 如果超过一个匹配，返回错误
 	if len(allMappings) > 1 {
 		var kinds []schema.GroupVersionKind
 		for _, m := range allMappings {
@@ -193,6 +211,12 @@ func (m MultiRESTMapper) RESTMappings(gk schema.GroupKind, versions ...string) (
 	var errors []error
 
 	for _, t := range m {
+		// 如果t是DefaultRESTMapper（staging\src\k8s.io\apimachinery\pkg\api\meta\restmapper.go）
+		// 如果有提供versions，则遍历所有的version，与gk group kind进行组合成group version kind
+		// 从m.kindToPluralResource里查找第一个存在的group version kind
+		// 如果没有提供versions，或者version没有在m.kindToPluralResource里，或version为"__internal"
+		// 则使用m.defaultGroupVersions查找group与gk的group一样，将所有version与gk组成group version kind
+		// 根据这个group version kind，从m.kindToPluralResource查找GroupVersionResource，从m.kindToScope查找scope。最后组成RESTMapping
 		currMappings, err := t.RESTMappings(gk, versions...)
 		// ignore "no match" errors, but any other error percolates back up
 		if IsNoMatchError(err) {

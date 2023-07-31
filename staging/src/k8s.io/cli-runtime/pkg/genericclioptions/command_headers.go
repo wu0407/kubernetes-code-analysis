@@ -56,6 +56,7 @@ func (c *CommandHeaderRoundTripper) RoundTrip(req *http.Request) (*http.Response
 //
 // Each call overwrites the previously parsed command headers (not additive).
 // TODO(seans3): Parse/add flags removing PII from flag values.
+// 将cmd command名字按照父到子的name（用空格分隔），设置为c.Header["Kubectl-Command"]的value，同时设置c.Header["Kubectl-Session"]为生成的uid
 func (c *CommandHeaderRoundTripper) ParseCommandHeaders(cmd *cobra.Command, args []string) {
 	if cmd == nil {
 		return

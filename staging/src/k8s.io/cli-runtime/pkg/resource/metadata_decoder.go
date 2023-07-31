@@ -29,6 +29,7 @@ type metadataValidatingDecoder struct {
 }
 
 func (m *metadataValidatingDecoder) Decode(data []byte, defaults *schema.GroupVersionKind, into runtime.Object) (runtime.Object, *schema.GroupVersionKind, error) {
+	// 如果m.decoder是unstructured.UnstructuredJSONScheme 在staging\src\k8s.io\apimachinery\pkg\apis\meta\v1\unstructured\helpers.go
 	obj, gvk, err := m.decoder.Decode(data, defaults, into)
 
 	// if we already errored, return

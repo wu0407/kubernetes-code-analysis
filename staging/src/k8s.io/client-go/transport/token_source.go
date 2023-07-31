@@ -159,6 +159,7 @@ type cachingTokenSource struct {
 	now func() time.Time
 }
 
+// 先从缓存中获取token，如果达到renew时间或过期了，则重新从base（oauth2.TokenSource）获得token，更新缓存
 func (ts *cachingTokenSource) Token() (*oauth2.Token, error) {
 	now := ts.now()
 	// fast path
@@ -166,6 +167,7 @@ func (ts *cachingTokenSource) Token() (*oauth2.Token, error) {
 	tok := ts.tok
 	ts.RUnlock()
 
+	// 缓存的token还没有达到renew（重新续期）时间，返回这个token
 	if tok != nil && tok.Expiry.Add(-1*ts.leeway).After(now) {
 		return tok, nil
 	}
@@ -173,10 +175,13 @@ func (ts *cachingTokenSource) Token() (*oauth2.Token, error) {
 	// slow path
 	ts.Lock()
 	defer ts.Unlock()
+	// 重新检查（由于可能其他线程，在上面进行更新ts.tok）
+	// 缓存的token还没有达到renew（重新续期）时间，返回这个token
 	if tok := ts.tok; tok != nil && tok.Expiry.Add(-1*ts.leeway).After(now) {
 		return tok, nil
 	}
 
+	// 从apiserver获取token
 	tok, err := ts.base.Token()
 	if err != nil {
 		if ts.tok == nil {
@@ -186,7 +191,9 @@ func (ts *cachingTokenSource) Token() (*oauth2.Token, error) {
 		return ts.tok, nil
 	}
 
+	// 记录获取token时间
 	ts.t = ts.now()
+	// 保存token
 	ts.tok = tok
 	return tok, nil
 }
@@ -194,6 +201,7 @@ func (ts *cachingTokenSource) Token() (*oauth2.Token, error) {
 func (ts *cachingTokenSource) ResetTokenOlderThan(t time.Time) {
 	ts.Lock()
 	defer ts.Unlock()
+	// 获取token时间（过老）在t之前，则清除缓存的token和time
 	if ts.t.Before(t) {
 		ts.tok = nil
 		ts.t = time.Time{}

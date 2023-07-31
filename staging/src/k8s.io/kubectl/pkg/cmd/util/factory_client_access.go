@@ -51,6 +51,7 @@ func NewFactory(clientGetter genericclioptions.RESTClientGetter) Factory {
 		panic("attempt to instantiate client_access_factory with nil clientGetter")
 	}
 	f := &factoryImpl{
+		// clientGetter实现在staging\src\k8s.io\kubectl\pkg\cmd\util\kubectl_match_version.go MatchVersionFlags
 		clientGetter: clientGetter,
 	}
 
@@ -142,17 +143,21 @@ func (f *factoryImpl) UnstructuredClientForMapping(mapping *meta.RESTMapping) (r
 	return restclient.RESTClientFor(cfg)
 }
 
+// 返回validation.ConjunctiveSchema，包含验证各个字段的openapivalidation.SchemaValidation和validation.NoDoubleKeySchema（检查.metadata.labels和metadata.annotations是否有重复的key）
 func (f *factoryImpl) Validator(validate bool) (validation.Schema, error) {
 	if !validate {
 		return validation.NullSchema{}, nil
 	}
 
+	// 访问"/openapi/v2"，获得openapi_v2.Document
+	// 从openapi_v2.Document解析出document(在staging\src\k8s.io\kubectl\pkg\util\openapi\openapi.go)包含models字段和resources（key为GroupVersionKind，value为modelName）
 	resources, err := f.OpenAPISchema()
 	if err != nil {
 		return nil, err
 	}
 
 	return validation.ConjunctiveSchema{
+		// 验证各个字段
 		openapivalidation.NewSchemaValidation(resources),
 		// 检查.metadata.labels和metadata.annotations是否有重复的key
 		validation.NoDoubleKeySchema{},
@@ -161,6 +166,8 @@ func (f *factoryImpl) Validator(validate bool) (validation.Schema, error) {
 
 // OpenAPISchema returns metadata and structural information about
 // Kubernetes object definitions.
+// 访问"/openapi/v2"，获得openapi_v2.Document
+// 从openapi_v2.Document解析出document包含models字段和resources（key为GroupVersionKind，value为modelName）
 func (f *factoryImpl) OpenAPISchema() (openapi.Resources, error) {
 	openAPIGetter := f.OpenAPIGetter()
 	if openAPIGetter == nil {
@@ -176,7 +183,7 @@ func (f *factoryImpl) OpenAPISchema() (openapi.Resources, error) {
 
 	// Delegate to the OpenAPIPArser
 	// 访问"/openapi/v2"，获得openapi_v2.Document
-	// 从openapi_v2.Document解析出models和resources（key为GroupVersionKind，value为modelName）
+	// 从openapi_v2.Document解析出document包含models字段和resources（key为GroupVersionKind，value为modelName）
 	return f.openAPIParser.Parse()
 }
 

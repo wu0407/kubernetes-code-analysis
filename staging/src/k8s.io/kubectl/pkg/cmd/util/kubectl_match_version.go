@@ -88,6 +88,7 @@ func (f *MatchVersionFlags) ToDiscoveryClient() (discovery.CachedDiscoveryInterf
 	if err := f.checkMatchingServerVersion(); err != nil {
 		return nil, err
 	}
+	// f.Delegate实现为staging\src\k8s.io\cli-runtime\pkg\genericclioptions\config_flags.go为ConfigFlags
 	return f.Delegate.ToDiscoveryClient()
 }
 

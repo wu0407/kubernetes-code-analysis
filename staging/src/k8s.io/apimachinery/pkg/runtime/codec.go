@@ -262,6 +262,9 @@ func (s base64Serializer) Decode(data []byte, defaults *schema.GroupVersionKind,
 
 // SerializerInfoForMediaType returns the first info in types that has a matching media type (which cannot
 // include media-type parameters), or the first info with an empty media type, or false if no type matches.
+// 先从types中查找SerializerInfo.MediaType与mediaType一样的SerializerInfo，如果找到就返回这个SerializerInfo
+// 否则，从types中查找第一个SerializerInfo.MediaType为空的SerializerInfo，返回这个SerializerInfo
+// 否则，返回空SerializerInfo和false
 func SerializerInfoForMediaType(types []SerializerInfo, mediaType string) (SerializerInfo, bool) {
 	for _, info := range types {
 		if info.MediaType == mediaType {

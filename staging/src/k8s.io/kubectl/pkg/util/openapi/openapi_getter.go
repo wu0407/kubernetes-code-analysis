@@ -70,7 +70,7 @@ func NewOpenAPIParser(openAPIClient discovery.OpenAPISchemaInterface) *CachedOpe
 }
 
 // 访问"/openapi/v2"，获得openapi_v2.Document
-// 从openapi_v2.Document解析出models和resources（key为GroupVersionKind，value为modelName）
+// 从openapi_v2.Document解析出document包含models字段和resources（key为GroupVersionKind，value为modelName）
 func (p *CachedOpenAPIParser) Parse() (Resources, error) {
 	p.Do(func() {
 		oapi, err := p.openAPIClient.OpenAPISchema()
@@ -78,6 +78,7 @@ func (p *CachedOpenAPIParser) Parse() (Resources, error) {
 			p.err = err
 			return
 		}
+		// 从openapi_v2.Document解析出document包含models字段和resources字段（key为GroupVersionKind，value为modelName）
 		p.openAPIResources, p.err = NewOpenAPIData(oapi)
 	})
 

@@ -92,10 +92,15 @@ func (i *Info) Visit(fn VisitorFunc) error {
 }
 
 // Get retrieves the object from the Namespace and Name fields
+// 调用RESTClient获得apiserver中的object
+// 更新i.Object为apiserver获取的object，i.ResourceVersion为apiserver获取的object的ResourceVersion
 func (i *Info) Get() (err error) {
 	obj, err := NewHelper(i.Client, i.Mapping).Get(i.Namespace, i.Name)
 	if err != nil {
+		// 不存在，且namespace不为"default"也不问为""，则访问/api/v1/namespaces/{i.Namespace}（get namespace）
+		// 因为kubectl apply有可能资源不存在，所以判断namespace是否存在
 		if errors.IsNotFound(err) && len(i.Namespace) > 0 && i.Namespace != metav1.NamespaceDefault && i.Namespace != metav1.NamespaceAll {
+			// 访问/api/v1/namespaces/{i.Namespace}（get namespace）
 			err2 := i.Client.Get().AbsPath("api", "v1", "namespaces", i.Namespace).Do(context.TODO()).Error()
 			if err2 != nil && errors.IsNotFound(err2) {
 				return err2
@@ -111,6 +116,10 @@ func (i *Info) Get() (err error) {
 // Refresh updates the object with another object. If ignoreError is set
 // the Object will be updated even if name, namespace, or resourceVersion
 // attributes cannot be loaded from the object.
+// ignoreError为true，则忽略所有错误
+// 更新info.Name为obj的name，更新info.Namespace为obj的namespace
+// 更新info.ResourceVersion为obj的ResourceVersion
+// 更新info.Object为obj
 func (i *Info) Refresh(obj runtime.Object, ignoreError bool) error {
 	name, err := metadataAccessor.Name(obj)
 	if err != nil {
@@ -164,6 +173,7 @@ func (i *Info) String() string {
 }
 
 // Namespaced returns true if the object belongs to a namespace
+// i.Mapping.Scope为"namespace"，或i.Namespace有值，则返回true
 func (i *Info) Namespaced() bool {
 	if i.Mapping != nil {
 		// if we have RESTMapper info, use it
@@ -241,6 +251,7 @@ type URLVisitor struct {
 }
 
 func (v *URLVisitor) Visit(fn VisitorFunc) error {
+	// 重试attempts次，访问url，返回body和error
 	body, err := readHttpWithRetries(httpgetImpl, time.Second, v.URL.String(), v.HttpAttemptCount)
 	if err != nil {
 		return err
@@ -251,6 +262,7 @@ func (v *URLVisitor) Visit(fn VisitorFunc) error {
 }
 
 // readHttpWithRetries tries to http.Get the v.URL retries times before giving up.
+// 重试attempts次，访问url，返回body和error
 func readHttpWithRetries(get httpget, duration time.Duration, u string, attempts int) (io.ReadCloser, error) {
 	var err error
 	var body io.ReadCloser
@@ -318,6 +330,7 @@ func NewDecoratedVisitor(v Visitor, fn ...VisitorFunc) Visitor {
 }
 
 // Visit implements Visitor
+// 先执行遍历执行v.decorators，有错误发生就返回，否则最后执行fn
 func (v DecoratedVisitor) Visit(fn VisitorFunc) error {
 	return v.visitor.Visit(func(info *Info, err error) error {
 		if err != nil {
@@ -383,19 +396,25 @@ func NewFlattenListVisitor(v Visitor, typer runtime.ObjectTyper, mapper *mapper)
 	return FlattenListVisitor{v, typer, mapper}
 }
 
+// 如果info.Object是List，则进行解压，解压出非List的[]runtime.Object，使用v.mapper.infoForObject方法依此获得各个runtime.Object的Info，并调用fn
+// 其他情况直接调用fn
 func (v FlattenListVisitor) Visit(fn VisitorFunc) error {
 	return v.visitor.Visit(func(info *Info, err error) error {
 		if err != nil {
 			return err
 		}
+		// info.Object为nil，直接调用fn
 		if info.Object == nil {
 			return fn(info, nil)
 		}
+		// 不是List（包含Items切片列表），则直接调fn
 		if !meta.IsListType(info.Object) {
 			return fn(info, nil)
 		}
 
+		// 保存所有不是List的runtime.Object
 		items := []runtime.Object{}
+		// 保存需要遍历的runtime.Object
 		itemsToProcess := []runtime.Object{info.Object}
 
 		for i := 0; i < len(itemsToProcess); i++ {
@@ -405,6 +424,7 @@ func (v FlattenListVisitor) Visit(fn VisitorFunc) error {
 				continue
 			}
 
+			// List里解压出[]runtime.Object
 			currItems, err := meta.ExtractList(currObj)
 			if err != nil {
 				return err
@@ -434,6 +454,7 @@ func (v FlattenListVisitor) Visit(fn VisitorFunc) error {
 			if len(info.Source) != 0 {
 				item.Source = info.Source
 			}
+			// 传给下面的item（Info）的ResourceVersion和Source以info的为主
 			if err := fn(item, nil); err != nil {
 				errs = append(errs, err)
 			}
@@ -467,6 +488,7 @@ func FileVisitorForSTDIN(mapper *mapper, schema ContentValidator) Visitor {
 // ExpandPathsToFileVisitors will return a slice of FileVisitors that will handle files from the provided path.
 // After FileVisitors open the files, they will pass an io.Reader to a StreamVisitor to do the reading. (stdin
 // is also taken care of). Paths argument also accepts a single file, and will return a single visitor
+// 返回文件或目录下的文件，对应的FileVisitor
 func ExpandPathsToFileVisitors(mapper *mapper, paths string, recursive bool, extensions []string, schema ContentValidator) ([]Visitor, error) {
 	var visitors []Visitor
 	err := filepath.Walk(paths, func(path string, fi os.FileInfo, err error) error {
@@ -475,12 +497,15 @@ func ExpandPathsToFileVisitors(mapper *mapper, paths string, recursive bool, ext
 		}
 
 		if fi.IsDir() {
+			// 目录是子目录且不递归目录
 			if path != paths && !recursive {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		// Don't check extension if the filepath was passed explicitly
+		// extensions是".json", ".yaml", ".yml"
+		// 目录下子文件，且文件后缀不为".json", ".yaml", ".yml"
 		if path != paths && ignoreFile(path, extensions) {
 			return nil
 		}
@@ -566,9 +591,12 @@ func (v *StreamVisitor) Visit(fn VisitorFunc) error {
 		if len(ext.Raw) == 0 || bytes.Equal(ext.Raw, []byte("null")) {
 			continue
 		}
+		// v.Schema为validation.ConjunctiveSchema，包含验证各个字段的openapivalidation.SchemaValidation和validation.NoDoubleKeySchema（检查.metadata.labels和metadata.annotations是否有重复的key）
 		if err := ValidateSchema(ext.Raw, v.Schema); err != nil {
 			return fmt.Errorf("error validating %q: %v", v.Source, err)
 		}
+		// v.Source是"STDIN"
+		// 调用(v.mapper).infoForData
 		info, err := v.infoForData(ext.Raw, v.Source)
 		if err != nil {
 			if fnErr := fn(info, err); fnErr != nil {
@@ -606,16 +634,19 @@ func FilterNamespace(info *Info, err error) error {
 
 // SetNamespace ensures that every Info object visited will have a namespace
 // set. If info.Object is set, it will be mutated as well.
+// info.Object不为nil且是namespace的，则设置info.Object的namespace为info.Namespace
 func SetNamespace(namespace string) VisitorFunc {
 	return func(info *Info, err error) error {
 		if err != nil {
 			return err
 		}
+		// i.Mapping.Scope为"namespace"，或i.Namespace有值，则返回true
 		if !info.Namespaced() {
 			return nil
 		}
 		if len(info.Namespace) == 0 {
 			info.Namespace = namespace
+			// 设置info.Object的namespace为info.Namespace
 			UpdateObjectNamespace(info, nil)
 		}
 		return nil
@@ -648,6 +679,8 @@ func RequireNamespace(namespace string) VisitorFunc {
 
 // RetrieveLatest updates the Object on each Info by invoking a standard client
 // Get.
+// info.Object不为List类型，且info.Name不为空，且如果info是namespaced且info.Namespace有值，则获取最新的object
+// 更新i.Object为apiserver获取的object，i.ResourceVersion为apiserver获取的object的ResourceVersion
 func RetrieveLatest(info *Info, err error) error {
 	if err != nil {
 		return err
@@ -661,15 +694,22 @@ func RetrieveLatest(info *Info, err error) error {
 	if info.Namespaced() && len(info.Namespace) == 0 {
 		return fmt.Errorf("no namespace set on resource %s %q", info.Mapping.Resource, info.Name)
 	}
+	// 调用RESTClient获得apiserver中的object
+	// 更新i.Object为apiserver获取的object，i.ResourceVersion为apiserver获取的object的ResourceVersion
 	return info.Get()
 }
 
 // RetrieveLazy updates the object if it has not been loaded yet.
+// 如果info.Object为nil，则
+// 调用RESTClient获得apiserver中的object
+// 更新i.Object为apiserver获取的object，i.ResourceVersion为apiserver获取的object的ResourceVersion
 func RetrieveLazy(info *Info, err error) error {
 	if err != nil {
 		return err
 	}
 	if info.Object == nil {
+		// 调用RESTClient获得apiserver中的object
+		// 更新i.Object为apiserver获取的object，i.ResourceVersion为apiserver获取的object的ResourceVersion
 		return info.Get()
 	}
 	return nil

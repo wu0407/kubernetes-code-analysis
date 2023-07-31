@@ -85,6 +85,8 @@ func (v *SchemaValidation) validateList(object interface{}) []error {
 }
 
 func (v *SchemaValidation) validateResource(obj interface{}, gvk schema.GroupVersionKind) []error {
+	// 这里的v.resources是openapi.document(在staging\src\k8s.io\kubectl\pkg\util\openapi\openapi.go)
+	// 里的models里查找gvk对应的proto.Schema
 	resource := v.resources.LookupResource(gvk)
 	if resource == nil {
 		// resource is not present, let's just skip validation.

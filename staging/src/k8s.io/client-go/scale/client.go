@@ -87,21 +87,36 @@ func New(baseClient restclient.Interface, mapper PreferredResourceMapper, resolv
 }
 
 // apiPathFor returns the absolute api path for the given GroupVersion
+// group为空，则返回"/api/{group}/{version}"
+// 否则返回"/apis/{group}/{version}"
 func (c *scaleClient) apiPathFor(groupVer schema.GroupVersion) string {
 	// we need to set the API path based on GroupVersion (defaulting to the legacy path if none is set)
 	// TODO: we "cheat" here since the API path really only depends on group ATM, but this should
 	// *probably* take GroupVersionResource and not GroupVersionKind.
+	// c.apiPathResolverFunc实现在LegacyAPIPathResolverFunc staging\src\k8s.io\client-go\dynamic\interface.go
 	apiPath := c.apiPathResolverFunc(groupVer.WithKind(""))
 	if apiPath == "" {
 		apiPath = "/api"
 	}
 
+	// 返回"/api/{group}/{version}"或"/apis/{group}/{version}"
 	return restclient.DefaultVersionedAPIPath(apiPath, groupVer)
 }
 
 // pathAndVersionFor returns the appropriate base path and the associated full GroupVersionResource
 // for the given GroupResource
+// 获取resource资源的对应的访问apiserver路径前缀和对应的schema.GroupVersionResource
 func (c *scaleClient) pathAndVersionFor(resource schema.GroupResource) (string, schema.GroupVersionResource, error) {
+	// c.mapper实现在staging\src\k8s.io\client-go\restmapper\discovery.go里的DeferredDiscoveryRESTMapper
+	// 最终执行在DefaultRESTMapper staging\src\k8s.io\apimachinery\pkg\api\meta\restmapper.go
+	//   首先对输入的input schema.GroupVersionResource进行规整化（确保input.Resource是小写，如果input.Version是"__internal"，则变成空""）
+	//   然后从m.pluralToSingular查找，至少resource匹配的plural，越多匹配的放在前面
+	//   然后对所有匹配的GroupVersionResource进行排序
+	// 然后实现在MultiRESTMapper staging\src\k8s.io\apimachinery\pkg\api\meta\multirestmapper.go
+	//   对MultiRESTMapper里所有RESTMapper执行ResourcesFor(resource)，对返回的结果进行去重。如果返回多个结果，则返回错误，否则返回这个结果
+	//   目前的scale资源在group里只有一个version所以不会有多个（所以这里不会返回错误）。
+	// 在上层的实现在PriorityRESTMapper staging\src\k8s.io\apimachinery\pkg\api\meta\priority.go
+	// 最上层的实现在在staging\src\k8s.io\client-go\restmapper\discovery.go里的DeferredDiscoveryRESTMapper
 	gvr, err := c.mapper.ResourceFor(resource.WithVersion(""))
 	if err != nil {
 		return "", gvr, fmt.Errorf("unable to get full preferred group-version-resource for %s: %v", resource.String(), err)
@@ -109,6 +124,8 @@ func (c *scaleClient) pathAndVersionFor(resource schema.GroupResource) (string, 
 
 	groupVer := gvr.GroupVersion()
 
+	// group为空，则返回"/api/{group}/{version}"
+	// 否则返回"/apis/{group}/{version}"
 	return c.apiPathFor(groupVer), gvr, nil
 }
 
@@ -120,6 +137,7 @@ type namespacedScaleClient struct {
 }
 
 // convertToScale converts the response body to autoscaling/v1.Scale
+// 将result转成autoscaling/v1.Scale
 func convertToScale(result *restclient.Result) (*autoscaling.Scale, error) {
 	scaleBytes, err := result.Raw()
 	if err != nil {
@@ -132,6 +150,7 @@ func convertToScale(result *restclient.Result) (*autoscaling.Scale, error) {
 	}
 
 	// convert whatever this is to autoscaling/v1.Scale
+	// 转成autoscaling/v1.Scale
 	scaleObj, err := scaleConverter.ConvertToVersion(rawScaleObj, autoscaling.SchemeGroupVersion)
 	if err != nil {
 		return nil, fmt.Errorf("received an object from a /scale endpoint which was not convertible to autoscaling Scale: %v", err)
@@ -153,6 +172,7 @@ func (c *namespacedScaleClient) Get(ctx context.Context, resource schema.GroupRe
 	// we need to deal with accepting different API versions.
 	// In practice, this is autoscaling/v1.Scale and extensions/v1beta1.Scale
 
+	// 获取resource资源的对应的访问apiserver路径前缀和对应的schema.GroupVersionResource
 	path, gvr, err := c.client.pathAndVersionFor(resource)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get client for %s: %v", resource.String(), err)
@@ -173,7 +193,11 @@ func (c *namespacedScaleClient) Get(ctx context.Context, resource schema.GroupRe
 	return convertToScale(&result)
 }
 
+// 比如传入的resource为{Group: "apps", Resource: "deployments"}
+// 执行PUT "/apis/apps/v1/namespaces/{c.namespace}/deployments/{scale.Name}/scale?{opts}"
 func (c *namespacedScaleClient) Update(ctx context.Context, resource schema.GroupResource, scale *autoscaling.Scale, opts metav1.UpdateOptions) (*autoscaling.Scale, error) {
+	// 获取resource资源的对应的访问apiserver路径前缀和对应的schema.GroupVersionResource
+	// 比如传入的resource为{Group: "apps", Resource: "deployments/scale"}，返回的"/apis/apps/v1",{Group: "apps", Resource: "deployments/scale", "Version": "v1"}
 	path, gvr, err := c.client.pathAndVersionFor(resource)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get client for %s: %v", resource.String(), err)
@@ -184,12 +208,22 @@ func (c *namespacedScaleClient) Update(ctx context.Context, resource schema.Grou
 	// we need to deal with sending and accepting different API versions.
 
 	// figure out what scale we actually need here
+	// c.client.scaleKindResolver在staging\src\k8s.io\client-go\scale\util.go里的cachedScaleKindResolver
+	// 查找resource schema.GroupVersionResource对应的schema.GroupVersionKind
+	// 先从缓存中查找，如果找到直接返回
+	// 否则
+	// 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList
+	// 根据这个list遍历所有的resource，resource.Name是带有"/"，且按"/"进行分割，前半部分为inputRes.Resource，后半部分为"scale"
+	// 如果resource.Group和resource.Version都不为空，则groupVersion使用resource的GroupVersionKind，否则使用gvr.GroupVersion和resource的Kind
+	// 保存这个对应关系到缓存中
+	// 比如传入的resource为{Group: "apps", Resource: "deployments"}，返回的groupVersionKind为{group":"autoscaling","version":"v1","kind":"Scale"}
 	desiredGVK, err := c.client.scaleKindResolver.ScaleForResource(gvr)
 	if err != nil {
 		return nil, fmt.Errorf("could not find proper group-version for scale subresource of %s: %v", gvr.String(), err)
 	}
 
 	// convert this to whatever this endpoint wants
+	// 转成desiredGVK.GroupVersion()的scale
 	scaleUpdate, err := scaleConverter.ConvertToVersion(scale, desiredGVK.GroupVersion())
 	if err != nil {
 		return nil, fmt.Errorf("could not convert scale update to external Scale: %v", err)
@@ -216,6 +250,7 @@ func (c *namespacedScaleClient) Update(ctx context.Context, resource schema.Grou
 		return nil, err
 	}
 
+	// 将result转成autoscaling/v1.Scale
 	return convertToScale(&result)
 }
 

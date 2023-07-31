@@ -49,6 +49,8 @@ type RequestTransform func(*rest.Request)
 
 // NewClientWithOptions wraps the provided RESTClient and invokes each transform on each
 // newly created request.
+// 如果transforms为空，则返回c RESTClient
+// 否则返回clientOptions{c: c, transforms: transforms}
 func NewClientWithOptions(c RESTClient, transforms ...RequestTransform) RESTClient {
 	if len(transforms) == 0 {
 		return c

@@ -60,18 +60,24 @@ func (f *JSONPathPrintFlags) AllowedFormats() []string {
 // handling --template format printing.
 // Returns false if the specified templateFormat does not match a template format.
 func (f *JSONPathPrintFlags) ToPrinter(templateFormat string) (printers.ResourcePrinter, error) {
+	// 从NewJSONPathPrintFlags初始化不为nil，但是一定是*f.TemplateArgument为空
+	// f.TemplateArgument为nil，或f.TemplateArgument为空且templateFormat为空，返回不支持错误
 	if (f.TemplateArgument == nil || len(*f.TemplateArgument) == 0) && len(templateFormat) == 0 {
 		return nil, NoCompatiblePrinterError{Options: f, OutputFormat: &templateFormat}
 	}
 
 	templateValue := ""
 
+	// templateFormat不为空
+	// f.TemplateArgument为nil，或f.TemplateArgument为空。（这个就是从NewJSONPathPrintFlags初始化）
 	if f.TemplateArgument == nil || len(*f.TemplateArgument) == 0 {
 		// --output=jsonpath="{xxx}", --output=jsonpath-file="{xxx}", --output=jsonpath-as-json="{xxx}"
 		for format := range jsonFormats {
 			format = format + "="
 			if strings.HasPrefix(templateFormat, format) {
+				// "="等号后半段
 				templateValue = templateFormat[len(format):]
+				// "="等号前半段
 				templateFormat = format[:len(format)-1]
 				break
 			}
@@ -80,14 +86,17 @@ func (f *JSONPathPrintFlags) ToPrinter(templateFormat string) (printers.Resource
 		templateValue = *f.TemplateArgument
 	}
 
+	// 判断格式类型是不是支持的，（支持的类型为jsonpath、jsonpath-file、jsonpath-as-json）
 	if _, supportedFormat := jsonFormats[templateFormat]; !supportedFormat {
 		return nil, NoCompatiblePrinterError{OutputFormat: &templateFormat, AllowedFormats: f.AllowedFormats()}
 	}
 
+	// 如果为--template，但是没有值，则返回错误（这个目前不会在kubectl apply，因为(f *JSONPathPrintFlags) AddFlags(c *cobra.Command)不会被调用）
 	if len(templateValue) == 0 {
 		return nil, fmt.Errorf("template format specified but no template given")
 	}
 
+	// 如果为--output=jsonpath-file，则读取文件内容
 	if templateFormat == "jsonpath-file" {
 		data, err := ioutil.ReadFile(templateValue)
 		if err != nil {
@@ -97,6 +106,7 @@ func (f *JSONPathPrintFlags) ToPrinter(templateFormat string) (printers.Resource
 		templateValue = string(data)
 	}
 
+	// 
 	p, err := printers.NewJSONPathPrinter(templateValue)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing jsonpath %s, %v", templateValue, err)

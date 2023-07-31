@@ -39,6 +39,7 @@ type mapper struct {
 // if any of the decoding or client lookup steps fail. Name and namespace will be
 // set into Info if the mapping's MetadataAccessor can retrieve them.
 func (m *mapper) infoForData(data []byte, source string) (*Info, error) {
+	// 如果m.decoder为metadataValidatingDecoder，在staging\src\k8s.io\cli-runtime\pkg\resource\metadata_decoder.go
 	obj, gvk, err := m.decoder.Decode(data, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("unable to decode %q: %v", source, err)
@@ -58,6 +59,7 @@ func (m *mapper) infoForData(data []byte, source string) (*Info, error) {
 	}
 
 	if m.localFn == nil || !m.localFn() {
+		// 实现在staging\src\k8s.io\kubectl\pkg\cmd\util\kubectl_match_version.go MatchVersionFlags.ToRESTMapper
 		restMapper, err := m.restMapperFn()
 		if err != nil {
 			return nil, err
@@ -68,6 +70,7 @@ func (m *mapper) infoForData(data []byte, source string) (*Info, error) {
 		}
 		ret.Mapping = mapping
 
+		// m.clientFn为staging\src\k8s.io\cli-runtime\pkg\resource\builder.go Builder.getClient
 		client, err := m.clientFn(gvk.GroupVersion())
 		if err != nil {
 			return nil, fmt.Errorf("unable to connect to a server to handle %q: %v", mapping.Resource, err)

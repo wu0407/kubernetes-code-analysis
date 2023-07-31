@@ -244,12 +244,16 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 	fieldManager := GetApplyFieldManagerFlag(cmd, serverSideApply)
 
 	// allow for a success message operation to be specified at print time
+	// 当启用dry-run
+	//   client端dry-run，设置flags.printFlags.NamePrintFlags.Operation为"%s (dry run)"与f.NamePrintFlags.Operation渲染出来的字符串，返回flags.printFlags
+	//   server端dry-run，设置flags.printFlags.NamePrintFlags.Operation为"%s (server dry run)"与f.NamePrintFlags.Operation渲染出来的字符串，返回flags.printFlags
+	// 不启用，设置flags.PrintFlags.NamePrintFlags.Operation为operation
 	toPrinter := func(operation string) (printers.ResourcePrinter, error) {
 		flags.PrintFlags.NamePrintFlags.Operation = operation
 		// 当启用dry-run
-		//   client端dry-run，设置flags.printFlags.NamePrintFlags.Operation为"%s (dry run)"与f.NamePrintFlags.Operation渲染出来的字符串，返回printFlags
-		//   server端dry-run，设置flags.printFlags.NamePrintFlags.Operation为"%s (server dry run)"与f.NamePrintFlags.Operation渲染出来的字符串，返回printFlags
-		// 不启用，则直接返回printFlags
+		//   client端dry-run，设置flags.printFlags.NamePrintFlags.Operation为"%s (dry run)"与f.NamePrintFlags.Operation渲染出来的字符串，返回flags.printFlags
+		//   server端dry-run，设置flags.printFlags.NamePrintFlags.Operation为"%s (server dry run)"与f.NamePrintFlags.Operation渲染出来的字符串，返回flags.printFlags
+		// 不启用，则直接返回flags.printFlags
 		cmdutil.PrintFlagsWithDryRunStrategy(flags.PrintFlags, dryRunStrategy)
 		return flags.PrintFlags.ToPrinter()
 	}
@@ -274,11 +278,15 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 		return nil, err
 	}
 
+	// 访问"/openapi/v2"，获得openapi_v2.Document
+	// 从openapi_v2.Document解析出document包含models字段和resources（key为GroupVersionKind，value为modelName）
 	openAPISchema, _ := flags.Factory.OpenAPISchema()
+	// 返回validation.ConjunctiveSchema，包含验证各个字段的openapivalidation.SchemaValidation和validation.NoDoubleKeySchema（检查.metadata.labels和metadata.annotations是否有重复的key）
 	validator, err := flags.Factory.Validator(cmdutil.GetFlagBool(cmd, "validate"))
 	if err != nil {
 		return nil, err
 	}
+	// 实现在staging\src\k8s.io\kubectl\pkg\cmd\util\factory_client_access.go factoryImpl
 	builder := flags.Factory.NewBuilder()
 	mapper, err := flags.Factory.ToRESTMapper()
 	if err != nil {
@@ -292,6 +300,7 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 	}
 
 	if flags.Prune {
+		// gvks支持的格式为"{group}/{version}/{kind}"，并从apiserver中（meta.RESTMapper）进行获取（验证）相关的信息，返回[]pruneResource（group、version、kind、scope）
 		flags.PruneResources, err = parsePruneResources(mapper, flags.PruneWhitelist)
 		if err != nil {
 			return nil, err
@@ -397,14 +406,30 @@ func (o *ApplyOptions) GetObjects() ([]*resource.Info, error) {
 	// 从apiserver中获取资源
 	if !o.objectsCached {
 		r := o.Builder.
+			// 添加o.Builder.objectTyper（解析unstructured的group version kind和是否是认识的）和o.Builder.mapper
 			Unstructured().
+			// 设置o.Builder.schema字段
 			Schema(o.Validator).
+			// 设置o.Builder.continueOnError为true
 			ContinueOnError().
+			// 设置o.Builder.namespace为o.Namespace和o.Builder.defaultNamespace为true
 			NamespaceParam(o.Namespace).DefaultNamespace().
+			// filenameOptions.Filenames为url，则o.Builder.paths添加URLVisitor
+			// filenameOptions.Filenames为"-"，则o.Builder.stream为true，o.Builder.stdinInUse为true，o.Builder.paths添加FileVisitor
+			// filenameOptions.Filenames为文件或目录，则o.Builder.paths添加文件或目录下的文件，对应的FileVisitor
+			// filenameOptions.Kustomize不为空，则o.Builder.paths添加KustomizeVisitor
+			// enforceNamespace为true，则设置o.Builder.requireNamespace为true
 			FilenameParam(o.EnforceNamespace, &o.DeleteOptions.FilenameOptions).
+			// 当s不为空，且o.Builder.selectAll为false，则设置o.Builder.labelSelector设置为o.Selector
 			LabelSelectorParam(o.Selector).
+			// 设置o.Builder.flatten = true
 			Flatten().
+			// 先执行b.visitorResult()，生成Result（其中visitor包装好多层）
+			// 然后再进行一系列的包装visitor
+			// visitors执行顺序，是从上到下
 			Do()
+		// 执行r.visitor.Visit，层层的visitor执行后，筛选出的info集合，设置为r.info
+		// 返回r.info
 		o.objects, err = r.Infos()
 		o.objectsCached = true
 	}
@@ -436,6 +461,7 @@ func (o *ApplyOptions) Run() error {
 	// Generates the objects using the resource builder if they have not
 	// already been stored by calling "SetObjects()" in the pre-processor.
 	errs := []error{}
+	// 使用visitor机制获取[]*resource.Info
 	// 从apiserver获取资源
 	infos, err := o.GetObjects()
 	if err != nil {
@@ -470,12 +496,15 @@ func (o *ApplyOptions) Run() error {
 }
 
 func (o *ApplyOptions) applyOneObject(info *resource.Info) error {
+	// 如果info.Mapping.Scope为"namespace"，或info.Namespace有值，则将info.Namespace添加到o.VisitedNamespaces
 	o.MarkNamespaceVisited(info)
 
+	// 添加info.Object的annotations["kubernetes.io/change-cause"]为{命令行路径}+{non-flag arguments...}+{flag arguments (--xxx=xxx,-xxx=xxx)}
 	if err := o.Recorder.Record(info.Object); err != nil {
 		klog.V(4).Infof("error recording current command: %v", err)
 	}
 
+	// info.Name为空，且info.Object的generatedName不为空，则返回错误
 	if len(info.Name) == 0 {
 		metadata, _ := meta.Accessor(info.Object)
 		generatedName := metadata.GetGenerateName()
@@ -486,13 +515,21 @@ func (o *ApplyOptions) applyOneObject(info *resource.Info) error {
 
 	helper := resource.NewHelper(info.Client, info.Mapping).
 		DryRun(o.DryRunStrategy == cmdutil.DryRunServer).
+		// o.FieldManager
+		// 设置了--field-manager那就使用这个值
+		// 否则，如果启用了server-side apply，那么field manager值为"kubectl"（为了向前兼容）
+		// 其他情况，field manager值为"kubectl-client-side-apply"
 		WithFieldManager(o.FieldManager)
 
+	// 如果为server dry run
 	if o.DryRunStrategy == cmdutil.DryRunServer {
 		// Ensure the APIServer supports server-side dry-run for the resource,
 		// otherwise fail early.
 		// For APIServers that don't support server-side dry-run will persist
 		// changes.
+		// apiserver获得OpenAPISchema，并从中中查找是否支持"dryRun"方式对资源进行patch
+		// 如果gvk是CRD资源，且支持"dryRun"方式对namespace资源进行patch，则返回nil
+		// 否则，直接查找是否支持"dryRun"方式对gvk group-version-kind进行patch，支持返回nil，否则返回错误
 		if err := o.DryRunVerifier.HasSupport(info.Mapping.GroupVersionKind); err != nil {
 			return err
 		}
@@ -559,43 +596,63 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 		return nil
 	}
 
+	// client side apply
+
 	// Get the modified configuration of the object. Embed the result
 	// as an annotation in the modified configuration, so that it will appear
 	// in the patch sent to the server.
+	// 返回更新annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj的encode byte，annotation["kubectl.kubernetes.io/last-applied-configuration"]为移除了annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj
 	modified, err := util.GetModifiedConfiguration(info.Object, true, unstructured.UnstructuredJSONScheme)
 	if err != nil {
 		return cmdutil.AddSourceToErr(fmt.Sprintf("retrieving modified configuration from:\n%s\nfor:", info.String()), info.Source, err)
 	}
 
-	// 从apiserver上获取资源
+	// 调用RESTClient获得apiserver中的object
+	// 更新info.Object为apiserver获取的object，info.ResourceVersion为apiserver获取的object的ResourceVersion
 	if err := info.Get(); err != nil {
+		// 不是notFound错误
 		if !errors.IsNotFound(err) {
 			return cmdutil.AddSourceToErr(fmt.Sprintf("retrieving current configuration of:\n%s\nfrom server for:", info.String()), info.Source, err)
 		}
 
+		// errors.IsNotFound错误，说明info.Object不存在
+
 		// Create the resource if it doesn't exist
 		// First, update the annotation used by kubectl apply
+		// 更新info.Object的annotation["kubectl.kubernetes.io/last-applied-configuration"]为移除annotation["kubectl.kubernetes.io/last-applied-configuration"]的info.Object的encode byte
 		if err := util.CreateApplyAnnotation(info.Object, unstructured.UnstructuredJSONScheme); err != nil {
 			return cmdutil.AddSourceToErr("creating", info.Source, err)
 		}
 
+		// --dry-run=server或--dry-run=none
 		if o.DryRunStrategy != cmdutil.DryRunClient {
 			// Then create the resource and skip the three-way merge
+			// 如果--dry-run=server，在helper创建时候，已经设置了helper.ServerDryRun为true
+			// 先确保obj的ResourceVersion为空
+			// 然后进行obj创建
+			// 返回创建的obj
 			obj, err := helper.Create(info.Namespace, true, info.Object)
 			if err != nil {
 				return cmdutil.AddSourceToErr("creating", info.Source, err)
 			}
+			// 忽略所有错误
+			// 更新info.Name为obj的name，更新info.Namespace为obj的namespace
+			// 更新info.ResourceVersion为obj的ResourceVersion
+			// 更新info.Object为obj
 			info.Refresh(obj, true)
 		}
 
+		// 将info.Object的uid添加到o.VisitedUids
 		if err := o.MarkObjectVisited(info); err != nil {
 			return err
 		}
 
+		// 设置了--output或-o命令行参数为"name"，则返回true
 		if o.shouldPrintObject() {
 			return nil
 		}
 
+		// flag ToOptions
 		printer, err := o.ToPrinter("created")
 		if err != nil {
 			return err
@@ -657,6 +714,7 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 	return nil
 }
 
+// 设置了--output或-o命令行参数包括值为"name"，则返回true
 func (o *ApplyOptions) shouldPrintObject() bool {
 	// Print object only if output format other than "name" is specified
 	shouldPrint := false
@@ -670,6 +728,7 @@ func (o *ApplyOptions) shouldPrintObject() bool {
 
 func (o *ApplyOptions) printObjects() error {
 
+	// 设置了--output或-o命令行参数包括值为"name""，则返回true
 	if !o.shouldPrintObject() {
 		return nil
 	}
@@ -714,7 +773,9 @@ func (o *ApplyOptions) printObjects() error {
 
 // MarkNamespaceVisited keeps track of which namespaces the applied
 // objects belong to. Used for pruning.
+// 如果info.Mapping.Scope为"namespace"，或info.Namespace有值，则将info.Namespace添加到o.VisitedNamespaces
 func (o *ApplyOptions) MarkNamespaceVisited(info *resource.Info) {
+	// info.Mapping.Scope为"namespace"，或info.Namespace有值，则返回true
 	if info.Namespaced() {
 		o.VisitedNamespaces.Insert(info.Namespace)
 	}
@@ -722,6 +783,7 @@ func (o *ApplyOptions) MarkNamespaceVisited(info *resource.Info) {
 
 // MarkObjectVisited keeps track of UIDs of the applied
 // objects. Used for pruning.
+// 将info.Object的uid添加到o.VisitedUids
 func (o *ApplyOptions) MarkObjectVisited(info *resource.Info) error {
 	metadata, err := meta.Accessor(info.Object)
 	if err != nil {

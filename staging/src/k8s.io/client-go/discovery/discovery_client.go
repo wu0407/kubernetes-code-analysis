@@ -138,6 +138,7 @@ type DiscoveryClient struct {
 
 // Convert metav1.APIVersions to metav1.APIGroup. APIVersions is used by legacy v1, so
 // group would be "".
+// 将apiVersions转成apiGroup，只填充Versions和PreferredVersion
 func apiVersionsToAPIGroup(apiVersions *metav1.APIVersions) (apiGroup metav1.APIGroup) {
 	groupVersions := []metav1.GroupVersionForDiscovery{}
 	for _, version := range apiVersions.Versions {
@@ -155,12 +156,16 @@ func apiVersionsToAPIGroup(apiVersions *metav1.APIVersions) (apiGroup metav1.API
 
 // ServerGroups returns the supported groups, with information like supported versions and the
 // preferred version.
+// 请求"/api"和"/apis"，将返回数据进行聚合成metav1.APIGroupList
 func (d *DiscoveryClient) ServerGroups() (apiGroupList *metav1.APIGroupList, err error) {
 	// Get the groupVersions exposed at /api
 	v := &metav1.APIVersions{}
+	// 请求"/api"
+	// 返回类似{"kind":"APIVersions","versions":["v1"],"serverAddressByClientCIDRs":[{"clientCIDR":"0.0.0.0/0","serverAddress":"10.11.251.2:6443"}]}
 	err = d.restClient.Get().AbsPath(d.LegacyPrefix).Do(context.TODO()).Into(v)
 	apiGroup := metav1.APIGroup{}
 	if err == nil && len(v.Versions) != 0 {
+		// 将apiVersions转成apiGroup，只填充Versions和PreferredVersion
 		apiGroup = apiVersionsToAPIGroup(v)
 	}
 	if err != nil && !errors.IsNotFound(err) && !errors.IsForbidden(err) {
@@ -169,6 +174,8 @@ func (d *DiscoveryClient) ServerGroups() (apiGroupList *metav1.APIGroupList, err
 
 	// Get the groupVersions exposed at /apis
 	apiGroupList = &metav1.APIGroupList{}
+	// 请求"/apis"
+	// 返回类似{"kind":"APIGroupList","apiVersion":"v1","groups":[{"name":"apiregistration.k8s.io","versions":[{"groupVersion":"apiregistration.k8s.io/v1","version":"v1"}],"preferredVersion":{"groupVersion":"apiregistration.k8s.io/v1","version":"v1"}},....]}
 	err = d.restClient.Get().AbsPath("/apis").Do(context.TODO()).Into(apiGroupList)
 	if err != nil && !errors.IsNotFound(err) && !errors.IsForbidden(err) {
 		return nil, err
@@ -186,12 +193,14 @@ func (d *DiscoveryClient) ServerGroups() (apiGroupList *metav1.APIGroupList, err
 }
 
 // ServerResourcesForGroupVersion returns the supported resources for a group and version.
+// 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList
 func (d *DiscoveryClient) ServerResourcesForGroupVersion(groupVersion string) (resources *metav1.APIResourceList, err error) {
 	url := url.URL{}
 	if len(groupVersion) == 0 {
 		return nil, fmt.Errorf("groupVersion shouldn't be empty")
 	}
 	if len(d.LegacyPrefix) > 0 && groupVersion == "v1" {
+		// "/api/v1"
 		url.Path = d.LegacyPrefix + "/" + groupVersion
 	} else {
 		url.Path = "/apis/" + groupVersion
@@ -199,6 +208,8 @@ func (d *DiscoveryClient) ServerResourcesForGroupVersion(groupVersion string) (r
 	resources = &metav1.APIResourceList{
 		GroupVersion: groupVersion,
 	}
+	// 比如请求"/api/v1"
+	// 返回{"kind":"APIResourceList","groupVersion":"v1","resources":[{"name":"bindings","singularName":"","namespaced":true,"kind":"Binding","verbs":["create"]},{"name":"componentstatuses","singularName":"","namespaced":false,"kind":"ComponentStatus","verbs":["get","list"],"shortNames":["cs"]},{"name":"configmaps","singularName":"","namespaced":true,"kind":"ConfigMap","verbs":["create","delete","deletecollection","get","list","patch","update","watch"],"shortNames":["cm"],"storageVersionHash":"qFsyl6wFWjQ="},
 	err = d.restClient.Get().AbsPath(url.String()).Do(context.TODO()).Into(resources)
 	if err != nil {
 		// ignore 403 or 404 error to be compatible with an v1.0 server.
@@ -254,7 +265,20 @@ func ServerResources(d DiscoveryInterface) ([]*metav1.APIResourceList, error) {
 	return rs, err
 }
 
+// 传入的DiscoveryInterface，如果是CachedDiscoveryClient
+// 先从discovery缓存目录（.kube/cache/discovery/{server addr去除"https://"后非点号特殊字符处理成下划线}）中，读取"servergroups.json"，如果成功进行返回
+// 否则请求"/api"和"/apis"，将返回数据进行聚合成metav1.APIGroupList，然后把数据写到discovery缓存目录中
+// 然后根据这个metav1.APIGroupList里的Groups列表
+// 并发的获取apiGroups对应的map[schema.GroupVersion]*metav1.APIResourceList和map[schema.GroupVersion]error对应的错误
+//
+// 传入的DiscoveryInterface，如果是CachedDiscoveryClient
+// 先从缓存目录（~/.kube/discovery/{group}/{version}/）下的"serverresources.json"读取并解析出metav1.APIResourceList，如果成功，则返回
+// 否则 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList，然后将返回写入缓存文件中
+// 最后进行数据处理，返回[]*metav1.APIGroup, []*metav1.APIResourceList, error
 func ServerGroupsAndResources(d DiscoveryInterface) ([]*metav1.APIGroup, []*metav1.APIResourceList, error) {
+	// 传入的DiscoveryInterface，如果是CachedDiscoveryClient
+	// 先从discovery缓存目录（.kube/cache/discovery/{server addr去除"https://"后非点号特殊字符处理成下划线}）中，读取"servergroups.json"，如果成功进行返回
+	// 否则请求"/api"和"/apis"，将返回数据进行聚合成metav1.APIGroupList，然后把数据写到discovery缓存目录中
 	sgs, err := d.ServerGroups()
 	if sgs == nil {
 		return nil, nil, err
@@ -264,9 +288,14 @@ func ServerGroupsAndResources(d DiscoveryInterface) ([]*metav1.APIGroup, []*meta
 		resultGroups = append(resultGroups, &sgs.Groups[i])
 	}
 
+	// 并发的获取apiGroups对应的map[schema.GroupVersion]*metav1.APIResourceList和map[schema.GroupVersion]error对应的错误
+	// 传入的DiscoveryInterface，如果是CachedDiscoveryClient
+	// 先从缓存目录（~/.kube/discovery/{group}/{version}/）下的"serverresources.json"读取并解析出metav1.APIResourceList，如果成功，则返回
+	// 否则 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList，然后将返回写入缓存文件中
 	groupVersionResources, failedGroups := fetchGroupVersionResources(d, sgs)
 
 	// order results by group/version discovery order
+	// 根据metav1.APIGroupList顺序，将groupVersionResources（map[schema.GroupVersion]*metav1.APIResourceList）转成[]*metav1.APIResourceList
 	result := []*metav1.APIResourceList{}
 	for _, apiGroup := range sgs.Groups {
 		for _, version := range apiGroup.Versions {
@@ -346,6 +375,10 @@ func ServerPreferredResources(d DiscoveryInterface) ([]*metav1.APIResourceList, 
 }
 
 // fetchServerResourcesForGroupVersions uses the discovery client to fetch the resources for the specified groups in parallel.
+// 并发的获取apiGroups对应的map[schema.GroupVersion]*metav1.APIResourceList和map[schema.GroupVersion]error对应的错误
+// 传入的DiscoveryInterface，如果是CachedDiscoveryClient
+// 先从缓存目录（~/.kube/discovery/{group}/{version}/）下的"serverresources.json"读取并解析出metav1.APIResourceList，如果成功，则返回
+// 否则 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList，然后将返回写入缓存文件中
 func fetchGroupVersionResources(d DiscoveryInterface, apiGroups *metav1.APIGroupList) (map[schema.GroupVersion]*metav1.APIResourceList, map[schema.GroupVersion]error) {
 	groupVersionResources := make(map[schema.GroupVersion]*metav1.APIResourceList)
 	failedGroups := make(map[schema.GroupVersion]error)
@@ -360,6 +393,9 @@ func fetchGroupVersionResources(d DiscoveryInterface, apiGroups *metav1.APIGroup
 				defer wg.Done()
 				defer utilruntime.HandleCrash()
 
+				// d是CachedDiscoveryClient
+				// 先从缓存目录（~/.kube/discovery/{group}/{version}/）下的"serverresources.json"读取并解析出metav1.APIResourceList，如果成功，则返回
+				// 否则 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList，然后将返回写入缓存文件中
 				apiResourceList, err := d.ServerResourcesForGroupVersion(groupVersion.String())
 
 				// lock to record results

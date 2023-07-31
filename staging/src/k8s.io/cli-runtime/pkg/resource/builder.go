@@ -138,6 +138,8 @@ type FilenameOptions struct {
 	Recursive bool
 }
 
+// 校验命令行参数
+// -f与-k不能一起用，-k不能与-R一起使用
 func (o *FilenameOptions) validate() []error {
 	var errs []error
 	if len(o.Filenames) > 0 && len(o.Kustomize) > 0 {
@@ -176,6 +178,7 @@ func NewFakeBuilder(fakeClientFn FakeClientFunc, restMapper RESTMapperFunc, cate
 func newBuilder(clientConfigFn ClientConfigFunc, restMapper RESTMapperFunc, categoryExpander CategoryExpanderFunc) *Builder {
 	return &Builder{
 		clientConfigFn:     clientConfigFn,
+		// restMapperFn实现在staging\src\k8s.io\kubectl\pkg\cmd\util\kubectl_match_version.go MatchVersionFlags.ToRESTMapper()
 		restMapperFn:       restMapper,
 		categoryExpanderFn: categoryExpander,
 		requireObject:      true,
@@ -201,6 +204,7 @@ func NewLocalBuilder() *Builder {
 	return NewBuilder(noopClientGetter{}).Local()
 }
 
+// restClientGetter实现在staging\src\k8s.io\kubectl\pkg\cmd\util\kubectl_match_version.go MatchVersionFlags
 func NewBuilder(restClientGetter RESTClientGetter) *Builder {
 	categoryExpanderFn := func() (restmapper.CategoryExpander, error) {
 		discoveryClient, err := restClientGetter.ToDiscoveryClient()
@@ -236,7 +240,14 @@ func (b *Builder) AddError(err error) *Builder {
 // will cause an error.
 // If ContinueOnError() is set prior to this method, objects on the path that are not
 // recognized will be ignored (but logged at V(2)).
+// filenameOptions.Filenames为url，则b.paths添加URLVisitor
+// filenameOptions.Filenames为"-"，则b.stream为true，b.stdinInUse为true，b.paths添加FileVisitor
+// filenameOptions.Filenames为文件或目录，则b.paths添加文件或目录下的文件，对应的FileVisitor
+// filenameOptions.Kustomize不为空，则b.paths添加KustomizeVisitor
+// enforceNamespace为true，则设置b.requireNamespace为true
 func (b *Builder) FilenameParam(enforceNamespace bool, filenameOptions *FilenameOptions) *Builder {
+	// 校验命令行参数
+	// -f与-k不能一起用，-k不能与-R一起使用
 	if errs := filenameOptions.validate(); len(errs) > 0 {
 		b.errs = append(b.errs, errs...)
 		return b
@@ -245,19 +256,26 @@ func (b *Builder) FilenameParam(enforceNamespace bool, filenameOptions *Filename
 	paths := filenameOptions.Filenames
 	for _, s := range paths {
 		switch {
+		// 比如 kubectl apply -f -
 		case s == "-":
+			// 设置b.stream为true
+			// b.stdinInUse为true
+			// b.paths添加FileVisitor（在staging\src\k8s.io\cli-runtime\pkg\resource\visitor.go）
 			b.Stdin()
+		// kubectl apply -f http://abc
 		case strings.Index(s, "http://") == 0 || strings.Index(s, "https://") == 0:
 			url, err := url.Parse(s)
 			if err != nil {
 				b.errs = append(b.errs, fmt.Errorf("the URL passed to filename %q is not valid: %v", s, err))
 				continue
 			}
+			// b.paths添加URLVisitor
 			b.URL(defaultHttpGetAttempts, url)
 		default:
 			if !recursive {
 				b.singleItemImplied = true
 			}
+			// b.paths添加paths文件或目录下的文件，对应的FileVisitor
 			b.Path(recursive, s)
 		}
 	}
@@ -273,6 +291,7 @@ func (b *Builder) FilenameParam(enforceNamespace bool, filenameOptions *Filename
 	}
 
 	if enforceNamespace {
+		// 设置b.requireNamespace为true
 		b.RequireNamespace()
 	}
 
@@ -292,8 +311,10 @@ func (b *Builder) Unstructured() *Builder {
 	b.objectTyper = unstructuredscheme.NewUnstructuredObjectTyper()
 	b.mapper = &mapper{
 		localFn:      b.isLocal,
+		// b.restMapperFn实现在staging\src\k8s.io\kubectl\pkg\cmd\util\kubectl_match_version.go MatchVersionFlags.ToRESTMapper()
 		restMapperFn: b.restMapperFn,
 		clientFn:     b.getClient,
+		// 验证对象包含metav1.ObjectMeta和metav1.TypeMeta（且能decode够解析成unstructured）
 		decoder:      &metadataValidatingDecoder{unstructured.UnstructuredJSONScheme},
 	}
 
@@ -352,6 +373,7 @@ func (b *Builder) Mapper() *mapper {
 }
 
 // URL accepts a number of URLs directly.
+// b.paths添加URLVisitor
 func (b *Builder) URL(httpAttemptCount int, urls ...*url.URL) *Builder {
 	for _, u := range urls {
 		b.paths = append(b.paths, &URLVisitor{
@@ -368,12 +390,18 @@ func (b *Builder) URL(httpAttemptCount int, urls ...*url.URL) *Builder {
 // will be ignored (but logged at V(2)). If StdinInUse() is set prior to this method
 // being called, an error will be recorded as there are multiple entities trying to use
 // the single standard input stream.
+// 设置b.stream为true
+// b.stdinInUse为true
+// b.paths添加FileVisitor（在staging\src\k8s.io\cli-runtime\pkg\resource\visitor.go）
 func (b *Builder) Stdin() *Builder {
 	b.stream = true
 	if b.stdinInUse {
 		b.errs = append(b.errs, StdinMultiUseError)
 	}
 	b.stdinInUse = true
+	// b.schema为validation.ConjunctiveSchema，包含验证各个字段的openapivalidation.SchemaValidation和validation.NoDoubleKeySchema（检查.metadata.labels和metadata.annotations是否有重复的key）
+	// FileVisitorForSTDIN返回FileVisitor（在staging\src\k8s.io\cli-runtime\pkg\resource\visitor.go）
+	// b.mapper在b.Unstructured()设置
 	b.paths = append(b.paths, FileVisitorForSTDIN(b.mapper, b.schema))
 	return b
 }
@@ -405,6 +433,7 @@ func (b *Builder) Stream(r io.Reader, name string) *Builder {
 // FileVisitor is streaming the content to a StreamVisitor. If ContinueOnError() is set
 // prior to this method being called, objects on the path that are unrecognized will be
 // ignored (but logged at V(2)).
+// b.paths添加paths文件或目录下的文件，对应的FileVisitor
 func (b *Builder) Path(recursive bool, paths ...string) *Builder {
 	for _, p := range paths {
 		_, err := os.Stat(p)
@@ -417,6 +446,8 @@ func (b *Builder) Path(recursive bool, paths ...string) *Builder {
 			continue
 		}
 
+		// 支持文件后缀名".json", ".yaml", ".yml"
+		// 返回文件或目录下的文件，对应的FileVisitor
 		visitors, err := ExpandPathsToFileVisitors(b.mapper, p, recursive, FileExtensions, b.schema)
 		if err != nil {
 			b.errs = append(b.errs, fmt.Errorf("error reading %q: %v", p, err))
@@ -469,6 +500,7 @@ func (b *Builder) ResourceNames(resource string, names ...string) *Builder {
 // LabelSelectorParam defines a selector that should be applied to the object types to load.
 // This will not affect files loaded from disk or URL. If the parameter is empty it is
 // a no-op - to select all resources invoke `b.LabelSelector(labels.Everything.String)`.
+// 当s不为空，且b.selectAll为false，则设置b.labelSelector设置为s
 func (b *Builder) LabelSelectorParam(s string) *Builder {
 	selector := strings.TrimSpace(s)
 	if len(selector) == 0 {
@@ -744,6 +776,7 @@ func (b *Builder) SingleResourceType() *Builder {
 func (b *Builder) mappingFor(resourceOrKindArg string) (*meta.RESTMapping, error) {
 	fullySpecifiedGVR, groupResource := schema.ParseResourceArg(resourceOrKindArg)
 	gvk := schema.GroupVersionKind{}
+	// b.restMapperFn实现在staging\src\k8s.io\kubectl\pkg\cmd\util\kubectl_match_version.go MatchVersionFlags.ToRESTMapper()
 	restMapper, err := b.restMapperFn()
 	if err != nil {
 		return nil, err
@@ -830,6 +863,9 @@ func (b *Builder) resourceTupleMappings() (map[string]*meta.RESTMapping, error) 
 	return mappings, nil
 }
 
+// 如果b.errs不为空，则返回Result{err: utilerrors.NewAggregate(b.errs)}
+// 如果b.selectAll为true，则设置b.labelSelector为labels.Everything().String()
+// 如果b.paths不为空，则返回
 func (b *Builder) visitorResult() *Result {
 	if len(b.errs) > 0 {
 		return &Result{err: utilerrors.NewAggregate(b.errs)}
@@ -932,8 +968,23 @@ func (b *Builder) getClient(gv schema.GroupVersion) (RESTClient, error) {
 	case b.fakeClientFn != nil:
 		client, err = b.fakeClientFn(gv)
 	case b.negotiatedSerializer != nil:
+		// b.clientConfigFn 实现在staging\src\k8s.io\kubectl\pkg\cmd\util\kubectl_match_version.go MatchVersionFlags.ToRESTConfig，然后转成ClientConfigFunc
+		// b.clientConfigFn.withStdinUnavailable：
+		// 包装clientConfigFn
+		// 如果stdinUnavailable为true，且clientConfigFn()生成rest.Config不为nil，且cfg.ExecProvider不为nil
+		// 设置（rest.Config）.ExecProvider.StdinUnavailable为true，（rest.Config）.ExecProvider.StdinUnavailableMessage为"used by stdin resource manifest reader"
+		// clientForGroupVersion：
+		// 执行clientConfigFn()生成*rest.Config
+		// 如果negotiatedSerializer不为nil，设置（*rest.Config）.ContentConfig.NegotiatedSerializer为negotiatedSerializer
+		// 设置（*rest.Config）.GroupVersion为gv，根据gv.Group设置cfg.APIPath为"/api"或"/apis"
+		// 调用rest.RESTClientFor(*rest.Config)，生成*rest.RESTClient
 		client, err = b.clientConfigFn.withStdinUnavailable(b.stdinInUse).clientForGroupVersion(gv, b.negotiatedSerializer)
 	default:
+		// unstructuredClientForGroupVersion：
+		// 执行clientConfigFn()生成*rest.Config
+		// cfg.ContentConfig为(rest.ContentConfig).AcceptContentTypes为"application/json"，(rest.ContentConfig).ContentType为"application/json"，(rest.ContentConfig).NegotiatedSerializer为将runtime.Object解析成unstructured或metav1.Status
+		// 设置（*rest.Config）.GroupVersion为gv，根据gv.Group设置cfg.APIPath为"/api"或"/apis"
+		// 调用rest.RESTClientFor(*rest.Config)，生成*rest.RESTClient
 		client, err = b.clientConfigFn.withStdinUnavailable(b.stdinInUse).unstructuredClientForGroupVersion(gv)
 	}
 
@@ -941,6 +992,8 @@ func (b *Builder) getClient(gv schema.GroupVersion) (RESTClient, error) {
 		return nil, err
 	}
 
+	// 如果transforms为空，则返回c RESTClient
+	// 否则返回clientOptions{c: c, transforms: transforms}
 	return NewClientWithOptions(client, b.requestTransforms...), nil
 }
 
@@ -1083,30 +1136,74 @@ func (b *Builder) visitByName() *Result {
 	return result
 }
 
+// 根据Builder各个属性，生成Result
+// Result.singleItemImplied：
+//   不为目录，且不为从标准输入读取、且文件就一个，则设置singleItemImplied为true
+// Result.targetsSingleItems为true
+// 有-f参数（只有当b.paths大于0，才会调用这个方法b.visitByPaths），还指定资源类型，直接返回Result并设置error
+// 有-f参数，还指定资源名字，直接返回Result并设置error
+// 有-f参数，还指定resource/name，直接返回Result并设置error
+// 如果b.continueOnError为true，则将b.paths转成EagerVisitorList（调用所有visitor的Visit方法，出现的错误进行聚合），否则转成VisitorList（调用所有visitor的Visit方法，出现的错误就返回），赋值为visitors
+// 如果b.flatten为true
+//   对visitors进行包装
+//   FlattenListVisitor
+//   FlattenListVisitor的Visit方法
+//   如果info.Object是List，则进行解压，解压出非List的[]runtime.Object，使用v.mapper.infoForObject方法依此获得各个runtime.Object的Info，并调用fn
+//   其他情况直接调用fn
+// 如果b.latest为true，则将visitors进行包装生成DecoratedVisitor
+//   DecoratedVisitor的Visit方法：
+//     先执行遍历执行v.decorators，有错误发生就返回，否则最后执行fn（传入的参数）
+//   如果b.defaultNamespace为true，则生成v.decorators为SetNamespace的DecoratedVisitor，赋值为visitors
+//     SetNamespace生成的VisitorFunc方法：
+//     info.Object不为nil且是namespace的，则设置info.Object的namespace为info.Namespace
+//   然后再将visitors进行包装，生成v.decorators为RetrieveLatest的DecoratedVisitor
+//     RetrieveLatest生成的VisitorFunc方法：
+//       info.Object不为List类型，且info.Name不为空，且如果info是namespaced且info.Namespace有值，则获取最新的object
+//       更新info.Object为apiserver获取的object，info.ResourceVersion为apiserver获取的object的ResourceVersion
+// 如果b.labelSelector不为nil，则将visitors包装生成FilteredVisitor
+//   FilteredVisitor的visit方法，赋值为visitors
+//   先遍历执行v.filters里的所有FilterFunc，再最后执行fn
+//   这里v.filters就是FilterByLabelSelector
+//   FilterByLabelSelector生成的FilterFunc
+//   使用selector匹配的info.Object的label，成功返回true和nil，否则返回false和nil
+// 设置result.visitor为visitors
+// 设置result.sources为b.paths
+// visitors执行顺序，是从上到下
 func (b *Builder) visitByPaths() *Result {
 	result := &Result{
+		// 不为目录，且不为从标准输入读取、且文件就一个，则设置singleItemImplied为true
 		singleItemImplied:  !b.dir && !b.stream && len(b.paths) == 1,
 		targetsSingleItems: true,
 	}
 
+	// 有-f参数（只有当b.paths大于0，才会调用这个方法b.visitByPaths），还指定资源类型，直接返回Result并设置error
 	if len(b.resources) != 0 {
 		return result.withError(fmt.Errorf("when paths, URLs, or stdin is provided as input, you may not specify resource arguments as well"))
 	}
+	// 有-f参数，还指定资源名字，直接返回Result并设置error
 	if len(b.names) != 0 {
 		return result.withError(fmt.Errorf("name cannot be provided when a path is specified"))
 	}
+	// 有-f参数，还指定resource/name，直接返回Result并设置error
 	if len(b.resourceTuples) != 0 {
 		return result.withError(fmt.Errorf("resource/name arguments cannot be provided when a path is specified"))
 	}
 
 	var visitors Visitor
 	if b.continueOnError {
+		// EagerVisitorList的Visit(fn VisitorFunc) error，调用各个b.paths里的visitor的Visit，所有出现的错误进行聚合
 		visitors = EagerVisitorList(b.paths)
 	} else {
+		// VisitorList的Visit(fn VisitorFunc) error，调用各个b.paths里的visitor的Visit，一有错误就返回
 		visitors = VisitorList(b.paths)
 	}
 
 	if b.flatten {
+		// 对visitors进行包装
+		// FlattenListVisitor
+		// FlattenListVisitor的Visit方法
+		// 如果info.Object是List，则进行解压，解压出非List的[]runtime.Object，使用v.mapper.infoForObject方法依此获得各个runtime.Object的Info，并调用fn
+		// 其他情况直接调用fn
 		visitors = NewFlattenListVisitor(visitors, b.objectTyper, b.mapper)
 	}
 
@@ -1114,8 +1211,15 @@ func (b *Builder) visitByPaths() *Result {
 	if b.latest {
 		// must set namespace prior to fetching
 		if b.defaultNamespace {
+			// SetNamespace
+			// info.Object不为nil且是namespace的，则设置info.Object的namespace为info.Namespace
+			// DecoratedVisitor
+			// 先执行遍历执行v.decorators（这里是SetNamespace生成的VisitorFunc），有错误发生就返回，否则最后执行fn
 			visitors = NewDecoratedVisitor(visitors, SetNamespace(b.namespace))
 		}
+		// RetrieveLatest
+		// info.Object不为List类型，且info.Name不为空，且如果info是namespaced且info.Namespace有值，则获取最新的object
+		// 更新info.Object为apiserver获取的object，info.ResourceVersion为apiserver获取的object的ResourceVersion
 		visitors = NewDecoratedVisitor(visitors, RetrieveLatest)
 	}
 	if b.labelSelector != nil {
@@ -1123,6 +1227,10 @@ func (b *Builder) visitByPaths() *Result {
 		if err != nil {
 			return result.withError(fmt.Errorf("the provided selector %q is not valid: %v", *b.labelSelector, err))
 		}
+		// FilterByLabelSelector生成的FilterFunc
+		// 使用selector匹配的info.Object的label，成功返回true和nil，否则返回false和nil
+		// FilteredVisitor的visit方法
+		// 先遍历执行v.filters里的所有FilterFunc，再最后执行fn
 		visitors = NewFilteredVisitor(visitors, FilterByLabelSelector(selector))
 	}
 	result.visitor = visitors
@@ -1134,13 +1242,22 @@ func (b *Builder) visitByPaths() *Result {
 // The visitor will respect the error behavior specified by ContinueOnError. Note that stream
 // inputs are consumed by the first execution - use Infos() or Object() on the Result to capture a list
 // for further iteration.
+// 先执行b.visitorResult()，生成Result（其中visitor包装好多层）
+// 然后再进行一系列的包装visitor
+// visitors执行顺序，是从上到下
 func (b *Builder) Do() *Result {
+	// 根据Builder各个属性，生成Result
+	// visitors执行顺序，是从上到下
 	r := b.visitorResult()
 	r.mapper = b.Mapper()
 	if r.err != nil {
 		return r
 	}
 	if b.flatten {
+		// FlattenListVisitor
+		// FlattenListVisitor的Visit方法
+		// 如果info.Object是List，则进行解压，解压出非List的[]runtime.Object，使用v.mapper.infoForObject方法依此获得各个runtime.Object的Info，并调用fn
+		// 其他情况直接调用fn（Visit方法的参数）
 		r.visitor = NewFlattenListVisitor(r.visitor, b.objectTyper, b.mapper)
 	}
 	helpers := []VisitorFunc{}
@@ -1152,6 +1269,9 @@ func (b *Builder) Do() *Result {
 	}
 	helpers = append(helpers, FilterNamespace)
 	if b.requireObject {
+		// 如果info.Object为nil，则
+		// 调用RESTClient获得apiserver中的object
+		// 更新i.Object为apiserver获取的object，i.ResourceVersion为apiserver获取的object的ResourceVersion
 		helpers = append(helpers, RetrieveLazy)
 	}
 	if b.continueOnError {

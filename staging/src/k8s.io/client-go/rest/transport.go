@@ -147,6 +147,8 @@ func (c *Config) TransportConfig() (*transport.Config, error) {
 // an opportunity to wrap the underlying http.RoundTripper prior to the
 // first API call being made. The provided function is invoked after any
 // existing transport wrappers are invoked.
+// 将多个transport.WrapperFunc（c.WrapTransport和fn）组装成一个transport.WrapperFunc
+// 设置c.WrapTransport为新的组装后的transport.WrapperFunc
 func (c *Config) Wrap(fn transport.WrapperFunc) {
 	c.WrapTransport = transport.Wrappers(c.WrapTransport, fn)
 }

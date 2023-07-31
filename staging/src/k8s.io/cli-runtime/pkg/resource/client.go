@@ -23,6 +23,10 @@ import (
 )
 
 // TODO require negotiatedSerializer.  leaving it optional lets us plumb current behavior and deal with the difference after major plumbing is complete
+// 执行clientConfigFn()生成*rest.Config
+// 如果negotiatedSerializer不为nil，设置（*rest.Config）.ContentConfig.NegotiatedSerializer为negotiatedSerializer
+// 设置（*rest.Config）.GroupVersion为gv，根据gv.Group设置cfg.APIPath为"/api"或"/apis"
+// 调用rest.RESTClientFor(*rest.Config)，生成*rest.RESTClient
 func (clientConfigFn ClientConfigFunc) clientForGroupVersion(gv schema.GroupVersion, negotiatedSerializer runtime.NegotiatedSerializer) (RESTClient, error) {
 	cfg, err := clientConfigFn()
 	if err != nil {
@@ -41,11 +45,17 @@ func (clientConfigFn ClientConfigFunc) clientForGroupVersion(gv schema.GroupVers
 	return rest.RESTClientFor(cfg)
 }
 
+// 执行clientConfigFn()生成*rest.Config
+// cfg.ContentConfig为(rest.ContentConfig).AcceptContentTypes为"application/json"，(rest.ContentConfig).ContentType为"application/json"，(rest.ContentConfig).NegotiatedSerializer为将runtime.Object解析成unstructured或metav1.Status
+// 设置（*rest.Config）.GroupVersion为gv，根据gv.Group设置cfg.APIPath为"/api"或"/apis"
+// 调用rest.RESTClientFor(*rest.Config)，生成*rest.RESTClient
 func (clientConfigFn ClientConfigFunc) unstructuredClientForGroupVersion(gv schema.GroupVersion) (RESTClient, error) {
 	cfg, err := clientConfigFn()
 	if err != nil {
 		return nil, err
 	}
+	// (rest.ContentConfig).AcceptContentTypes为"application/json"，(rest.ContentConfig).ContentType为"application/json"
+	// (rest.ContentConfig).NegotiatedSerializer为将runtime.Object解析成unstructured或metav1.Status
 	cfg.ContentConfig = UnstructuredPlusDefaultContentConfig()
 	cfg.GroupVersion = &gv
 	if len(gv.Group) == 0 {
@@ -57,6 +67,9 @@ func (clientConfigFn ClientConfigFunc) unstructuredClientForGroupVersion(gv sche
 	return rest.RESTClientFor(cfg)
 }
 
+// 包装clientConfigFn
+// 如果stdinUnavailable为true，且clientConfigFn()生成rest.Config不为nil，且cfg.ExecProvider不为nil
+// 设置（rest.Config）.ExecProvider.StdinUnavailable为true，（rest.Config）.ExecProvider.StdinUnavailableMessage为"used by stdin resource manifest reader"
 func (clientConfigFn ClientConfigFunc) withStdinUnavailable(stdinUnavailable bool) ClientConfigFunc {
 	return func() (*rest.Config, error) {
 		cfg, err := clientConfigFn()

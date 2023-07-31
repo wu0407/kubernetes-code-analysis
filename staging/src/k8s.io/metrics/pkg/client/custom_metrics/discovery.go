@@ -36,6 +36,9 @@ var (
 
 func init() {
 	metricVersionsToGV = make(map[string]schema.GroupVersion)
+	// {Group: "custom.metrics.k8s.io", Version: "v1beta2"}
+	// {Group: "custom.metrics.k8s.io", Version: "v1beta1"}
+	// {Group: "custom.metrics.k8s.io", Version: "__internal"}
 	for _, ver := range MetricVersions {
 		metricVersionsToGV[ver.String()] = ver
 	}
@@ -60,7 +63,9 @@ type apiVersionsFromDiscovery struct {
 }
 
 // fetchVersions fetches the versions, but doesn't try to invalidate on cache misses.
+// 使用discoveryClient从apiserver获取"custom.metrics.k8s.io"对应的metav1.APIGroup信息
 func (d *apiVersionsFromDiscovery) fetchVersions() (*metav1.APIGroup, error) {
+	// 使用discoveryClient从apiserver获取所有的Groups
 	// TODO(directxman12): amend the discovery interface to ask for a particular group (/apis/foo)
 	groups, err := d.client.ServerGroups()
 	if err != nil {
@@ -84,11 +89,15 @@ func (d *apiVersionsFromDiscovery) fetchVersions() (*metav1.APIGroup, error) {
 }
 
 // chooseVersion sets a preferred version of the custom metrics api based on available versions.
+// 首先判断，apiGroup.PreferredVersion.GroupVersion在现在支持的"custom.metrics.k8s.io"版本中，存在直接返回
+// 否则从apiGroup.Versions中寻找第一个在现在支持的"custom.metrics.k8s.io"版本中的GroupVersion
 func (d *apiVersionsFromDiscovery) chooseVersion(apiGroup *metav1.APIGroup) (schema.GroupVersion, error) {
 	var preferredVersion *schema.GroupVersion
+	// apiGroup.PreferredVersion.GroupVersion在现在支持的"custom.metrics.k8s.io"版本中，则返回这个preferredVersion
 	if gv, present := metricVersionsToGV[apiGroup.PreferredVersion.GroupVersion]; present && len(apiGroup.PreferredVersion.GroupVersion) != 0 {
 		preferredVersion = &gv
 	} else {
+		// 否则从apiGroup.Versions中寻找第一个在现在支持的"custom.metrics.k8s.io"版本中的GroupVersion
 		for _, version := range apiGroup.Versions {
 			if gv, present := metricVersionsToGV[version.GroupVersion]; present {
 				preferredVersion = &gv
@@ -105,6 +114,9 @@ func (d *apiVersionsFromDiscovery) chooseVersion(apiGroup *metav1.APIGroup) (sch
 
 // PreferredVersion returns the current preferred version of the custom metrics api.
 // If none is specified, it will use the first known one.
+// 使用discoveryClient从apiserver获取"custom.metrics.k8s.io"对应的metav1.APIGroup信息
+// 首先判断，apiGroup.PreferredVersion.GroupVersion在现在支持的"custom.metrics.k8s.io"版本中，存在直接返回
+// 否则从apiGroup.Versions中寻找第一个在现在支持的"custom.metrics.k8s.io"版本中的GroupVersion
 func (d *apiVersionsFromDiscovery) PreferredVersion() (schema.GroupVersion, error) {
 	d.mu.RLock()
 	if d.prefVersion != nil {
@@ -123,10 +135,13 @@ func (d *apiVersionsFromDiscovery) PreferredVersion() (schema.GroupVersion, erro
 	}
 
 	// populate our cache
+	// 使用discoveryClient从apiserver获取"custom.metrics.k8s.io"对应的metav1.APIGroup信息
 	groupInfo, err := d.fetchVersions()
 	if err != nil {
 		return schema.GroupVersion{}, err
 	}
+	// 首先判断，apiGroup.PreferredVersion.GroupVersion在现在支持的"custom.metrics.k8s.io"版本中，存在直接返回
+	// 否则从apiGroup.Versions中寻找第一个在现在支持的"custom.metrics.k8s.io"版本中的GroupVersion
 	prefVersion, err := d.chooseVersion(groupInfo)
 	if err != nil {
 		return schema.GroupVersion{}, err

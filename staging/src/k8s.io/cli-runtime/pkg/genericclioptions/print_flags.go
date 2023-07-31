@@ -92,39 +92,50 @@ func (f *PrintFlags) AllowedFormats() []string {
 // handling --output or --template printing.
 // Returns false if the specified outputFormat does not match a supported format.
 // Supported format types can be found in pkg/printers/printers.go
+// 根据--output or --template，返回
 func (f *PrintFlags) ToPrinter() (printers.ResourcePrinter, error) {
 	outputFormat := ""
+	// 命令行指定了--output或-o，或者默认NewPrintFlags初始化为空（不为nil）
 	if f.OutputFormat != nil {
 		outputFormat = *f.OutputFormat
 	}
 	// For backwards compatibility we want to support a --template argument given, even when no --output format is provided.
 	// If no explicit output format has been provided via the --output flag, fallback
 	// to honoring the --template argument.
+	// 命令行指定了--template
 	templateFlagSpecified := f.TemplatePrinterFlags != nil &&
 		f.TemplatePrinterFlags.TemplateArgument != nil &&
 		len(*f.TemplatePrinterFlags.TemplateArgument) > 0
+	// 命令行指定了--output或-o
 	outputFlagSpecified := f.OutputFlagSpecified != nil && f.OutputFlagSpecified()
+	// 没有--output或-o，但是指定了--template，则outputFormat = "go-template"
 	if templateFlagSpecified && !outputFlagSpecified {
 		outputFormat = "go-template"
 	}
 
+	// 从NewPrintFlags初始化就不为nil
 	if f.JSONYamlPrintFlags != nil {
 		// 根据outputFormat返回对应得printers.ResourcePrinter
 		// "json"为printers.JSONPrinter{}，如果f.showManagedFields为true，则返回printers.OmitManagedFieldsPrinter（包装printers.JSONPrinter{}）
 		// "yaml"为printers.YAMLPrinter{}，如果f.showManagedFields为true，则返回printers.OmitManagedFieldsPrinter（包装printers.JSONPrinter{}）
+		// IsNoCompatiblePrinterError(err)返回true说明是不支持的输出格式
 		if p, err := f.JSONYamlPrintFlags.ToPrinter(outputFormat); !IsNoCompatiblePrinterError(err) {
-			// 返回包装了p的TypeSetterPrinter
+			// 返回包装了p的TypeSetterPrinter{delegate: p, Typer: scheme}
 			return f.TypeSetterPrinter.WrapToPrinter(p, err)
 		}
 	}
 
+	// 从NewPrintFlags初始化就不为nil
 	if f.NamePrintFlags != nil {
-		// outputFormat只支持"name"和""，命令行--output=name，--output=""
+		// outputFormat只支持"name"和""，即命令行--output=name，--output=""
+		// 返回printers.NamePrinter{Operation: f.NamePrintFlags.Operation}
 		if p, err := f.NamePrintFlags.ToPrinter(outputFormat); !IsNoCompatiblePrinterError(err) {
+			// 返回包装了p的TypeSetterPrinter{delegate: p, Typer: scheme}
 			return f.TypeSetterPrinter.WrapToPrinter(p, err)
 		}
 	}
 
+	// 从NewPrintFlags初始化就不为nil
 	if f.TemplatePrinterFlags != nil {
 		// --output=jsonpath="{xxx}", --output=jsonpath-file="{xxx}", --output=jsonpath-as-json="{xxx}"
 		// --output=template="{xxx}", --output=go-template="{xxx}", --output=go-template-file="{xxx}", --output=templatefile="{xxx}"

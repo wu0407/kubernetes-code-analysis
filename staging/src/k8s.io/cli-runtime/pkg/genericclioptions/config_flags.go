@@ -415,6 +415,7 @@ func (f *ConfigFlags) WithWrapConfigFn(wrapConfigFn func(*rest.Config) *rest.Con
 }
 
 // NewConfigFlags returns ConfigFlags with default values set
+// 初始化ConfigFlags，并设置discoveryBurst为100，usePersistentConfig为usePersistentConfig
 func NewConfigFlags(usePersistentConfig bool) *ConfigFlags {
 	impersonateGroup := []string{}
 	insecure := false

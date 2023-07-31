@@ -64,6 +64,10 @@ type resourceMetricsClient struct {
 
 // GetResourceMetric gets the given resource metric (and an associated oldest timestamp)
 // for all pods matching the specified selector in the given namespace
+// 根据namespace和selector list所有podMetrics资源
+// 如果container不为空，则从所有metrics.Items里（metricsapi.podMetrics的Containers里）找到resource类型的metric，保存到PodMetricsInfo
+// 如果container为空，则遍历rawMetrics（[]metricsapi.podMetrics）里的所有Containers的resource之和，保存在PodMetricsInfo（pod名称对应的PodMetric）
+// 返回PodMetricsInfo和第一个metric的Timestamp
 func (c *resourceMetricsClient) GetResourceMetric(ctx context.Context, resource v1.ResourceName, namespace string, selector labels.Selector, container string) (PodMetricsInfo, time.Time, error) {
 	metrics, err := c.client.PodMetricses(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
 	if err != nil {
@@ -75,17 +79,20 @@ func (c *resourceMetricsClient) GetResourceMetric(ctx context.Context, resource 
 	}
 	var res PodMetricsInfo
 	if container != "" {
+		// 从所有metrics.Items里（metricsapi.podMetrics的Containers里）找到resource类型的metric，保存到PodMetricsInfo
 		res, err = getContainerMetrics(metrics.Items, resource, container)
 		if err != nil {
 			return nil, time.Time{}, fmt.Errorf("failed to get container metrics: %v", err)
 		}
 	} else {
+		// 遍历rawMetrics（[]metricsapi.podMetrics）里的所有Containers的resource之和，保存在PodMetricsInfo（pod名称对应的PodMetric）
 		res = getPodMetrics(metrics.Items, resource)
 	}
 	timestamp := metrics.Items[0].Timestamp.Time
 	return res, timestamp, nil
 }
 
+// 从所有rawMetrics（[]metricsapi.podMetrics）里的Containers里找到resource类型的metric，保存到PodMetricsInfo
 func getContainerMetrics(rawMetrics []metricsapi.PodMetrics, resource v1.ResourceName, container string) (PodMetricsInfo, error) {
 	res := make(PodMetricsInfo, len(rawMetrics))
 	for _, m := range rawMetrics {
@@ -110,6 +117,7 @@ func getContainerMetrics(rawMetrics []metricsapi.PodMetrics, resource v1.Resourc
 	return res, nil
 }
 
+// 遍历rawMetrics（[]metricsapi.podMetrics）里的所有Containers的resource之和，保存在PodMetricsInfo（pod名称对应的PodMetric）
 func getPodMetrics(rawMetrics []metricsapi.PodMetrics, resource v1.ResourceName) PodMetricsInfo {
 	res := make(PodMetricsInfo, len(rawMetrics))
 	for _, m := range rawMetrics {
@@ -143,7 +151,9 @@ type customMetricsClient struct {
 
 // GetRawMetric gets the given metric (and an associated oldest timestamp)
 // for all pods matching the specified selector in the given namespace
+// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{m.namespace}/pod/{name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]，第一个metric的timestamp
 func (c *customMetricsClient) GetRawMetric(metricName string, namespace string, selector labels.Selector, metricSelector labels.Selector) (PodMetricsInfo, time.Time, error) {
+	// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/pod/*/{metricName}?labelSelector={selector}&metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList
 	metrics, err := c.client.NamespacedMetrics(namespace).GetForObjects(schema.GroupKind{Kind: "Pod"}, selector, metricName, metricSelector)
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("unable to fetch metrics from custom metrics API: %v", err)
@@ -155,7 +165,9 @@ func (c *customMetricsClient) GetRawMetric(metricName string, namespace string, 
 
 	res := make(PodMetricsInfo, len(metrics.Items))
 	for _, m := range metrics.Items {
+		// 默认为1分钟
 		window := metricServerDefaultMetricWindow
+		// metric有WindowSeconds
 		if m.WindowSeconds != nil {
 			window = time.Duration(*m.WindowSeconds) * time.Second
 		}
@@ -175,16 +187,23 @@ func (c *customMetricsClient) GetRawMetric(metricName string, namespace string, 
 
 // GetObjectMetric gets the given metric (and an associated timestamp) for the given
 // object in the given namespace
+// 从apiVersion解析出group version, 如果解析成功，则返回group version kind。否则，返回GroupVersionKind{Kind: kind}
+// 当objectRef为autoscaling.CrossVersionObjectReference{Kind:"Namespace", Name: "xxx", APIVersion: "v1"}，则访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/metrics/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0].Value.MilliValue()和v1beta2.MetricValueList[0].Timestamp.Time
+// 否则访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/{objectRef对应的resource}/{objectRef.name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0].Value.MilliValue()和v1beta2.MetricValueList[0].Timestamp.Time
 func (c *customMetricsClient) GetObjectMetric(metricName string, namespace string, objectRef *autoscaling.CrossVersionObjectReference, metricSelector labels.Selector) (int64, time.Time, error) {
+	// 从apiVersion解析出group version, 如果解析成功，则返回group version kind。否则，返回GroupVersionKind{Kind: kind}
 	gvk := schema.FromAPIVersionAndKind(objectRef.APIVersion, objectRef.Kind)
 	var metricValue *customapi.MetricValue
 	var err error
+	// 当objectRef为autoscaling.CrossVersionObjectReference{Kind:"Namespace", Name: "xxx", APIVersion: "v1"}
 	if gvk.Kind == "Namespace" && gvk.Group == "" {
 		// handle namespace separately
 		// NB: we ignore namespace name here, since CrossVersionObjectReference isn't
 		// supposed to allow you to escape your namespace
+		// 如果groupKind为{Kind: "Namespace", Group: ""}，则访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/metrics/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]
 		metricValue, err = c.client.RootScopedMetrics().GetForObject(gvk.GroupKind(), namespace, metricName, metricSelector)
 	} else {
+		// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/{gvk.GroupKind()对应resource}/{objectRef.Name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]
 		metricValue, err = c.client.NamespacedMetrics(namespace).GetForObject(gvk.GroupKind(), objectRef.Name, metricName, metricSelector)
 	}
 
@@ -203,7 +222,10 @@ type externalMetricsClient struct {
 
 // GetExternalMetric gets all the values of a given external metric
 // that match the specified selector.
+// 访问"/apis/external.metrics.k8s.io/v1beta1/namespaces/{namespace}/{metricName}?labelSelector={selector}"
+// 返回所有metrics值列表和第一个metric的timestamp
 func (c *externalMetricsClient) GetExternalMetric(metricName, namespace string, selector labels.Selector) ([]int64, time.Time, error) {
+	// 访问"/apis/external.metrics.k8s.io/v1beta1/namespaces/{namespace}/{metricName}?labelSelector={selector}"
 	metrics, err := c.client.NamespacedMetrics(namespace).List(metricName, selector)
 	if err != nil {
 		return []int64{}, time.Time{}, fmt.Errorf("unable to fetch metrics from external metrics API: %v", err)

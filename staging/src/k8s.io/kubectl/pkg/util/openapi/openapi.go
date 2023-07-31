@@ -45,7 +45,7 @@ type document struct {
 var _ Resources = &document{}
 
 // NewOpenAPIData creates a new `Resources` out of the openapi document
-// 从openapi_v2.Document解析出models和resources（key为GroupVersionKind，value为modelName）
+// 从openapi_v2.Document解析出document包含models字段和resources字段（key为GroupVersionKind，value为modelName）
 func NewOpenAPIData(doc *openapi_v2.Document) (Resources, error) {
 	models, err := proto.NewOpenAPIData(doc)
 	if err != nil {

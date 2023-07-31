@@ -156,7 +156,11 @@ func kindMatches(pattern schema.GroupVersionKind, kind schema.GroupVersionKind) 
 	return true
 }
 
+// 先从调用m.Delegate.RESTMappings，获得[]*RESTMapping
+// 优先匹配用户提供的version和group
 func (m PriorityRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string) (mapping *RESTMapping, err error) {
+	// 这里的m.Delegate是MultiRESTMapper（在staging\src\k8s.io\apimachinery\pkg\api\meta\multirestmapper.go）
+	// 遍历所有的RESTMapper，查找所有匹配的RESTMapping，如果只存在一个则返回，否则返回错误
 	mappings, originalErr := m.Delegate.RESTMappings(gk, versions...)
 	if originalErr != nil && len(mappings) == 0 {
 		return nil, originalErr
@@ -164,6 +168,7 @@ func (m PriorityRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string)
 
 	// any versions the user provides take priority
 	priorities := m.KindPriority
+	// 如果多个version，则每个version和group、AnyKind组合排前面
 	if len(versions) > 0 {
 		priorities = make([]schema.GroupVersionKind, 0, len(m.KindPriority)+len(versions))
 		for _, version := range versions {
@@ -198,10 +203,12 @@ func (m PriorityRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string)
 			remaining = matching
 		}
 	}
+	// 没有任何匹配priorities里的group version kind，且只有一个RESTMapping
 	if len(remaining) == 1 {
 		return remaining[0], originalErr
 	}
 
+	// 多个RESTMapping，且匹配priorities里的多个group version kind
 	var kinds []schema.GroupVersionKind
 	for _, m := range mappings {
 		kinds = append(kinds, m.GroupVersionKind)
@@ -217,7 +224,9 @@ func (m PriorityRESTMapper) ResourceSingularizer(resource string) (singular stri
 	return m.Delegate.ResourceSingularizer(resource)
 }
 
+// 对MultiRESTMapper里所有RESTMapper执行ResourcesFor(resource)，对返回的结果进行去重
 func (m PriorityRESTMapper) ResourcesFor(partiallySpecifiedResource schema.GroupVersionResource) ([]schema.GroupVersionResource, error) {
+	// 对MultiRESTMapper里所有RESTMapper执行ResourcesFor(resource)，对返回的结果进行去重
 	return m.Delegate.ResourcesFor(partiallySpecifiedResource)
 }
 

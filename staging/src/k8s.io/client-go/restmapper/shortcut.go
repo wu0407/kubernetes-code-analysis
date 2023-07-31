@@ -85,6 +85,15 @@ func (e shortcutExpander) getShortcutMappings() ([]*metav1.APIResourceList, []re
 	res := []resourceShortcuts{}
 	// get server resources
 	// This can return an error *and* the results it was able to find.  We don't need to fail on the error.
+	// 当e.discoveryClient为CachedDiscoveryClient
+	// 先从discovery缓存目录（.kube/cache/discovery/{server addr去除"https://"后非点号特殊字符处理成下划线}）中，读取"servergroups.json"，如果成功进行返回
+	// 否则请求"/api"和"/apis"，将返回数据进行聚合成metav1.APIGroupList，然后把数据写到discovery缓存目录中
+	// 
+	// 并发的获取apiGroups对应的map[schema.GroupVersion]*metav1.APIResourceList和map[schema.GroupVersion]error对应的错误
+	// 传入的DiscoveryInterface，如果是CachedDiscoveryClient
+	// 先从缓存目录（~/.kube/discovery/{group}/{version}/）下的"serverresources.json"读取并解析出metav1.APIResourceList，如果成功，则返回
+	// 否则 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList，然后将返回写入缓存文件中
+	// 最好进行数据处理，返回[]*metav1.APIGroup, []*metav1.APIResourceList, error
 	_, apiResList, err := e.discoveryClient.ServerGroupsAndResources()
 	if err != nil {
 		klog.V(1).Infof("Error loading discovery information: %v", err)

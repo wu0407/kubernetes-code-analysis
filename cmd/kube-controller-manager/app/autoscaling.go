@@ -49,12 +49,15 @@ func startHPAControllerWithRESTClient(ctx context.Context, controllerContext Con
 	apiVersionsGetter := custom_metrics.NewAvailableAPIsGetter(hpaClient.Discovery())
 	// invalidate the discovery information roughly once per resync interval our API
 	// information is *at most* two resync intervals old.
+	// 默认每15秒设置apiVersionsFromDiscovery.prefVersion为nil
 	go custom_metrics.PeriodicallyInvalidate(
 		apiVersionsGetter,
+		// 默认为15秒
 		controllerContext.ComponentConfig.HPAController.HorizontalPodAutoscalerSyncPeriod.Duration,
 		ctx.Done())
 
 	metricsClient := metrics.NewRESTMetricsClient(
+		// nodeMetric和podMetric的client
 		resourceclient.NewForConfigOrDie(clientConfig),
 		custom_metrics.NewForConfig(clientConfig, controllerContext.RESTMapper, apiVersionsGetter),
 		external_metrics.NewForConfigOrDie(clientConfig),
@@ -82,10 +85,15 @@ func startHPAControllerWithMetricsClient(ctx context.Context, controllerContext 
 		metricsClient,
 		controllerContext.InformerFactory.Autoscaling().V2().HorizontalPodAutoscalers(),
 		controllerContext.InformerFactory.Core().V1().Pods(),
+		// 默认为15s
 		controllerContext.ComponentConfig.HPAController.HorizontalPodAutoscalerSyncPeriod.Duration,
+		// 默认为5分钟
 		controllerContext.ComponentConfig.HPAController.HorizontalPodAutoscalerDownscaleStabilizationWindow.Duration,
+		// 默认为0.1
 		controllerContext.ComponentConfig.HPAController.HorizontalPodAutoscalerTolerance,
+		// 默认为5分钟
 		controllerContext.ComponentConfig.HPAController.HorizontalPodAutoscalerCPUInitializationPeriod.Duration,
+		// 默认为30s
 		controllerContext.ComponentConfig.HPAController.HorizontalPodAutoscalerInitialReadinessDelay.Duration,
 	).Run(ctx)
 	return nil, true, nil

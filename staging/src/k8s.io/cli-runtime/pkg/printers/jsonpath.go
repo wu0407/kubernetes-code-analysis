@@ -103,7 +103,14 @@ type JSONPathPrinter struct {
 }
 
 func NewJSONPathPrinter(tmpl string) (*JSONPathPrinter, error) {
+	// jsonpath.JSONPath{
+	// 	name:       out,
+	// 	beginRange: 0,
+	// 	inRange:    0,
+	// 	endRange:   0,
+	// }
 	j := jsonpath.New("out")
+	// 设置j.parser为解析text内容后的Parser
 	if err := j.Parse(tmpl); err != nil {
 		return nil, err
 	}

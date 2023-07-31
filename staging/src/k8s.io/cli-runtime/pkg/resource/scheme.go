@@ -42,6 +42,7 @@ func (dynamicCodec) Decode(data []byte, gvk *schema.GroupVersionKind, obj runtim
 	}
 
 	if strings.ToLower(gvk.Kind) == "status" && gvk.Version == "v1" && (gvk.Group == "" || gvk.Group == "meta.k8s.io") {
+		// 不是metav1.Status，则json.Unmarshal为metav1.Status
 		if _, ok := obj.(*metav1.Status); !ok {
 			obj = &metav1.Status{}
 			err := json.Unmarshal(data, obj)
@@ -67,9 +68,14 @@ func (dynamicCodec) Identifier() runtime.Identifier {
 
 // UnstructuredPlusDefaultContentConfig returns a rest.ContentConfig for dynamic types.  It includes enough codecs to act as a "normal"
 // serializer for the rest.client with options, status and the like.
+// (rest.ContentConfig).AcceptContentTypes为"application/json"，(rest.ContentConfig).ContentType为"application/json"
+// (rest.ContentConfig).NegotiatedSerializer为将runtime.Object解析成unstructured或metav1.Status
 func UnstructuredPlusDefaultContentConfig() rest.ContentConfig {
 	// TODO: scheme.Codecs here should become "pkg/apis/server/scheme" which is the minimal core you need
 	// to talk to a kubernetes server
+	// 先从scheme.Codecs.SupportedMediaTypes()中查找SerializerInfo.MediaType与mediaType一样的SerializerInfo，如果找到就返回这个SerializerInfo
+	// 否则，从scheme.Codecs.SupportedMediaTypes()中查找第一个SerializerInfo.MediaType为空的SerializerInfo，返回这个SerializerInfo
+	// 否则，返回空SerializerInfo和false
 	jsonInfo, _ := runtime.SerializerInfoForMediaType(scheme.Codecs.SupportedMediaTypes(), runtime.ContentTypeJSON)
 
 	jsonInfo.Serializer = dynamicCodec{}

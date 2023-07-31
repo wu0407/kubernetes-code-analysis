@@ -46,6 +46,7 @@ func GetOriginalConfiguration(obj runtime.Object) ([]byte, error) {
 
 // SetOriginalConfiguration sets the original configuration of the object
 // as the annotation on the object for later use in computing a three way patch.
+// 设置obj的annotation["kubectl.kubernetes.io/last-applied-configuration"]为original
 func setOriginalConfiguration(obj runtime.Object, original []byte) error {
 	if len(original) < 1 {
 		return nil
@@ -68,6 +69,8 @@ func setOriginalConfiguration(obj runtime.Object, original []byte) error {
 // If annotate is true, it embeds the result as an annotation in the modified
 // configuration. If an object was read from the command input, it will use that
 // version of the object. Otherwise, it will use the version from the server.
+// 如果annotate为true，返回更新annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj的encode byte，annotation["kubectl.kubernetes.io/last-applied-configuration"]为移除了annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj
+// 否则，返回移除annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj的encode byte
 func GetModifiedConfiguration(obj runtime.Object, annotate bool, codec runtime.Encoder) ([]byte, error) {
 	// First serialize the object without the annotation to prevent recursion,
 	// then add that serialization to it as the annotation and serialize it again.
@@ -84,8 +87,10 @@ func GetModifiedConfiguration(obj runtime.Object, annotate bool, codec runtime.E
 		annots = map[string]string{}
 	}
 
+	// "kubectl.kubernetes.io/last-applied-configuration"
 	original := annots[v1.LastAppliedConfigAnnotation]
 	delete(annots, v1.LastAppliedConfigAnnotation)
+	// obj的annotation移除"kubectl.kubernetes.io/last-applied-configuration"
 	if err := metadataAccessor.SetAnnotations(obj, annots); err != nil {
 		return nil, err
 	}
@@ -96,11 +101,13 @@ func GetModifiedConfiguration(obj runtime.Object, annotate bool, codec runtime.E
 	}
 
 	if annotate {
+		// 重新设置obj的annotation["kubectl.kubernetes.io/last-applied-configuration"]为移除了annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj
 		annots[v1.LastAppliedConfigAnnotation] = string(modified)
 		if err := metadataAccessor.SetAnnotations(obj, annots); err != nil {
 			return nil, err
 		}
 
+		// 重新encode更新annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj
 		modified, err = runtime.Encode(codec, obj)
 		if err != nil {
 			return nil, err
@@ -108,6 +115,7 @@ func GetModifiedConfiguration(obj runtime.Object, annotate bool, codec runtime.E
 	}
 
 	// Restore the object to its original condition.
+	// 将obj还原回去，即obj不修改
 	annots[v1.LastAppliedConfigAnnotation] = original
 	if err := metadataAccessor.SetAnnotations(obj, annots); err != nil {
 		return nil, err
@@ -127,11 +135,14 @@ func updateApplyAnnotation(obj runtime.Object, codec runtime.Encoder) error {
 
 // CreateApplyAnnotation gets the modified configuration of the object,
 // without embedding it again, and then sets it on the object as the annotation.
+// 更新obj的annotation["kubectl.kubernetes.io/last-applied-configuration"]为移除annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj的encode byte
 func CreateApplyAnnotation(obj runtime.Object, codec runtime.Encoder) error {
+	// 移除annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj的encode byte
 	modified, err := GetModifiedConfiguration(obj, false, codec)
 	if err != nil {
 		return err
 	}
+	// 设置obj的annotation["kubectl.kubernetes.io/last-applied-configuration"]为modified
 	return setOriginalConfiguration(obj, modified)
 }
 

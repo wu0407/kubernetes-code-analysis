@@ -65,6 +65,7 @@ func NewHelper(client RESTClient, mapping *meta.RESTMapping) *Helper {
 
 // DryRun, if true, will use server-side dry-run to not persist changes to storage.
 // Otherwise, changes will be persisted to storage.
+// 设置m.ServerDryRun为dryRun
 func (m *Helper) DryRun(dryRun bool) *Helper {
 	m.ServerDryRun = dryRun
 	return m
@@ -187,6 +188,9 @@ func (m *Helper) Create(namespace string, modify bool, obj runtime.Object) (runt
 	return m.CreateWithOptions(namespace, modify, obj, nil)
 }
 
+// 如果modify为true，则确保obj的ResourceVersion为空，
+// 然后进行obj创建
+// 返回创建的obj
 func (m *Helper) CreateWithOptions(namespace string, modify bool, obj runtime.Object, options *metav1.CreateOptions) (runtime.Object, error) {
 	if options == nil {
 		options = &metav1.CreateOptions{}
@@ -204,6 +208,7 @@ func (m *Helper) CreateWithOptions(namespace string, modify bool, obj runtime.Ob
 			// We don't know how to clear the version on this object, so send it to the server as is
 			return m.createResource(m.RESTClient, m.Resource, namespace, obj, options)
 		}
+		// obj的ResourceVersion不为空，则设置ResourceVersion为空
 		if version != "" {
 			if err := metadataAccessor.SetResourceVersion(obj, ""); err != nil {
 				return nil, err

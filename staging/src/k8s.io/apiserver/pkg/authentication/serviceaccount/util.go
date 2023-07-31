@@ -46,6 +46,7 @@ const (
 
 // MakeUsername generates a username from the given namespace and ServiceAccount name.
 // The resulting username can be passed to SplitUsername to extract the original namespace and ServiceAccount name.
+// "system:serviceaccount:"+{namespace}+":"+{name}
 func MakeUsername(namespace, name string) string {
 	return ServiceAccountUsernamePrefix + namespace + ServiceAccountUsernameSeparator + name
 }

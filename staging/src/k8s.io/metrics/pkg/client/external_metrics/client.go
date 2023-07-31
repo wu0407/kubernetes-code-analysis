@@ -81,6 +81,7 @@ type namespacedMetrics struct {
 	namespace string
 }
 
+// 访问"/apis/external.metrics.k8s.io/v1beta1/namespaces/{m.namespace}/{metricName}?labelSelector={labelSelector}"
 func (m *namespacedMetrics) List(metricName string, metricSelector labels.Selector) (*v1beta1.ExternalMetricValueList, error) {
 	res := &v1beta1.ExternalMetricValueList{}
 	err := m.client.client.Get().

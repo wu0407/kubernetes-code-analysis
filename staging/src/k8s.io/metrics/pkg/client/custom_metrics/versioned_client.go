@@ -86,6 +86,7 @@ func (c *customMetricsClient) NamespacedMetrics(namespace string) MetricsInterfa
 }
 
 // qualResourceForKind returns the string format of a qualified group resource for the specified GroupKind
+// 从c.mapper（meta.RESTMapper）获得groupKind对应的*meta.RESTMapping，在从*meta.RESTMapping中获得GroupResource，然后转成string（{Resource} + "." + {Group}或{Resource}）
 func (c *customMetricsClient) qualResourceForKind(groupKind schema.GroupKind) (string, error) {
 	mapping, err := c.mapper.RESTMapping(groupKind)
 	if err != nil {
@@ -100,7 +101,9 @@ type rootScopedMetrics struct {
 	client *customMetricsClient
 }
 
+// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{m.namespace}/metrics/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]
 func (m *rootScopedMetrics) getForNamespace(namespace string, metricName string, metricSelector labels.Selector) (*v1beta2.MetricValue, error) {
+	// 先将*cmint.MetricListOptions转换为"__internal"内部版本，然后内部版本转成m.client.version版本
 	params, err := versionConverter.ConvertListOptionsToVersion(&cmint.MetricListOptions{
 		MetricLabelSelector: metricSelector.String(),
 	}, m.client.version)
@@ -115,6 +118,7 @@ func (m *rootScopedMetrics) getForNamespace(namespace string, metricName string,
 		VersionedParams(params, scheme.ParameterCodec).
 		Do(context.TODO())
 
+	// 将rest.Result转成gv（{Group: "custom.metrics.k8s.io", Version: "v1beta2"}）版本的runtime.Object
 	metricObj, err := versionConverter.ConvertResultToVersion(result, v1beta2.SchemeGroupVersion)
 	if err != nil {
 		return nil, err
@@ -132,9 +136,12 @@ func (m *rootScopedMetrics) getForNamespace(namespace string, metricName string,
 	return &res.Items[0], nil
 }
 
+// 如果groupKind为{Kind: "Namespace", Group: ""}，则访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{name}/metrics/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]
+// 否则，访问"/apis/custom.metrics.k8s.io/v1beta2/{resource}/{name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]
 func (m *rootScopedMetrics) GetForObject(groupKind schema.GroupKind, name string, metricName string, metricSelector labels.Selector) (*v1beta2.MetricValue, error) {
 	// handle namespace separately
 	if groupKind.Kind == "Namespace" && groupKind.Group == "" {
+		// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{name}/metrics/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]
 		return m.getForNamespace(name, metricName, metricSelector)
 	}
 
@@ -174,17 +181,20 @@ func (m *rootScopedMetrics) GetForObject(groupKind schema.GroupKind, name string
 	return &res.Items[0], nil
 }
 
+// 访问"/apis/custom.metrics.k8s.io/v1beta2/{resource}/*/{metricName}?labelSelector={selector}&metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList
 func (m *rootScopedMetrics) GetForObjects(groupKind schema.GroupKind, selector labels.Selector, metricName string, metricSelector labels.Selector) (*v1beta2.MetricValueList, error) {
 	// we can't wildcard-fetch for namespaces
 	if groupKind.Kind == "Namespace" && groupKind.Group == "" {
 		return nil, fmt.Errorf("cannot fetch metrics for multiple namespaces at once")
 	}
 
+	// 从c.mapper（meta.RESTMapper）获得groupKind对应的*meta.RESTMapping，在从*meta.RESTMapping中获得GroupResource，然后转成string
 	resourceName, err := m.client.qualResourceForKind(groupKind)
 	if err != nil {
 		return nil, err
 	}
 
+	// 先将*cmint.MetricListOptions转换为"__internal"内部版本，然后内部版本转成m.client.version版本
 	params, err := versionConverter.ConvertListOptionsToVersion(&cmint.MetricListOptions{
 		LabelSelector:       selector.String(),
 		MetricLabelSelector: metricSelector.String(),
@@ -200,6 +210,7 @@ func (m *rootScopedMetrics) GetForObjects(groupKind schema.GroupKind, selector l
 		VersionedParams(params, scheme.ParameterCodec).
 		Do(context.TODO())
 
+	// 将rest.Result转成gv（{Group: "custom.metrics.k8s.io", Version: "v1beta2"}）版本的runtime.Object
 	metricObj, err := versionConverter.ConvertResultToVersion(result, v1beta2.SchemeGroupVersion)
 	if err != nil {
 		return nil, err
@@ -218,12 +229,15 @@ type namespacedMetrics struct {
 	namespace string
 }
 
+// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{m.namespace}/{resource}/{name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]
 func (m *namespacedMetrics) GetForObject(groupKind schema.GroupKind, name string, metricName string, metricSelector labels.Selector) (*v1beta2.MetricValue, error) {
+	// 从c.mapper（meta.RESTMapper）获得groupKind对应的*meta.RESTMapping，在从*meta.RESTMapping中获得GroupResource，然后转成string
 	resourceName, err := m.client.qualResourceForKind(groupKind)
 	if err != nil {
 		return nil, err
 	}
 
+	// 先将*cmint.MetricListOptions转换为"__internal"内部版本，然后内部版本转成m.client.version版本
 	params, err := versionConverter.ConvertListOptionsToVersion(&cmint.MetricListOptions{
 		MetricLabelSelector: metricSelector.String(),
 	}, m.client.version)
@@ -239,6 +253,7 @@ func (m *namespacedMetrics) GetForObject(groupKind schema.GroupKind, name string
 		VersionedParams(params, scheme.ParameterCodec).
 		Do(context.TODO())
 
+	// 将rest.Result转成gv（{Group: "custom.metrics.k8s.io", Version: "v1beta2"}）版本的runtime.Object
 	metricObj, err := versionConverter.ConvertResultToVersion(result, v1beta2.SchemeGroupVersion)
 	if err != nil {
 		return nil, err
@@ -256,12 +271,15 @@ func (m *namespacedMetrics) GetForObject(groupKind schema.GroupKind, name string
 	return &res.Items[0], nil
 }
 
+// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{m.namespace}/{resource}/*/{metricName}?labelSelector={selector}&metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList
 func (m *namespacedMetrics) GetForObjects(groupKind schema.GroupKind, selector labels.Selector, metricName string, metricSelector labels.Selector) (*v1beta2.MetricValueList, error) {
+	// 从c.mapper（meta.RESTMapper）获得groupKind对应的*meta.RESTMapping，在从*meta.RESTMapping中获得GroupResource，然后转成string
 	resourceName, err := m.client.qualResourceForKind(groupKind)
 	if err != nil {
 		return nil, err
 	}
 
+	// 先将*cmint.MetricListOptions转换为"__internal"内部版本，然后内部版本转成m.client.version版本
 	params, err := versionConverter.ConvertListOptionsToVersion(&cmint.MetricListOptions{
 		LabelSelector:       selector.String(),
 		MetricLabelSelector: metricSelector.String(),
@@ -278,6 +296,7 @@ func (m *namespacedMetrics) GetForObjects(groupKind schema.GroupKind, selector l
 		VersionedParams(params, scheme.ParameterCodec).
 		Do(context.TODO())
 
+	// 将rest.Result转成gv（{Group: "custom.metrics.k8s.io", Version: "v1beta2"}）版本的runtime.Object
 	metricObj, err := versionConverter.ConvertResultToVersion(result, v1beta2.SchemeGroupVersion)
 	if err != nil {
 		return nil, err

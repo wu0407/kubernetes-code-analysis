@@ -33,8 +33,11 @@ import (
 var (
 	// MetricVersions is the set of metric versions accepted by the converter.
 	MetricVersions = []schema.GroupVersion{
+		// {Group: "custom.metrics.k8s.io", Version: "v1beta2"}
 		cmv1beta2.SchemeGroupVersion,
+		// {Group: "custom.metrics.k8s.io", Version: "v1beta1"}
 		cmv1beta1.SchemeGroupVersion,
+		// {Group: "custom.metrics.k8s.io", Version: "__internal"}
 		cmint.SchemeGroupVersion,
 	}
 )
@@ -73,7 +76,9 @@ func (c *MetricConverter) Codecs() serializer.CodecFactory {
 
 // ConvertListOptionsToVersion converts converts a set of MetricListOptions
 // to the provided GroupVersion.
+// 先将*cmint.MetricListOptions转换为"__internal"内部版本，然后内部版本转成version版本
 func (c *MetricConverter) ConvertListOptionsToVersion(opts *cmint.MetricListOptions, version schema.GroupVersion) (runtime.Object, error) {
+	// 先转换为"__internal"内部版本，然后内部版本转成version版本
 	paramObj, err := c.UnsafeConvertToVersionVia(opts, version)
 	if err != nil {
 		return nil, err
@@ -82,6 +87,7 @@ func (c *MetricConverter) ConvertListOptionsToVersion(opts *cmint.MetricListOpti
 }
 
 // ConvertResultToVersion converts a Result to the provided GroupVersion
+// 将rest.Result转成gv版本的runtime.Object
 func (c *MetricConverter) ConvertResultToVersion(res rest.Result, gv schema.GroupVersion) (runtime.Object, error) {
 	if err := res.Error(); err != nil {
 		return nil, err
@@ -98,6 +104,7 @@ func (c *MetricConverter) ConvertResultToVersion(res rest.Result, gv schema.Grou
 		return nil, err
 	}
 
+	// 先转换为"__internal"内部版本，然后内部版本转成gv版本
 	metricObj, err := c.UnsafeConvertToVersionVia(rawMetricObj, gv)
 	if err != nil {
 		return nil, err
@@ -107,12 +114,15 @@ func (c *MetricConverter) ConvertResultToVersion(res rest.Result, gv schema.Grou
 
 // UnsafeConvertToVersionVia is like Scheme.UnsafeConvertToVersion, but it does so via an internal version first.
 // We use it here to work with the v1beta2 client internally, while preserving backwards compatibility for existing custom metrics adapters
+// 先转换为"__internal"内部版本，然后内部版本转成externalVersion版本
 func (c *MetricConverter) UnsafeConvertToVersionVia(obj runtime.Object, externalVersion schema.GroupVersion) (runtime.Object, error) {
+	// 先转换为"__internal"内部版本
 	objInt, err := c.scheme.UnsafeConvertToVersion(obj, schema.GroupVersion{Group: externalVersion.Group, Version: runtime.APIVersionInternal})
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert the given object to the internal version: %v", err)
 	}
 
+	// 然后转成externalVersion版本
 	objExt, err := c.scheme.UnsafeConvertToVersion(objInt, externalVersion)
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert the given object back to the external version: %v", err)

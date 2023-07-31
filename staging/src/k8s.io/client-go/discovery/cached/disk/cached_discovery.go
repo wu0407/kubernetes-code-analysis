@@ -61,6 +61,8 @@ type CachedDiscoveryClient struct {
 var _ discovery.CachedDiscoveryInterface = &CachedDiscoveryClient{}
 
 // ServerResourcesForGroupVersion returns the supported resources for a group and version.
+// 先从缓存目录（~/.kube/discovery/{group}/{version}/）下的"serverresources.json"读取并解析出metav1.APIResourceList，如果成功，则返回
+// 否则 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList，然后将返回写入缓存文件中
 func (d *CachedDiscoveryClient) ServerResourcesForGroupVersion(groupVersion string) (*metav1.APIResourceList, error) {
 	filename := filepath.Join(d.cacheDirectory, groupVersion, "serverresources.json")
 	cachedBytes, err := d.getCachedFile(filename)
@@ -73,6 +75,7 @@ func (d *CachedDiscoveryClient) ServerResourcesForGroupVersion(groupVersion stri
 		}
 	}
 
+	// 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList
 	liveResources, err := d.delegate.ServerResourcesForGroupVersion(groupVersion)
 	if err != nil {
 		klog.V(3).Infof("skipped caching discovery info due to %v", err)
@@ -104,18 +107,22 @@ func (d *CachedDiscoveryClient) ServerGroupsAndResources() ([]*metav1.APIGroup, 
 
 // ServerGroups returns the supported groups, with information like supported versions and the
 // preferred version.
+// 先从discovery缓存目录（.kube/cache/discovery/{server addr去除"https://"后非点号特殊字符处理成下划线}）中，读取"servergroups.json"，如果成功进行返回
+// 否则请求"/api"和"/apis"，将返回数据进行聚合成metav1.APIGroupList，然后把数据写到discovery缓存目录中
 func (d *CachedDiscoveryClient) ServerGroups() (*metav1.APIGroupList, error) {
 	filename := filepath.Join(d.cacheDirectory, "servergroups.json")
 	cachedBytes, err := d.getCachedFile(filename)
 	// don't fail on errors, we either don't have a file or won't be able to run the cached check. Either way we can fallback.
 	if err == nil {
 		cachedGroups := &metav1.APIGroupList{}
+		// 使用scheme.Codecs.UniversalDecoder()将servergroups.json文件数据，解析成metav1.APIGroupList
 		if err := runtime.DecodeInto(scheme.Codecs.UniversalDecoder(), cachedBytes, cachedGroups); err == nil {
 			klog.V(10).Infof("returning cached discovery info from %v", filename)
 			return cachedGroups, nil
 		}
 	}
 
+	// 请求"/api"和"/apis"，将返回数据进行聚合成metav1.APIGroupList
 	liveGroups, err := d.delegate.ServerGroups()
 	if err != nil {
 		klog.V(3).Infof("skipped caching discovery info due to %v", err)

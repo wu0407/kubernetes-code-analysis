@@ -208,6 +208,7 @@ func getRESTMappings(mapper meta.RESTMapper, pruneResources *[]pruneResource) (n
 	return namespaced, nonNamespaced, nil
 }
 
+// gvks支持的格式为"{group}/{version}/{kind}"，并从apiserver中（meta.RESTMapper）进行获取（验证）相关的信息，返回[]pruneResource（group、version、kind、scope）
 func parsePruneResources(mapper meta.RESTMapper, gvks []string) ([]pruneResource, error) {
 	pruneResources := []pruneResource{}
 	for _, groupVersionKind := range gvks {
@@ -219,6 +220,9 @@ func parsePruneResources(mapper meta.RESTMapper, gvks []string) ([]pruneResource
 		if gvk[0] == "core" {
 			gvk[0] = ""
 		}
+		// PriorityRESTMapper（staging\src\k8s.io\apimachinery\pkg\api\meta\priority.go）
+		// 先从调用m.Delegate.RESTMappings，获得[]*RESTMapping
+		// 优先匹配用户提供的version和group
 		mapping, err := mapper.RESTMapping(schema.GroupKind{Group: gvk[0], Kind: gvk[2]}, gvk[1])
 		if err != nil {
 			return pruneResources, err

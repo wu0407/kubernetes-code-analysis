@@ -74,24 +74,33 @@ type multiClient struct {
 
 // getPreferredClient returns a custom metrics client of the preferred api version.
 func (c *multiClient) getPreferredClient() (CustomMetricsClient, error) {
+	// 实现在staging\src\k8s.io\metrics\pkg\client\custom_metrics\discovery.go里（*apiVersionsFromDiscovery）
+	// 使用discoveryClient从apiserver获取"custom.metrics.k8s.io"对应的metav1.APIGroup信息
+	// 首先判断，apiGroup.PreferredVersion.GroupVersion在现在支持的"custom.metrics.k8s.io"版本中，存在直接返回
+	// 否则从apiGroup.Versions中寻找第一个在现在支持的"custom.metrics.k8s.io"版本中的GroupVersion
+	// 这里是{Group: "custom.metrics.k8s.io", Version: "v1beta2"}
 	pref, err := c.availableAPIs.PreferredVersion()
 	if err != nil {
 		return nil, err
 	}
 
+	// 从缓存中获取prefer groupVersion对应client
 	c.mu.RLock()
 	client, present := c.clients[pref]
 	c.mu.RUnlock()
+	// 缓存中存在，则返回
 	if present {
 		return client, nil
 	}
 
+	// 缓存中不存在，则进行生成client
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	client, err = c.newClient(pref)
 	if err != nil {
 		return nil, err
 	}
+	// 保存client到缓存中
 	c.clients[pref] = client
 
 	return client, nil
@@ -114,13 +123,17 @@ type multiClientInterface struct {
 }
 
 func (m *multiClientInterface) GetForObject(groupKind schema.GroupKind, name string, metricName string, metricSelector labels.Selector) (*v1beta2.MetricValue, error) {
+	// 先从缓存中获得这个prefer groupVersion对应client，如果获取不到则生成一个client（在staging\src\k8s.io\metrics\pkg\client\custom_metrics\versioned_client.go里customMetricsClient）
 	client, err := m.clients.getPreferredClient()
 	if err != nil {
 		return nil, err
 	}
 	if m.namespace == nil {
+		// 如果groupKind为{Kind: "Namespace", Group: ""}，则访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{name}/metrics/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]
+		// 否则，访问"/apis/custom.metrics.k8s.io/v1beta2/{resource}/{name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]
 		return client.RootScopedMetrics().GetForObject(groupKind, name, metricName, metricSelector)
 	} else {
+		// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{m.namespace}/{resource}/{name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]
 		return client.NamespacedMetrics(*m.namespace).GetForObject(groupKind, name, metricName, metricSelector)
 	}
 }
@@ -131,8 +144,10 @@ func (m *multiClientInterface) GetForObjects(groupKind schema.GroupKind, selecto
 		return nil, err
 	}
 	if m.namespace == nil {
+		// 访问"/apis/custom.metrics.k8s.io/v1beta2/{resource}/*/{metricName}?labelSelector={selector}&metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList
 		return client.RootScopedMetrics().GetForObjects(groupKind, selector, metricName, metricSelector)
 	} else {
+		// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{m.namespace}/{resource}/*/{metricName}?labelSelector={selector}&metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList
 		return client.NamespacedMetrics(*m.namespace).GetForObjects(groupKind, selector, metricName, metricSelector)
 	}
 }

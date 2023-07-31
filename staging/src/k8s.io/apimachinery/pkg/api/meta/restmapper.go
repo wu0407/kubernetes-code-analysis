@@ -101,6 +101,12 @@ func (m *DefaultRESTMapper) Add(kind schema.GroupVersionKind, scope RESTScope) {
 	m.AddSpecific(kind, plural, singular, scope)
 }
 
+// DefaultRESTMapper里singularToPlural[singular] = plural
+// DefaultRESTMapper里pluralToSingular[plural] = singular
+// DefaultRESTMapper里resourceToKind[singular] = kind
+// DefaultRESTMapper里resourceToKind[plural] = kind
+// DefaultRESTMapper里kindToPluralResource[kind] = plural
+// DefaultRESTMapper里kindToScope[kind] = scope
 func (m *DefaultRESTMapper) AddSpecific(kind schema.GroupVersionKind, plural, singular schema.GroupVersionResource, scope RESTScope) {
 	m.singularToPlural[singular] = plural
 	m.pluralToSingular[plural] = singular
@@ -123,6 +129,13 @@ var unpluralizedSuffixes = []string{
 // UnsafeGuessKindToResource converts Kind to a resource name.
 // Broken. This method only "sort of" works when used outside of this package.  It assumes that Kinds and Resources match
 // and they aren't guaranteed to do so.
+// 如果kind里面的Kind为空，则返回plural GroupVersionResource和singular GroupVersionResource为空
+// 否则 singular GroupVersionResource为kind schema.GroupVersionKind里的Kind变成小写，然后组装成GroupVersionResource
+// plural为
+// kind为"Endpoints"，则跟singular一样
+// "singularName"为s结尾，则Resource为singularName加"es"，kind schema.GroupVersionKind里的Kind变成小写，然后组装成GroupVersionResource
+// "singularName"为y结尾，则Resource为singularName里的"y"变成"ies"，kind schema.GroupVersionKind里的Kind变成小写，然后组装成GroupVersionResource
+// 其他情况，Resource为singularName加"s"，kind schema.GroupVersionKind里的Kind变成小写，然后组装成GroupVersionResource
 func UnsafeGuessKindToResource(kind schema.GroupVersionKind) ( /*plural*/ schema.GroupVersionResource /*singular*/, schema.GroupVersionResource) {
 	kindName := kind.Kind
 	if len(kindName) == 0 {
@@ -132,6 +145,7 @@ func UnsafeGuessKindToResource(kind schema.GroupVersionKind) ( /*plural*/ schema
 	singular := kind.GroupVersion().WithResource(singularName)
 
 	for _, skip := range unpluralizedSuffixes {
+		// kind为"Endpoints"，则返回singular, singular
 		if strings.HasSuffix(singularName, skip) {
 			return singular, singular
 		}
@@ -139,11 +153,14 @@ func UnsafeGuessKindToResource(kind schema.GroupVersionKind) ( /*plural*/ schema
 
 	switch string(singularName[len(singularName)-1]) {
 	case "s":
+		// "singularName"为s结尾，则Resource为singularName加"es"，kind schema.GroupVersionKind里的Kind变成小写，然后组装成GroupVersionResource
 		return kind.GroupVersion().WithResource(singularName + "es"), singular
 	case "y":
+		// "singularName"为y结尾，则Resource为singularName里的"y"变成"ies"，kind schema.GroupVersionKind里的Kind变成小写，然后组装成GroupVersionResource
 		return kind.GroupVersion().WithResource(strings.TrimSuffix(singularName, "y") + "ies"), singular
 	}
 
+	// Resource为singularName加"s"，kind schema.GroupVersionKind里的Kind变成小写，然后组装成GroupVersionResource
 	return kind.GroupVersion().WithResource(singularName + "s"), singular
 }
 
@@ -180,6 +197,7 @@ func (m *DefaultRESTMapper) ResourceSingularizer(resourceType string) (string, e
 }
 
 // coerceResourceForMatching makes the resource lower case and converts internal versions to unspecified (legacy behavior)
+// 确保resource.Resource是小写，如果resource.Version是"__internal"，则变成空""
 func coerceResourceForMatching(resource schema.GroupVersionResource) schema.GroupVersionResource {
 	resource.Resource = strings.ToLower(resource.Resource)
 	if resource.Version == runtime.APIVersionInternal {
@@ -189,7 +207,11 @@ func coerceResourceForMatching(resource schema.GroupVersionResource) schema.Grou
 	return resource
 }
 
+// 首先对输入的input schema.GroupVersionResource进行规整化（确保input.Resource是小写，如果input.Version是"__internal"，则变成空""）
+// 然后从m.pluralToSingular查找，至少resource匹配的plural，越多匹配的放在前面
+// 然后对所有匹配的GroupVersionResource进行排序
 func (m *DefaultRESTMapper) ResourcesFor(input schema.GroupVersionResource) ([]schema.GroupVersionResource, error) {
+	// 确保input.Resource是小写，如果input.Version是"__internal"，则变成空""
 	resource := coerceResourceForMatching(input)
 
 	hasResource := len(resource.Resource) > 0
@@ -205,25 +227,31 @@ func (m *DefaultRESTMapper) ResourcesFor(input schema.GroupVersionResource) ([]s
 	case hasGroup && hasVersion:
 		// fully qualified.  Find the exact match
 		for plural, singular := range m.pluralToSingular {
+			// resource是singular类型，则将plural append到ret
 			if singular == resource {
 				ret = append(ret, plural)
 				break
 			}
+			// resource是plural类型，则plural append到ret
 			if plural == resource {
 				ret = append(ret, plural)
 				break
 			}
 		}
 
+	// 只有group情况
 	case hasGroup:
 		// given a group, prefer an exact match.  If you don't find one, resort to a prefix match on group
 		foundExactMatch := false
 		requestedGroupResource := resource.GroupResource()
+		// 既然没有version，那么只要比较group和resource就行了
 		for plural, singular := range m.pluralToSingular {
+			// group resource是singular.GroupResource()，则将plural append到ret
 			if singular.GroupResource() == requestedGroupResource {
 				foundExactMatch = true
 				ret = append(ret, plural)
 			}
+			//  group resource是plural.GroupResource()，则将plural append到ret
 			if plural.GroupResource() == requestedGroupResource {
 				foundExactMatch = true
 				ret = append(ret, plural)
@@ -232,14 +260,18 @@ func (m *DefaultRESTMapper) ResourcesFor(input schema.GroupVersionResource) ([]s
 
 		// if you didn't find an exact match, match on group prefixing. This allows storageclass.storage to match
 		// storageclass.storage.k8s.io
+		// 在m.pluralToSingular里没有找到group resource一样的，则进行group前缀匹配
 		if !foundExactMatch {
 			for plural, singular := range m.pluralToSingular {
+				// plural.Group没有requestedGroupResource.Group前缀，则跳过
 				if !strings.HasPrefix(plural.Group, requestedGroupResource.Group) {
 					continue
 				}
+				// resource是singular.Resource，则将plural append到ret
 				if singular.Resource == requestedGroupResource.Resource {
 					ret = append(ret, plural)
 				}
+				// resource是plural.Resource，则将plural append到ret
 				if plural.Resource == requestedGroupResource.Resource {
 					ret = append(ret, plural)
 				}
@@ -247,31 +279,43 @@ func (m *DefaultRESTMapper) ResourcesFor(input schema.GroupVersionResource) ([]s
 
 		}
 
+	// 只有version情况
 	case hasVersion:
+		// 既然没有group，那就比较version和resource
 		for plural, singular := range m.pluralToSingular {
+			// resource.Version和resource.Resource和singular的Version和Resource相等，则将plural append到ret
 			if singular.Version == resource.Version && singular.Resource == resource.Resource {
 				ret = append(ret, plural)
 			}
+			// resource.Version和resource.Resource和plural的Version和Resource相等，则将plural append到ret
 			if plural.Version == resource.Version && plural.Resource == resource.Resource {
 				ret = append(ret, plural)
 			}
 		}
 
+	// 即没有group和version，那么就只能比较resource匹配
 	default:
 		for plural, singular := range m.pluralToSingular {
+			// resource跟singular.Resource一样，则将plural append到ret
 			if singular.Resource == resource.Resource {
 				ret = append(ret, plural)
 			}
+			// resource跟plural.Resource一样，则将plural append到ret
 			if plural.Resource == resource.Resource {
 				ret = append(ret, plural)
 			}
 		}
 	}
 
+	// 都没有找到
 	if len(ret) == 0 {
 		return nil, &NoResourceMatchError{PartialResource: resource}
 	}
 
+	// group version resource一样，则j排前面
+	// 只有group version一样的情况下，按照resource排序
+	// GroupVersion不一样，那么比较i和j的GroupVersion在o.sortOrder里的位置，在o.sortOrder里的位置前面的排在前面。
+	// 如果都不在o.sortOrder里，则还是原本的顺序。如果i在o.sortOrder里j不在，则i排在前面。如果j在o.sortOrder里，i不在，则i排在前面（这里由于上面ret里都是group version一样，所以不会存在这个bug问题）
 	sort.Sort(resourceByPreferredGroupVersion{ret, m.defaultGroupVersions})
 	return ret, nil
 }
@@ -415,18 +459,23 @@ func (o resourceByPreferredGroupVersion) Swap(i, j int) { o.list[i], o.list[j] =
 func (o resourceByPreferredGroupVersion) Less(i, j int) bool {
 	lhs := o.list[i]
 	rhs := o.list[j]
+	// group version resource一样，则j排前面
 	if lhs == rhs {
 		return false
 	}
 
+	// group version一样的情况下，按照resource排序
 	if lhs.GroupVersion() == rhs.GroupVersion() {
 		return lhs.Resource < rhs.Resource
 	}
 
 	// otherwise, the difference is in the GroupVersion, so we need to sort with respect to the preferred order
+	// GroupVersion不一样，那么比较i和j的GroupVersion在o.sortOrder里的位置，在o.sortOrder里的位置前面的排在前面。
+	// 如果都不在o.sortOrder里，则还是原本的顺序。如果i在o.sortOrder里j不在，则i排在前面。如果j在o.sortOrder里，i不在，则i排在前面（这里存在bug）
 	lhsIndex := -1
 	rhsIndex := -1
 
+	// 统计i和j的GroupVersion在o.sortOrder里的位置
 	for i := range o.sortOrder {
 		if o.sortOrder[i] == lhs.GroupVersion() {
 			lhsIndex = i
@@ -447,7 +496,16 @@ func (o resourceByPreferredGroupVersion) Less(i, j int) bool {
 // RESTClient should use to operate on the provided group/kind in order of versions. If a version search
 // order is not provided, the search order provided to DefaultRESTMapper will be used to resolve which
 // version should be used to access the named group/kind.
+// 从m.kindToPluralResource里查找第一个存在的group version kind
+// 如果没有提供versions，或者version没有在m.kindToPluralResource里，或version为"__internal"
+// 则使用m.defaultGroupVersions查找group与gk的group一样，将所有version与gk组成group version kind
+// 根据这个group version kind，从m.kindToPluralResource查找GroupVersionResource，从m.kindToScope查找scope。最后组成RESTMapping
+// 返回第一个RESTMapping
 func (m *DefaultRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string) (*RESTMapping, error) {
+	// 从m.kindToPluralResource里查找第一个存在的group version kind
+	// 如果没有提供versions，或者version没有在m.kindToPluralResource里，或version为"__internal"
+	// 则使用m.defaultGroupVersions查找group与gk的group一样，将所有version与gk组成group version kind
+	// 根据这个group version kind，从m.kindToPluralResource查找GroupVersionResource，从m.kindToScope查找scope。最后组成RESTMapping
 	mappings, err := m.RESTMappings(gk, versions...)
 	if err != nil {
 		return nil, err
@@ -463,13 +521,21 @@ func (m *DefaultRESTMapper) RESTMapping(gk schema.GroupKind, versions ...string)
 
 // RESTMappings returns the RESTMappings for the provided group kind. If a version search order
 // is not provided, the search order provided to DefaultRESTMapper will be used.
+// 如果有提供versions，则遍历所有的version，与gk group kind进行组合成group version kind
+// 从m.kindToPluralResource里查找第一个存在的group version kind
+// 如果没有提供versions，或者version没有在m.kindToPluralResource里，或version为"__internal"
+// 则使用m.defaultGroupVersions查找group与gk的group一样，将所有version与gk组成group version kind
+// 根据这个group version kind，从m.kindToPluralResource查找GroupVersionResource，从m.kindToScope查找scope。最后组成RESTMapping
 func (m *DefaultRESTMapper) RESTMappings(gk schema.GroupKind, versions ...string) ([]*RESTMapping, error) {
 	mappings := make([]*RESTMapping, 0)
 	potentialGVK := make([]schema.GroupVersionKind, 0)
 	hadVersion := false
 
 	// Pick an appropriate version
+	// 如果有提供versions，则遍历所有的version，与gk group kind进行组合成group version kind
+	// 只挑选第一个m.kindToPluralResource里存在的group version kind，将group version kind append到potentialGVK
 	for _, version := range versions {
+		// 忽略空的version和version是"__internal"
 		if len(version) == 0 || version == runtime.APIVersionInternal {
 			continue
 		}
@@ -481,6 +547,8 @@ func (m *DefaultRESTMapper) RESTMappings(gk schema.GroupKind, versions ...string
 		}
 	}
 	// Use the default preferred versions
+	// 如果没有提供versions，或者version没有在m.kindToPluralResource里，或version为"__internal"
+	// 则使用m.defaultGroupVersions查找group与gk的group一样，将所有version与gk组成group version kind
 	if !hadVersion && len(potentialGVK) == 0 {
 		for _, gv := range m.defaultGroupVersions {
 			if gv.Group != gk.Group {
@@ -490,6 +558,7 @@ func (m *DefaultRESTMapper) RESTMappings(gk schema.GroupKind, versions ...string
 		}
 	}
 
+	// 还是没找到，返回错误
 	if len(potentialGVK) == 0 {
 		return nil, &NoKindMatchError{GroupKind: gk, SearchedVersions: versions}
 	}

@@ -109,6 +109,7 @@ func (t *DynamicControllerClientBuilder) Config(saName string) (*restclient.Conf
 		return nil, err
 	}
 
+	// 设置config的UserAgent为"system:serviceaccount:"+{namespace}+":"+{name}
 	configCopy := constructClient(t.Namespace, saName, t.ClientConfig)
 
 	t.mutex.Lock()
@@ -132,6 +133,7 @@ func (t *DynamicControllerClientBuilder) Config(saName string) (*restclient.Conf
 	return &configCopy, nil
 }
 
+// 比如在cmd\kube-controller-manager\app\autoscaling.go里调用controllerContext.ClientBuilder.ConfigOrDie("horizontal-pod-autoscaler")
 func (t *DynamicControllerClientBuilder) ConfigOrDie(name string) *restclient.Config {
 	clientConfig, err := t.Config(name)
 	if err != nil {
@@ -184,6 +186,7 @@ type tokenSourceImpl struct {
 	leewayPercent      int
 }
 
+// 获得serviceAccount相关的Token
 func (ts *tokenSourceImpl) Token() (*oauth2.Token, error) {
 	var retTokenRequest *v1authenticationapi.TokenRequest
 
@@ -193,11 +196,13 @@ func (ts *tokenSourceImpl) Token() (*oauth2.Token, error) {
 		Steps:    4,
 	}
 	if err := wait.ExponentialBackoff(backoff, func() (bool, error) {
+		// serviceAccount存在，则返回，否则进行创建（如果namespace不存在则创建namespace，然后再创建serviceAccount）
 		if _, inErr := getOrCreateServiceAccount(ts.coreClient, ts.namespace, ts.serviceAccountName); inErr != nil {
 			klog.Warningf("get or create service account failed: %v", inErr)
 			return false, nil
 		}
 
+		// 创建serviceAccount相关的token
 		tr, inErr := ts.coreClient.ServiceAccounts(ts.namespace).CreateToken(context.TODO(), ts.serviceAccountName, &v1authenticationapi.TokenRequest{
 			Spec: v1authenticationapi.TokenRequestSpec{
 				ExpirationSeconds: utilpointer.Int64Ptr(ts.expirationSeconds),
@@ -233,7 +238,9 @@ func (ts *tokenSourceImpl) Token() (*oauth2.Token, error) {
 	}, nil
 }
 
+// 设置config的UserAgent为"system:serviceaccount:"+{namespace}+":"+{name}
 func constructClient(saNamespace, saName string, config *restclient.Config) restclient.Config {
+	// "system:serviceaccount:"+{namespace}+":"+{name}
 	username := apiserverserviceaccount.MakeUsername(saNamespace, saName)
 	// make a shallow copy
 	// the caller already castrated the config during creation
@@ -244,6 +251,7 @@ func constructClient(saNamespace, saName string, config *restclient.Config) rest
 	return ret
 }
 
+// serviceAccount存在，则返回，否则进行创建（如果namespace不存在则创建namespace，然后再创建serviceAccount）
 func getOrCreateServiceAccount(coreClient v1core.CoreV1Interface, namespace, name string) (*v1.ServiceAccount, error) {
 	sa, err := coreClient.ServiceAccounts(namespace).Get(context.TODO(), name, metav1.GetOptions{})
 	if err == nil {

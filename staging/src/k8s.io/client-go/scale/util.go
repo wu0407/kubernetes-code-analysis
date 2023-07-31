@@ -60,20 +60,28 @@ type discoveryScaleResolver struct {
 	discoveryClient discovery.ServerResourcesInterface
 }
 
+// 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList
+// 根据这个list遍历所有的resource，resource.Name是带有"/"，且按"/"进行分割，前半部分为inputRes.Resource，后半部分为"scale"
+// 如果resource.Group和resource.Version都不为空，则groupVersion使用resource的GroupVersionKind，否则使用inputRes.GroupVersion和resource的Kind
 func (r *discoveryScaleResolver) ScaleForResource(inputRes schema.GroupVersionResource) (scaleVersion schema.GroupVersionKind, err error) {
+	// 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList
 	groupVerResources, err := r.discoveryClient.ServerResourcesForGroupVersion(inputRes.GroupVersion().String())
 	if err != nil {
 		return schema.GroupVersionKind{}, fmt.Errorf("unable to fetch discovery information for %s: %v", inputRes.String(), err)
 	}
 
+	// 遍历所有resource
 	for _, resource := range groupVerResources.APIResources {
+		// 对resource名字，按"/"进行分割
 		resourceParts := strings.SplitN(resource.Name, "/", 2)
+		// 不为2个分段，或第一部分不为inputRes.Resource，或第二部分不为"scale"，则跳过
 		if len(resourceParts) != 2 || resourceParts[0] != inputRes.Resource || resourceParts[1] != "scale" {
 			// skip non-scale resources, or scales for resources that we're not looking for
 			continue
 		}
 
 		scaleGV := inputRes.GroupVersion()
+		// 如果resource.Group和resource.Version都不为空，则groupVersion使用resource的resource.Group和resource.Version
 		if resource.Group != "" && resource.Version != "" {
 			scaleGV = schema.GroupVersion{
 				Group:   resource.Group,
@@ -96,8 +104,16 @@ type cachedScaleKindResolver struct {
 	mu    sync.RWMutex
 }
 
+// 查找resource schema.GroupVersionResource对应的schema.GroupVersionKind
+// 先从缓存中查找，如果找到直接返回
+// 否则
+// 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList
+// 根据这个list遍历所有的resource，resource.Name是带有"/"，且按"/"进行分割，前半部分为inputRes.Resource，后半部分为"scale"
+// 如果resource.Group和resource.Version都不为空，则groupVersion使用resource的GroupVersionKind，否则使用inputRes.GroupVersion和resource的Kind
+// 保存这个对应关系到缓存中
 func (r *cachedScaleKindResolver) ScaleForResource(resource schema.GroupVersionResource) (schema.GroupVersionKind, error) {
 	r.mu.RLock()
+	// 从缓存中查找，如果找到直接返回
 	gvk, isCached := r.cache[resource]
 	r.mu.RUnlock()
 	if isCached {
@@ -108,6 +124,9 @@ func (r *cachedScaleKindResolver) ScaleForResource(resource schema.GroupVersionR
 	// better than limiting to only one reader at once (mu.Mutex),
 	// or blocking checks for other resources while we fetch
 	// (mu.Lock before fetch).
+	// 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList
+	// 根据这个list遍历所有的resource，resource.Name是带有"/"，且按"/"进行分割，前半部分为inputRes.Resource，后半部分为"scale"
+	// 如果resource.Group和resource.Version都不为空，则groupVersion使用resource的GroupVersionKind，否则使用inputRes.GroupVersion和resource的Kind
 	gvk, err := r.base.ScaleForResource(resource)
 	if err != nil {
 		return schema.GroupVersionKind{}, err
@@ -156,6 +175,7 @@ func NewScaleConverter() *ScaleConverter {
 		scheme: scheme,
 		codecs: serializer.NewCodecFactory(scheme),
 		internalVersioner: runtime.NewMultiGroupVersioner(
+			// {Group: "autoscaling", Version: "__internal"}
 			scalescheme.SchemeGroupVersion,
 			schema.GroupKind{Group: scaleext.GroupName, Kind: "Scale"},
 			schema.GroupKind{Group: scaleautoscaling.GroupName, Kind: "Scale"},
@@ -176,22 +196,31 @@ func (c *ScaleConverter) Codecs() serializer.CodecFactory {
 
 func (c *ScaleConverter) ScaleVersions() []schema.GroupVersion {
 	return []schema.GroupVersion{
+		// {Group: "autoscaling", Version: "v1"}
 		scaleautoscaling.SchemeGroupVersion,
+		// {Group: "autoscaling", Version: "__internal"}
 		scalescheme.SchemeGroupVersion,
+		// {Group: "extensions", Version: "v1beta1"}
 		scaleext.SchemeGroupVersion,
+		// {Group: "extensions", Version: "__internal"}
 		scaleextint.SchemeGroupVersion,
+		// {Group: "apps", Version: "__internal"}
 		scaleappsint.SchemeGroupVersion,
+		// {Group: "apps", Version: "v1beta1"}
 		scaleappsv1beta1.SchemeGroupVersion,
+		// {Group: "apps", Version: "v1beta2"}
 		scaleappsv1beta2.SchemeGroupVersion,
 	}
 }
 
 // ConvertToVersion converts the given *external* input object to the given output *external* output group-version.
 func (c *ScaleConverter) ConvertToVersion(in runtime.Object, outVersion schema.GroupVersion) (runtime.Object, error) {
+	// 先转成内部的版本（优先顺序{Group: "autoscaling", Version: "__internal"}，{Group: "extensions", Kind: "Scale"}，{Group: "autoscaling", Kind: "Scale"}，{Group: "apps", Kind: "Scale"}）
 	scaleInt, err := c.scheme.ConvertToVersion(in, c.internalVersioner)
 	if err != nil {
 		return nil, err
 	}
 
+	// 再将内部版本转成外部版本
 	return c.scheme.ConvertToVersion(scaleInt, outVersion)
 }

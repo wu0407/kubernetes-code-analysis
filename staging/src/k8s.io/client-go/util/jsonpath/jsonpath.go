@@ -58,8 +58,10 @@ func (j *JSONPath) AllowMissingKeys(allow bool) *JSONPath {
 }
 
 // Parse parses the given template and returns an error.
+// 设置j.parser为解析text内容后的Parser
 func (j *JSONPath) Parse(text string) error {
 	var err error
+	// 解析text内容，生成Parser
 	j.parser, err = Parse(j.name, text)
 	return err
 }

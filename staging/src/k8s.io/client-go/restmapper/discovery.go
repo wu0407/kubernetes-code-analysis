@@ -45,7 +45,9 @@ func NewDiscoveryRESTMapper(groupResources []*APIGroupResources) meta.RESTMapper
 
 	var groupPriority []string
 	// /v1 is special.  It should always come first
+	// {Group: "", Version: "v1", Resource: "*"}排resourcePriority前面
 	resourcePriority := []schema.GroupVersionResource{{Group: "", Version: "v1", Resource: meta.AnyResource}}
+	// {Group: "", Version: "v1", Kind: "*"}排kindPriority前面
 	kindPriority := []schema.GroupVersionKind{{Group: "", Version: "v1", Kind: meta.AnyKind}}
 
 	for _, group := range groupResources {
@@ -55,12 +57,14 @@ func NewDiscoveryRESTMapper(groupResources []*APIGroupResources) meta.RESTMapper
 		if len(group.Group.PreferredVersion.Version) != 0 {
 			preferred := group.Group.PreferredVersion.Version
 			if _, ok := group.VersionedResources[preferred]; ok {
+				// preferred Version  {Group: group.Group.Name, Version: group.Group.PreferredVersion.Version, Resource: "*"}排在resourcePriority第二
 				resourcePriority = append(resourcePriority, schema.GroupVersionResource{
 					Group:    group.Group.Name,
 					Version:  group.Group.PreferredVersion.Version,
 					Resource: meta.AnyResource,
 				})
 
+				// preferred Version  {Group: group.Group.Name, Version: group.Group.PreferredVersion.Version, Kind: "*"}排在kindPriority第二
 				kindPriority = append(kindPriority, schema.GroupVersionKind{
 					Group:   group.Group.Name,
 					Version: group.Group.PreferredVersion.Version,
@@ -69,7 +73,9 @@ func NewDiscoveryRESTMapper(groupResources []*APIGroupResources) meta.RESTMapper
 			}
 		}
 
+		// 遍历这个group下的所有版本
 		for _, discoveryVersion := range group.Group.Versions {
+			// 版本下面的所有resource
 			resources, ok := group.VersionedResources[discoveryVersion.Version]
 			if !ok {
 				continue
@@ -77,12 +83,14 @@ func NewDiscoveryRESTMapper(groupResources []*APIGroupResources) meta.RESTMapper
 
 			// Add non-preferred versions after the preferred version, in case there are resources that only exist in those versions
 			if discoveryVersion.Version != group.Group.PreferredVersion.Version {
+				// 不是PreferredVersion，{Group: group.Group.Name, Version: discoveryVersion.Version, Resource: "*"}排在resourcePriority后面
 				resourcePriority = append(resourcePriority, schema.GroupVersionResource{
 					Group:    group.Group.Name,
 					Version:  discoveryVersion.Version,
 					Resource: meta.AnyResource,
 				})
 
+				// 不是PreferredVersion，{Group: group.Group.Name, Version: discoveryVersion.Version, Kind: "*"}排在kindPriority后面
 				kindPriority = append(kindPriority, schema.GroupVersionKind{
 					Group:   group.Group.Name,
 					Version: discoveryVersion.Version,
@@ -93,6 +101,7 @@ func NewDiscoveryRESTMapper(groupResources []*APIGroupResources) meta.RESTMapper
 			gv := schema.GroupVersion{Group: group.Group.Name, Version: discoveryVersion.Version}
 			versionMapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{gv})
 
+			// 遍历这个版本下的所有metav1.APIResource
 			for _, resource := range resources {
 				scope := meta.RESTScopeNamespace
 				if !resource.Namespaced {
@@ -107,23 +116,64 @@ func NewDiscoveryRESTMapper(groupResources []*APIGroupResources) meta.RESTMapper
 				plural := gv.WithResource(resource.Name)
 				singular := gv.WithResource(resource.SingularName)
 				// this is for legacy resources and servers which don't list singular forms.  For those we must still guess.
+				// /api/v1（k8s.io/api/core/v1）下返回结果里"singularName"为空
 				if len(resource.SingularName) == 0 {
+					// 如果kind里面的Kind为空，则返回plural GroupVersionResource和singular GroupVersionResource为空
+					// 否则 singular GroupVersionResource为kind schema.GroupVersionKind里的Kind变成小写，然后组装成GroupVersionResource
 					_, singular = meta.UnsafeGuessKindToResource(gv.WithKind(resource.Kind))
 				}
 
+				// versionMapper里singularToPlural[singular] = plural
+				// versionMapper里pluralToSingular[plural] = singular
+				// versionMapper里resourceToKind[singular] = kind（Kind变小写）
+				// versionMapper里resourceToKind[plural] = kind（Kind变小写）
+				// versionMapper里kindToPluralResource[kind（Kind变小写）] = plural
+				// versionMapper里kindToScope[kind（Kind变小写）] = scope
 				versionMapper.AddSpecific(gv.WithKind(strings.ToLower(resource.Kind)), plural, singular, scope)
+				// versionMapper里singularToPlural[singular] = plural
+				// versionMapper里pluralToSingular[plural] = singular
+				// versionMapper里resourceToKind[singular] = kind（Kind变大写）
+				// versionMapper里resourceToKind[plural] = kind（Kind变大写）
+				// versionMapper里kindToPluralResource[kind（Kind变大写）] = plural
+				// versionMapper里kindToScope[kind（Kind变大写）] = scope
+
+				// 最后为
+				// versionMapper里singularToPlural[singular] = plural
+				// versionMapper里pluralToSingular[plural] = singular
+				// versionMapper里resourceToKind[singular] = kind（Kind变大写）
+				// versionMapper里resourceToKind[plural] = kind（Kind变大写）
+				// versionMapper里kindToPluralResource[kind（Kind变小写）] = plural
+				// versionMapper里kindToScope[kind（Kind变小写）] = scope
+				// versionMapper里kindToPluralResource[kind（Kind变大写）] = plural
+				// versionMapper里kindToScope[kind（Kind变大写）] = scope
 				versionMapper.AddSpecific(gv.WithKind(resource.Kind), plural, singular, scope)
 				// TODO this is producing unsafe guesses that don't actually work, but it matches previous behavior
+				// 这里的内部singular为groupVersionKind（kind加"list"）
+				// plural为groupVersionKind（kind加"lists"）
+				// versionMapper里singularToPlural[singular（kind加"list"）] = plural（groupVersionKind（kind加"lists"））
+				// versionMapper里pluralToSingular[plural（groupVersionKind（kind加"lists"））] = singular（kind加"list"）
+				// versionMapper里resourceToKind[singular（kind加"list"）] = kind（Kind加"Lists"）
+				// versionMapper里resourceToKind[plural（groupVersionKind（kind加"lists"）] = kind（Kind加"Lists"）
+				// versionMapper里kindToPluralResource[kind（Kind加"Lists"））] = plural（groupVersionKind（kind加"lists"）
+				// versionMapper里kindToScope[kind（Kind加"Lists"）] = scope
 				versionMapper.Add(gv.WithKind(resource.Kind+"List"), scope)
 			}
 			// TODO why is this type not in discovery (at least for "v1")
+			// 这里的内部singular为groupVersionKind（kind为"list"），scope为meta.RESTScopeRoot
+			// plural为groupVersionKind（kind为"lists"）
+			// versionMapper里singularToPlural[singular（groupVersionKind（kind为"list"））] = plural（plural为groupVersionKind（kind为"lists"））
+			// versionMapper里pluralToSingular[plural（plural为groupVersionKind（kind为"lists"））] = singular（groupVersionKind（kind为"list"）
+			// versionMapper里resourceToKind[singular] = kind（Kind为groupVersion（Kind为"List"））
+			// versionMapper里resourceToKind[plural（plural为groupVersionKind（kind为"lists"））] = kind（Kind为groupVersion（Kind为"List"））
+			// versionMapper里kindToPluralResource[kind（Kind为groupVersion（Kind为"List"））] = plural（plural为groupVersionKind（kind为"lists"））
+			// versionMapper里kindToScope[kind（Kind为groupVersion（Kind为"List"））] = scope
 			versionMapper.Add(gv.WithKind("List"), meta.RESTScopeRoot)
 			unionMapper = append(unionMapper, versionMapper)
 		}
 	}
 
-	// 最后添加任意version、任意resource在resourcePriority最后
-	// 添加任意version、任意kind在kindPriority最后
+	// 最后添加任意version、任意resource {Group: group, Version: "*", Resource: "*"}在resourcePriority最后
+	// 添加任意version、任意kind {Group: group, Version: "*", Kind: "*"}在kindPriority最后
 	for _, group := range groupPriority {
 		resourcePriority = append(resourcePriority, schema.GroupVersionResource{
 			Group:    group,
@@ -138,8 +188,11 @@ func NewDiscoveryRESTMapper(groupResources []*APIGroupResources) meta.RESTMapper
 	}
 
 	return meta.PriorityRESTMapper{
+		// 所有group version kind对应的resourceToKind（map）、kindToPluralResource（map）、kindToScope（map）、defaultGroupVersions（group version列表）、singularToPlural（map）、pluralToSingular（map）
 		Delegate:         unionMapper,
+		// 所有group version resource列表（顺序代表优先级）
 		ResourcePriority: resourcePriority,
+		// 所有group version kind列表（顺序代表优先级）
 		KindPriority:     kindPriority,
 	}
 }
@@ -147,6 +200,14 @@ func NewDiscoveryRESTMapper(groupResources []*APIGroupResources) meta.RESTMapper
 // GetAPIGroupResources uses the provided discovery client to gather
 // discovery information and populate a slice of APIGroupResources.
 func GetAPIGroupResources(cl discovery.DiscoveryInterface) ([]*APIGroupResources, error) {
+	// 先从discovery缓存目录（.kube/cache/discovery/{server addr去除"https://"后非点号特殊字符处理成下划线}）中，读取"servergroups.json"，如果成功进行返回
+	// 否则请求"/api"和"/apis"，将返回数据进行聚合成metav1.APIGroupList，然后把数据写到discovery缓存目录中
+	// 然后根据这个metav1.APIGroupList里的Groups列表
+	// 并发的获取apiGroups对应的map[schema.GroupVersion]*metav1.APIResourceList和map[schema.GroupVersion]error对应的错误
+	// 传入的DiscoveryInterface，如果是CachedDiscoveryClient
+	// 先从缓存目录（~/.kube/discovery/{group}/{version}/）下的"serverresources.json"读取并解析出metav1.APIResourceList，如果成功，则返回
+	// 否则 请求"/api/v1"或"/apis/{group}/{Version}" 返回metav1.APIResourceList，然后将返回写入缓存文件中
+	// 最后进行数据处理，返回[]*metav1.APIGroup, []*metav1.APIResourceList, error
 	gs, rs, err := cl.ServerGroupsAndResources()
 	if rs == nil || gs == nil {
 		return nil, err
@@ -161,6 +222,7 @@ func GetAPIGroupResources(cl discovery.DiscoveryInterface) ([]*APIGroupResources
 	for _, group := range gs {
 		groupResources := &APIGroupResources{
 			Group:              *group,
+			// 这个group下面所有version和对应的metav1.APIResource
 			VersionedResources: make(map[string][]metav1.APIResource),
 		}
 		for _, version := range group.Versions {
@@ -201,11 +263,13 @@ func (d *DeferredDiscoveryRESTMapper) getDelegate() (meta.RESTMapper, error) {
 		return d.delegate, nil
 	}
 
+	// 通过discovery.CachedDiscoveryInterface获得[]*APIGroupResources（group与group下面的所有version和对应的metav1.APIResource）
 	groupResources, err := GetAPIGroupResources(d.cl)
 	if err != nil {
 		return nil, err
 	}
 
+	// 生成meta.PriorityRESTMapper
 	d.delegate = NewDiscoveryRESTMapper(groupResources)
 	return d.delegate, nil
 }
@@ -259,6 +323,8 @@ func (d *DeferredDiscoveryRESTMapper) ResourceFor(input schema.GroupVersionResou
 	if err != nil {
 		return schema.GroupVersionResource{}, err
 	}
+	// del为PriorityRESTMapper在staging\src\k8s.io\apimachinery\pkg\api\meta\priority.go
+	// 对MultiRESTMapper里所有RESTMapper执行ResourcesFor(resource)，对返回的结果进行去重
 	gvr, err = del.ResourceFor(input)
 	if err != nil && !d.cl.Fresh() {
 		d.Reset()
@@ -292,6 +358,7 @@ func (d *DeferredDiscoveryRESTMapper) RESTMapping(gk schema.GroupKind, versions 
 	m, err = del.RESTMapping(gk, versions...)
 	if err != nil && !d.cl.Fresh() {
 		d.Reset()
+		// 进行重试（重新执行自己）
 		m, err = d.RESTMapping(gk, versions...)
 	}
 	return

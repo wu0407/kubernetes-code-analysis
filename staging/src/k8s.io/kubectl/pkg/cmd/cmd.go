@@ -90,6 +90,7 @@ type KubectlOptions struct {
 	genericclioptions.IOStreams
 }
 
+// 初始化ConfigFlags（各个参数为默认值），并设置discoveryBurst为300，usePersistentConfig为true，discoveryQPS为50
 var defaultConfigFlags = genericclioptions.NewConfigFlags(true).WithDeprecatedPasswordFlag().WithDiscoveryBurst(300).WithDiscoveryQPS(50.0)
 
 // NewDefaultKubectlCommand creates the `kubectl` command with default arguments
@@ -313,12 +314,16 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 
 	kubeConfigFlags := o.ConfigFlags
 	if kubeConfigFlags == nil {
+		// 初始化ConfigFlags（各个参数为默认值），并设置discoveryBurst为300，usePersistentConfig为true，discoveryQPS为50
 		kubeConfigFlags = defaultConfigFlags
 	}
 	kubeConfigFlags.AddFlags(flags)
 	matchVersionKubeConfigFlags := cmdutil.NewMatchVersionFlags(kubeConfigFlags)
 	matchVersionKubeConfigFlags.AddFlags(flags)
 	// Updates hooks to add kubectl command headers: SIG CLI KEP 859.
+	// 组装原来的cmds.PersistentPreRunE和添加header为新的cmds.PersistentPreRunE
+	// 设置cmds.PersistentPreRunE为 先将执行命令添加到crt &genericclioptions.CommandHeaderRoundTripper的Header["Kubectl-Command"]，同时设置c.Header["Kubectl-Session"]为生成的uid，然后执行cmds.PersistentPreRunE
+	// 设置kubeConfigFlags.WrapConfigFn为让rest.Config.WrapTransport为添加genericclioptions.CommandHeaderRoundTripper（添加header到http request）
 	addCmdHeaderHooks(cmds, kubeConfigFlags)
 
 	f := cmdutil.NewFactory(matchVersionKubeConfigFlags)
@@ -409,7 +414,7 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 			},
 		},
 	}
-	// 将CommandGroups.Commands里的command添加到c，即CommandGroups.Commands里的command为c的子命令
+	// 将groups CommandGroups.Commands里的command添加到cmds，即groups CommandGroups.Commands里的command为cmds的子命令
 	groups.Add(cmds)
 
 	filters := []string{"options"}
@@ -462,6 +467,9 @@ func NewKubectlCommand(o KubectlOptions) *cobra.Command {
 // See SIG CLI KEP 859 for more information:
 //
 //	https://github.com/kubernetes/enhancements/tree/master/keps/sig-cli/859-kubectl-headers
+// 组装原来的cmds.PersistentPreRunE和添加header为新的cmds.PersistentPreRunE
+// 设置cmds.PersistentPreRunE为 先将执行命令添加到crt &genericclioptions.CommandHeaderRoundTripper的Header["Kubectl-Command"]，同时设置c.Header["Kubectl-Session"]为生成的uid，然后执行cmds.PersistentPreRunE
+// 设置kubeConfigFlags.WrapConfigFn为让rest.Config.WrapTransport为添加genericclioptions.CommandHeaderRoundTripper（添加header到http request）
 func addCmdHeaderHooks(cmds *cobra.Command, kubeConfigFlags *genericclioptions.ConfigFlags) {
 	// If the feature gate env var is set to "false", then do no add kubectl command headers.
 	if value, exists := os.LookupEnv(kubectlCmdHeaders); exists {
@@ -475,6 +483,7 @@ func addCmdHeaderHooks(cmds *cobra.Command, kubeConfigFlags *genericclioptions.C
 	existingPreRunE := cmds.PersistentPreRunE
 	// Add command parsing to the existing persistent pre-run function.
 	cmds.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// 将cmd command名字按照父到子的name（用空格分隔），设置为c.Header["Kubectl-Command"]的value，同时设置c.Header["Kubectl-Session"]为生成的uid
 		crt.ParseCommandHeaders(cmd, args)
 		return existingPreRunE(cmd, args)
 	}
@@ -484,9 +493,12 @@ func addCmdHeaderHooks(cmds *cobra.Command, kubeConfigFlags *genericclioptions.C
 		if wrapConfigFn != nil {
 			c = wrapConfigFn(c)
 		}
+		// 将多个transport.WrapperFunc（c.WrapTransport和fn）组装成一个transport.WrapperFunc
+		// 设置c.WrapTransport为新的组装后的transport.WrapperFunc
 		c.Wrap(func(rt http.RoundTripper) http.RoundTripper {
 			// Must be separate RoundTripper; not "crt" closure.
 			// Fixes: https://github.com/kubernetes/kubectl/issues/1098
+			// 多个请求同时发生，会有竞争问题，所以返回新的genericclioptions.CommandHeaderRoundTripper。https://github.com/kubernetes/kubernetes/pull/105334/files
 			return &genericclioptions.CommandHeaderRoundTripper{
 				Delegate: rt,
 				Headers:  crt.Headers,

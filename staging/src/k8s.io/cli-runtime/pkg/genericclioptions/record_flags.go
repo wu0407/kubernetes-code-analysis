@@ -137,6 +137,7 @@ type ChangeCauseRecorder struct {
 
 // Record annotates a "change-cause" to a given info if either "shouldRecord" is true,
 // or the resource info previously contained a "change-cause" annotation.
+// 添加obj的annotations["kubernetes.io/change-cause"]为{命令行路径}+{non-flag arguments...}+{flag arguments (--xxx=xxx,-xxx=xxx)}
 func (r *ChangeCauseRecorder) Record(obj runtime.Object) error {
 	accessor, err := meta.Accessor(obj)
 	if err != nil {
@@ -147,6 +148,7 @@ func (r *ChangeCauseRecorder) Record(obj runtime.Object) error {
 		annotations = make(map[string]string)
 	}
 	// annotations["kubernetes.io/change-cause"]
+	// r.changeCause为{命令行路径}+{non-flag arguments...}+{flag arguments (--xxx=xxx,-xxx=xxx)}
 	annotations[ChangeCauseAnnotation] = r.changeCause
 	accessor.SetAnnotations(annotations)
 	return nil
