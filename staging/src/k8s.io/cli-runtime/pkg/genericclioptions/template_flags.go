@@ -60,26 +60,37 @@ func (f *GoTemplatePrintFlags) AllowedFormats() []string {
 // ToPrinter receives an templateFormat and returns a printer capable of
 // handling --template format printing.
 // Returns false if the specified templateFormat does not match a template format.
+
 func (f *GoTemplatePrintFlags) ToPrinter(templateFormat string) (printers.ResourcePrinter, error) {
+	// 从NewKubeTemplatePrintFlags初始化的GoTemplatePrintFlags的话，这里的f.TemplateArgument不为nil
+	// f.TemplateArgument为nil，或者f.TemplateArgument不为nil但是长度为0，直接返回不支持格式错误
 	if (f.TemplateArgument == nil || len(*f.TemplateArgument) == 0) && len(templateFormat) == 0 {
 		return nil, NoCompatiblePrinterError{Options: f, OutputFormat: &templateFormat}
 	}
 
 	templateValue := ""
 
+	// 如果f.TemplateArgument不为nil，且长度不为0，即没有指定--template="{xxx}"
 	if f.TemplateArgument == nil || len(*f.TemplateArgument) == 0 {
+		// 支持的格式为template=、go-template=、go-template-file=、templatefile=，即--output=template="{xxx}", --output=go-template="{xxx}", --output=go-template-file="{xxx}", --output=templatefile="{xxx}"
 		for format := range templateFormats {
 			format = format + "="
 			if strings.HasPrefix(templateFormat, format) {
+				// templateFormat为{template format}="{templateValue}"，则templateValue为"{templateValue}",即"="后半部分
 				templateValue = templateFormat[len(format):]
+				// "="前半部分
 				templateFormat = format[:len(format)-1]
 				break
 			}
 		}
 	} else {
+		// 命令行指定了--template="{xxx}"
+		// 如果命令行未指定了--output或-o，这里传入templateFormat为"go-template"。在staging\src\k8s.io\cli-runtime\pkg\genericclioptions\print_flags.go里(f *PrintFlags) ToPrinter()处理
 		templateValue = *f.TemplateArgument
 	}
 
+	// 如果templateFormat不在支持的格式里，返回不支持格式错误
+	// 主要针对同时指定了--output="{xxx}"和--template="{xxx}"，但是--output的值不在支持的格式里
 	if _, supportedFormat := templateFormats[templateFormat]; !supportedFormat {
 		return nil, NoCompatiblePrinterError{OutputFormat: &templateFormat, AllowedFormats: f.AllowedFormats()}
 	}

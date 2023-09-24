@@ -120,6 +120,10 @@ func (p *Path) ArrayPath(i int) Path {
 }
 
 // FieldPath appends a field name and creates a new path
+// 返回Path{
+// 	parent: p,
+// 	key:    fmt.Sprintf(".%s", field),
+// }
 func (p *Path) FieldPath(field string) Path {
 	return Path{
 		parent: p,
@@ -173,6 +177,7 @@ func (a *Array) GetName() string {
 // subtypes for each field, as defined in the `Fields` field. Mandatory
 // fields are listed in `RequiredFields`. The key of the object is
 // always of type `string`.
+// kind是key是string，字段是各种类型。其实是struct
 type Kind struct {
 	BaseSchema
 
@@ -220,6 +225,7 @@ func (k *Kind) Keys() []string {
 
 // Map is an object who values must all be of the same `SubType`.
 // The key of the object is always of type `string`.
+// map是key为string，value为相同类型
 type Map struct {
 	BaseSchema
 

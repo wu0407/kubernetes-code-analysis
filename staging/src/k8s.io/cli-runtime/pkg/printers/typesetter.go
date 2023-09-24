@@ -48,6 +48,8 @@ func (p *TypeSetterPrinter) PrintObj(obj runtime.Object, w io.Writer) error {
 		return p.Delegate.PrintObj(obj, w)
 	}
 
+	// obj没有group version kind
+
 	// we were empty coming in, make sure we're empty going out.  This makes the call thread-unsafe
 	defer func() {
 		obj.GetObjectKind().SetGroupVersionKind(schema.GroupVersionKind{})

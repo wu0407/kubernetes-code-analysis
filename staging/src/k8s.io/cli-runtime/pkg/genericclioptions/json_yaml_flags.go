@@ -45,7 +45,7 @@ type JSONYamlPrintFlags struct {
 // Supported Format types can be found in pkg/printers/printers.go
 // 根据outputFormat返回对应得printers.ResourcePrinter
 // "json"为printers.JSONPrinter{}，如果f.showManagedFields为true，则返回printers.OmitManagedFieldsPrinter（包装printers.JSONPrinter{}）
-// "yaml"为printers.YAMLPrinter{}，如果f.showManagedFields为true，则返回printers.OmitManagedFieldsPrinter（包装printers.JSONPrinter{}）
+// "yaml"为printers.YAMLPrinter{}，如果f.showManagedFields为true，则返回printers.OmitManagedFieldsPrinter（包装printers.YAMLPrinter{}）
 func (f *JSONYamlPrintFlags) ToPrinter(outputFormat string) (printers.ResourcePrinter, error) {
 	var printer printers.ResourcePrinter
 

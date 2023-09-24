@@ -26,6 +26,7 @@ var metadataAccessor = meta.NewAccessor()
 
 // GetOriginalConfiguration retrieves the original configuration of the object
 // from the annotation, or nil if no annotation was found.
+// 返回obj的annotation["kubectl.kubernetes.io/last-applied-configuration"]的[]byte
 func GetOriginalConfiguration(obj runtime.Object) ([]byte, error) {
 	annots, err := metadataAccessor.Annotations(obj)
 	if err != nil {

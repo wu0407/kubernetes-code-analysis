@@ -125,6 +125,7 @@ func (j *JSONPathPrinter) PrintObj(obj runtime.Object, w io.Writer) error {
 	// we use reflect.Indirect here in order to obtain the actual value from a pointer.
 	// we need an actual value in order to retrieve the package path for an object.
 	// using reflect.Indirect indiscriminately is valid here, as all runtime.Objects are supposed to be pointers.
+	// 前缀匹配"k8s.io/kubernetes/pkg/apis/"或者包含"/vendor/k8s.io/kubernetes/pkg/apis/"返回true
 	if InternalObjectPreventer.IsForbidden(reflect.Indirect(reflect.ValueOf(obj)).Type().PkgPath()) {
 		return fmt.Errorf(InternalObjectPrinterErr)
 	}
@@ -143,6 +144,7 @@ func (j *JSONPathPrinter) PrintObj(obj runtime.Object, w io.Writer) error {
 		}
 	}
 
+	// 执行jsonpath语法执行器进行输出
 	if err := j.JSONPath.Execute(w, queryObj); err != nil {
 		buf := bytes.NewBuffer(nil)
 		fmt.Fprintf(buf, "Error executing template: %v. Printing more information for debugging the template:\n", err)

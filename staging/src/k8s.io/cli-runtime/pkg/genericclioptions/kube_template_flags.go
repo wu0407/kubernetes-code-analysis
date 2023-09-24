@@ -50,9 +50,11 @@ func (f *KubeTemplatePrintFlags) ToPrinter(outputFormat string) (printers.Resour
 		return nil, NoCompatiblePrinterError{}
 	}
 
+	// 先尝试使用jsonpath来进行解析，outputFormat支持jsonpath、jsonpath-file、jsonpath-as-json（--output=jsonpath="{xxx}", --output=jsonpath-file="{xxx}", --output=jsonpath-as-json="{xxx}"）
 	if p, err := f.JSONPathPrintFlags.ToPrinter(outputFormat); !IsNoCompatiblePrinterError(err) {
 		return p, err
 	}
+	// 如果不是jsonpath支持的格式，再尝试用go-template来进行解析，outputFormat支持go-template、go-template-file（--output=go-template="{xxx}", --output=go-template-file="{xxx}"）
 	return f.GoTemplatePrintFlags.ToPrinter(outputFormat)
 }
 

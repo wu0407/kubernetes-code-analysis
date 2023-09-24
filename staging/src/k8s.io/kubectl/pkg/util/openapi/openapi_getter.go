@@ -78,7 +78,7 @@ func (p *CachedOpenAPIParser) Parse() (Resources, error) {
 			p.err = err
 			return
 		}
-		// 从openapi_v2.Document解析出document包含models字段和resources字段（key为GroupVersionKind，value为modelName）
+		// 从openapi_v2.Document解析出document包含models字段和resources字段（key为GroupVersionKind，value为modelName（类似"io.k8s.api.apps.v1.Deployment")））
 		p.openAPIResources, p.err = NewOpenAPIData(oapi)
 	})
 

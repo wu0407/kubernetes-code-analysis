@@ -97,7 +97,7 @@ func (i *Info) Visit(fn VisitorFunc) error {
 func (i *Info) Get() (err error) {
 	obj, err := NewHelper(i.Client, i.Mapping).Get(i.Namespace, i.Name)
 	if err != nil {
-		// 不存在，且namespace不为"default"也不问为""，则访问/api/v1/namespaces/{i.Namespace}（get namespace）
+		// 不存在，且namespace不为"default"也不为""，则访问/api/v1/namespaces/{i.Namespace}（get namespace）
 		// 因为kubectl apply有可能资源不存在，所以判断namespace是否存在
 		if errors.IsNotFound(err) && len(i.Namespace) > 0 && i.Namespace != metav1.NamespaceDefault && i.Namespace != metav1.NamespaceAll {
 			// 访问/api/v1/namespaces/{i.Namespace}（get namespace）
@@ -198,6 +198,7 @@ func (i *Info) ResourceMapping() *meta.RESTMapping {
 type VisitorList []Visitor
 
 // Visit implements Visitor
+// 增加控制逻辑
 func (l VisitorList) Visit(fn VisitorFunc) error {
 	for i := range l {
 		if err := l[i].Visit(fn); err != nil {
@@ -213,8 +214,25 @@ type EagerVisitorList []Visitor
 
 // Visit implements Visitor, and gathers errors that occur during processing until
 // all sub visitors have been visited.
+// 增加控制逻辑和包装fn（增加错误处理逻辑）
 func (l EagerVisitorList) Visit(fn VisitorFunc) error {
 	errs := []error(nil)
+	// 相当于
+	// wrapFn := func(info *Info, err error) error {
+	// 	if err != nil {
+	// 		errs = append(errs, err)
+	// 		return nil
+	// 	}
+	// 	if err := fn(info, nil); err != nil {
+	// 		errs = append(errs, err)
+	// 	}
+	// 	return nil
+	// }
+	// for i := range l {
+	// 	if err := l[i].Visit(wrapFn); err != nil {
+	// 		errs = append(errs, err)
+	// 	}
+	// }
 	for i := range l {
 		if err := l[i].Visit(func(info *Info, err error) error {
 			if err != nil {
@@ -331,6 +349,7 @@ func NewDecoratedVisitor(v Visitor, fn ...VisitorFunc) Visitor {
 
 // Visit implements Visitor
 // 先执行遍历执行v.decorators，有错误发生就返回，否则最后执行fn
+// 包装fn（增加增加执行fn前，处理Info的函数）
 func (v DecoratedVisitor) Visit(fn VisitorFunc) error {
 	return v.visitor.Visit(func(info *Info, err error) error {
 		if err != nil {
@@ -358,6 +377,7 @@ type ContinueOnErrorVisitor struct {
 // will not prevent the remaining items from being visited. An error
 // returned by the visitor directly may still result in some items
 // not being visited.
+// 单纯包装fn
 func (v ContinueOnErrorVisitor) Visit(fn VisitorFunc) error {
 	errs := []error{}
 	err := v.Visitor.Visit(func(info *Info, err error) error {
@@ -398,6 +418,7 @@ func NewFlattenListVisitor(v Visitor, typer runtime.ObjectTyper, mapper *mapper)
 
 // 如果info.Object是List，则进行解压，解压出非List的[]runtime.Object，使用v.mapper.infoForObject方法依此获得各个runtime.Object的Info，并调用fn
 // 其他情况直接调用fn
+// 单纯包装fn
 func (v FlattenListVisitor) Visit(fn VisitorFunc) error {
 	return v.visitor.Visit(func(info *Info, err error) error {
 		if err != nil {
@@ -417,6 +438,7 @@ func (v FlattenListVisitor) Visit(fn VisitorFunc) error {
 		// 保存需要遍历的runtime.Object
 		itemsToProcess := []runtime.Object{info.Object}
 
+		// 能够解析list里嵌套list
 		for i := 0; i < len(itemsToProcess); i++ {
 			currObj := itemsToProcess[i]
 			if !meta.IsListType(currObj) {
@@ -429,9 +451,11 @@ func (v FlattenListVisitor) Visit(fn VisitorFunc) error {
 			if err != nil {
 				return err
 			}
+			// 如果currItems里元素是runtime.Unknown，则解析obj.Raw到obj（obj是currItems里元素）原地替换
 			if errs := runtime.DecodeList(currItems, v.mapper.decoder); len(errs) > 0 {
 				return utilerrors.NewAggregate(errs)
 			}
+			// 将解析出来的currItems append到itemsToProcess，进行下一个循环解析，以便解析出嵌套list，或不是list则append到items
 			itemsToProcess = append(itemsToProcess, currItems...)
 		}
 
@@ -447,10 +471,12 @@ func (v FlattenListVisitor) Visit(fn VisitorFunc) error {
 				errs = append(errs, err)
 				continue
 			}
+			// info.ResourceVersion不为空，则item.ResourceVersion设置为原来info的ResourceVersion
 			if len(info.ResourceVersion) != 0 {
 				item.ResourceVersion = info.ResourceVersion
 			}
 			// propagate list source to items source
+			// info.Source不为空，则item.Source设为原来info的Source
 			if len(info.Source) != 0 {
 				item.Source = info.Source
 			}
@@ -729,6 +755,8 @@ func NewFilteredVisitor(v Visitor, fn ...FilterFunc) Visitor {
 	return FilteredVisitor{v, fn}
 }
 
+// 先遍历执行v.filters里的所有FilterFunc，再最后执行fn
+// 包装fn
 func (v FilteredVisitor) Visit(fn VisitorFunc) error {
 	return v.visitor.Visit(func(info *Info, err error) error {
 		if err != nil {

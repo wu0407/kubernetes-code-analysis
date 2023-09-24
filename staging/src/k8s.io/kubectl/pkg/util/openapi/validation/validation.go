@@ -84,6 +84,9 @@ func (v *SchemaValidation) validateList(object interface{}) []error {
 	return allErrors
 }
 
+// 从openapi.document里查找gvk对应的proto.Schema，如果没有找到，则返回nil。
+// 基于v的类型，获得对应的validationItem接口的实现vendor\k8s.io\kube-openapi\pkg\util\proto\validation\validation.go
+// 基于各个字段类型的validationItem接口进行验证（类型是否和schema里定义一样）（进行schema.Accept(SchemaVisitor)）
 func (v *SchemaValidation) validateResource(obj interface{}, gvk schema.GroupVersionKind) []error {
 	// 这里的v.resources是openapi.document(在staging\src\k8s.io\kubectl\pkg\util\openapi\openapi.go)
 	// 里的models里查找gvk对应的proto.Schema
@@ -93,6 +96,9 @@ func (v *SchemaValidation) validateResource(obj interface{}, gvk schema.GroupVer
 		return nil
 	}
 
+	// 基于v的类型返回，对应的validationItem接口的实现
+	// 支持类型为bool型、各种整形、各种浮点型、字符串、数组和切片、map
+	// 基于各个字段类型的validationItem接口进行验证（进行schema.Accept(SchemaVisitor)）
 	return validation.ValidateModel(obj, resource, gvk.Kind)
 }
 

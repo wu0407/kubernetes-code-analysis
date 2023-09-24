@@ -26,13 +26,21 @@ import (
 // but with a knowledge of all GroupVersions, calling code can take a very good guess.  If there are only two segments, then
 // `*GroupVersionResource` is nil.
 // `resource.group.com` -> `group=com, version=group, resource=resource` and `group=group.com, resource=resource`
+// arg不包含"."，格式为"resource"，返回nil，GroupResource{Resource: resource}
+// arg包含一个"."，格式为"resource.group"，返回nil，GroupResource{Resource: {resource}, Group: {group}}
+// arg包含2以上个"."，格式为"resource.version.group"，返回&GroupVersionResource{Group: {group}, Version: version, Resource: resource}，GroupResource{Resource: {resource}, Group: {version.group}}
 func ParseResourceArg(arg string) (*GroupVersionResource, GroupResource) {
 	var gvr *GroupVersionResource
+	// 至少包含2个"."，则按照"."进行分隔成3段。
+	// 如果包含2个"."，第一部分为resource，第二部分为version，最后部分为group，即格式为"resource.version.group"
+	// 如果包含大于等于3个"."，第一部分为resource，第二部分为version，剩余部分为group，即格式为"{resource}.{version}.{group.xxxx}"
 	if strings.Count(arg, ".") >= 2 {
 		s := strings.SplitN(arg, ".", 3)
 		gvr = &GroupVersionResource{Group: s[2], Version: s[1], Resource: s[0]}
 	}
 
+	// 如果包含"."，则前半部分为resource，后半部分为group，即格式为"resource.group"
+	// 如果不包含"."，则全部为resource，即格式为"resource"。
 	return gvr, ParseGroupResource(arg)
 }
 
@@ -41,13 +49,21 @@ func ParseResourceArg(arg string) (*GroupVersionResource, GroupResource) {
 // but with a knowledge of all GroupKinds, calling code can take a very good guess. If there are only two segments, then
 // `*GroupVersionResource` is nil.
 // `Kind.group.com` -> `group=com, version=group, kind=Kind` and `group=group.com, kind=Kind`
+// arg不包含"."，格式为"kind"，返回nil，GroupKind{Kind: kind}
+// arg包含一个"."，格式为"kind.group"，返回nil，GroupKind{Kind: {kind}, Group: {group}}
+// arg包含2以上个"."，格式为"kind.version.group"，返回GroupVersionKind{Group: {group}, Version: version, Kind: kind}，GroupKind{Kind: {kind}, Group: {version.group}}
 func ParseKindArg(arg string) (*GroupVersionKind, GroupKind) {
 	var gvk *GroupVersionKind
+	// 至少包含2个"."，则按照"."进行分隔成3段。
+	// 如果包含2个"."，第一部分为kind，第二部分为version，最后部分为group，即格式为"kind.version.group"
+	// 如果包含大于等于3个"."，第一部分为kind，第二部分为version，剩余部分为group，即格式为"{kind}.{version}.{group.xxxx}"
 	if strings.Count(arg, ".") >= 2 {
 		s := strings.SplitN(arg, ".", 3)
 		gvk = &GroupVersionKind{Group: s[2], Version: s[1], Kind: s[0]}
 	}
 
+	// 如果包含"."，则前半部分为kind，后半部分为group，即格式为"kind.group"
+	// 如果不包含"."，则全部为kind，即格式为"kind"
 	return gvk, ParseGroupKind(arg)
 }
 
@@ -73,6 +89,8 @@ func (gr GroupResource) String() string {
 	return gr.Resource + "." + gr.Group
 }
 
+// 如果包含"."，则前半部分为kind，后半部分为group，即格式为"kind.group"
+// 如果不包含"."，则全部为kind，即格式为"kind"
 func ParseGroupKind(gk string) GroupKind {
 	i := strings.Index(gk, ".")
 	if i == -1 {
@@ -84,6 +102,8 @@ func ParseGroupKind(gk string) GroupKind {
 
 // ParseGroupResource turns "resource.group" string into a GroupResource struct.  Empty strings are allowed
 // for each field.
+// 如果包含"."，则前半部分为resource，后半部分为group，即格式为"resource.group"
+// 如果不包含"."，则全部为resource，即格式为"resource"。
 func ParseGroupResource(gr string) GroupResource {
 	if i := strings.Index(gr, "."); i >= 0 {
 		return GroupResource{Group: gr[i+1:], Resource: gr[:i]}

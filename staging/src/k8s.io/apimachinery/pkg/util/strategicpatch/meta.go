@@ -64,6 +64,7 @@ type PatchMetaFromStruct struct {
 }
 
 func NewPatchMetaFromStruct(dataStruct interface{}) (PatchMetaFromStruct, error) {
+	// 返回dataStruct的类型
 	t, err := getTagStructType(dataStruct)
 	return PatchMetaFromStruct{T: t}, err
 }
@@ -71,6 +72,11 @@ func NewPatchMetaFromStruct(dataStruct interface{}) (PatchMetaFromStruct, error)
 var _ LookupPatchMeta = PatchMetaFromStruct{}
 
 func (s PatchMetaFromStruct) LookupPatchMetadataForStruct(key string) (LookupPatchMeta, PatchMeta, error) {
+	// t的类型或底层类型不是struct，返回错误
+	// 从t类型的对应的结构体里查找json tag名字为jsonField字段
+	// 获取字段tag里面的"patchStrategy"的值，并按逗号进行分隔
+	// 获取字段tag里面"patchMergeKey"的值
+	// 返回字段的类型reflect.Type，"patchStrategy"的分隔后的值，"patchMergeKey"的值
 	fieldType, fieldPatchStrategies, fieldPatchMergeKey, err := forkedjson.LookupPatchMetadataForStruct(s.T, key)
 	if err != nil {
 		return nil, PatchMeta{}, err
@@ -84,6 +90,11 @@ func (s PatchMetaFromStruct) LookupPatchMetadataForStruct(key string) (LookupPat
 }
 
 func (s PatchMetaFromStruct) LookupPatchMetadataForSlice(key string) (LookupPatchMeta, PatchMeta, error) {
+	// t的类型或底层类型不是struct，返回错误
+	// 从t类型的对应的结构体里查找json tag名字为jsonField字段
+	// 获取字段tag里面的"patchStrategy"的值，并按逗号进行分隔
+	// 获取字段tag里面"patchMergeKey"的值
+	// 返回字段的类型reflect.Type，"patchStrategy"的分隔后的值，"patchMergeKey"的值
 	subschema, patchMeta, err := s.LookupPatchMetadataForStruct(key)
 	if err != nil {
 		return nil, PatchMeta{}, err
@@ -96,6 +107,7 @@ func (s PatchMetaFromStruct) LookupPatchMetadataForSlice(key string) (LookupPatc
 	// If t is an array or a slice, get the element type.
 	// If element is still an array or a slice, return an error.
 	// Otherwise, return element type.
+	// 如果t类型是是slice或array，且元素类型是slice或array，返回错误
 	case reflect.Array, reflect.Slice:
 		elemType = t.Elem()
 		if elemType.Kind() == reflect.Array || elemType.Kind() == reflect.Slice {
@@ -105,6 +117,7 @@ func (s PatchMetaFromStruct) LookupPatchMetadataForSlice(key string) (LookupPatc
 	// If the underlying element is neither an array nor a slice, the pointer is pointing to a slice,
 	// e.g. https://github.com/kubernetes/kubernetes/blob/bc22e206c79282487ea0bf5696d5ccec7e839a76/staging/src/k8s.io/apimachinery/pkg/util/strategicpatch/patch_test.go#L2782-L2822
 	// If the underlying element is either an array or a slice, return its element type.
+	// t类型是指针，如果底层类型不是slice或array，则t为底层类型。否则为slice或array的元素类型。
 	case reflect.Ptr:
 		t = t.Elem()
 		if t.Kind() == reflect.Array || t.Kind() == reflect.Slice {
@@ -122,6 +135,7 @@ func (s PatchMetaFromStruct) Name() string {
 	return s.T.Kind().String()
 }
 
+// 返回dataStruct的类型
 func getTagStructType(dataStruct interface{}) (reflect.Type, error) {
 	if dataStruct == nil {
 		return nil, mergepatch.ErrBadArgKind(struct{}{}, nil)
@@ -158,13 +172,27 @@ func NewPatchMetaFromOpenAPI(s openapi.Schema) PatchMetaFromOpenAPI {
 
 var _ LookupPatchMeta = PatchMetaFromOpenAPI{}
 
+// 从s.schema中查找key字段对应的openapi.Schema，设置为返回的第一个字段(PatchMetaFromOpenAPI{Schema: {key字段对应的openapi.Schema}})
+// 获得extensions里的"x-kubernetes-patch-merge-key"的值和extensions里的"x-kubernetes-patch-strategy"，设置返回的第二个字段PatchMeta的patchMergeKey和patchStrategies字段
 func (s PatchMetaFromOpenAPI) LookupPatchMetadataForStruct(key string) (LookupPatchMeta, PatchMeta, error) {
 	if s.Schema == nil {
 		return nil, PatchMeta{}, nil
 	}
+	// 生成&kindItem{
+	// 	key:  key,
+	// 	path: s.Schema.GetPath(),
+	// }
 	kindItem := NewKindItem(key, s.Schema.GetPath())
+	// 根据s.Schema类型，执行不同的方法
+	// s.Schema类型是proto.*Primitive，则调用kindItem.VisitPrimitive(s.Schema)（这里不支持，设置kindItem.err错误）
+	// s.Schema类型是proto.*Arbitrary，则调用kindItem.VisitArbitrary(s.Schema), 这里不支持，kindItem并没有实现（bug）
+	// s.Schema类型是proto.*Map，则调用kindItem.VisitMap(s.Schema)（这里不支持，设置kindItem.err错误）
+	// s.Schema类型是proto.*Kind，则调用kindItem.VisitKind(s.Schema)
+	// s.Schema类型是proto.*Array，则调用kindItem.VisitArray(s.Schema)（这里不支持，设置kindItem.err错误）
+	// s.Schema类型是proto.*Reference，则调用kindItem.VisitReference(s.Schema)
 	s.Schema.Accept(kindItem)
 
+	// 返回kindItem.err字段
 	err := kindItem.Error()
 	if err != nil {
 		return nil, PatchMeta{}, err
@@ -173,11 +201,33 @@ func (s PatchMetaFromOpenAPI) LookupPatchMetadataForStruct(key string) (LookupPa
 		kindItem.patchmeta, nil
 }
 
+// 返回slice的item类型Schema，组装成第一个返回值PatchMetaFromOpenAPI{Schema: sliceItem.subschema}
+// s.Schema类型是proto.*Kind，则调用sliceItem.VisitKind(s.Schema)
+//     从s.Schema中查找sliceItem.key字段对应Schema
+//     从对应Schema中的extensions获得"x-kubernetes-patch-merge-key"的值和extensions里的"x-kubernetes-patch-strategy"，组装成第二个返回值PatchMeta
+// 否则，第二个参数为PatchMeta{}（空的PatchMeta）
 func (s PatchMetaFromOpenAPI) LookupPatchMetadataForSlice(key string) (LookupPatchMeta, PatchMeta, error) {
 	if s.Schema == nil {
 		return nil, PatchMeta{}, nil
 	}
+	// 返回&sliceItem{
+	// 	key:  key,
+	// 	path: s.Schema.GetPath(),
+	// }
 	sliceItem := NewSliceItem(key, s.Schema.GetPath())
+	// 根据s.Schema类型，执行不同的方法
+	// s.Schema类型是proto.*Primitive，则调用sliceItem.VisitPrimitive(s.Schema)（这里不支持，设置sliceItem.err错误）
+	// s.Schema类型是proto.*Arbitrary，则调用sliceItem.VisitArbitrary(s.Schema), 这里不支持，sliceItem并没有实现（bug）
+	// s.Schema类型是proto.*Map，则调用sliceItem.VisitMap(s.Schema)（这里不支持，设置sliceItem.err错误）
+	// s.Schema类型是proto.*Kind，则调用sliceItem.VisitKind(s.Schema)
+	//     从s.Schema中查找sliceItem.key字段对应Schema
+	//     从对应Schema中的extensions获得"x-kubernetes-patch-merge-key"的值和extensions里的"x-kubernetes-patch-strategy"，组装成PatchMeta，并设置为sliceItem.patchmeta
+	//     设置sliceItem.hasVisitKind为true（标记后面调用Visitxxx是通过VisitKind调用过来的）
+	//     根据sliceItem.key字段的Schema，调用(item *sliceItem) Visitxxx
+	// s.Schema类型是proto.*Array，则调用sliceItem.VisitArray(s.Schema)（直接调用不支持，设置sliceItem.err错误。通过sliceItem.VisitKind调用，设置sliceItem.subschema为s.schema.SubType）
+	// s.Schema类型是proto.*Reference，则调用sliceItem.VisitReference(s.Schema)
+	//     直接调用的情况，获得s.Schema.reference（引用的schema）对应的Schema。根据引用的Schema，调用(item *sliceItem) Visitxxx
+	//     通过访问(item *sliceItem) VisitKind调用过来，则设置sliceItem.subschema为schema.reference（引用的schema）
 	s.Schema.Accept(sliceItem)
 
 	err := sliceItem.Error()

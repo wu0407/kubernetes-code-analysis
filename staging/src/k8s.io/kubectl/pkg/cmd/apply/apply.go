@@ -255,6 +255,14 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 		//   server端dry-run，设置flags.printFlags.NamePrintFlags.Operation为"%s (server dry run)"与f.NamePrintFlags.Operation渲染出来的字符串，返回flags.printFlags
 		// 不启用，则直接返回flags.printFlags
 		cmdutil.PrintFlagsWithDryRunStrategy(flags.PrintFlags, dryRunStrategy)
+		// 根据--output or --template，返回最终的实现了ResourcePrinter接口的对象TypeSetterPrinter{delegate: p, Typer: scheme}
+		// p可能是JSONPathPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\jsonpath.go
+		// p可能是GoTemplatePrinter在staging\src\k8s.io\cli-runtime\pkg\printers\gotemplate.go
+		// p可能是NamePrinter在staging\src\k8s.io\cli-runtime\pkg\printers\name.go
+		// p可能是JSONPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\json.go
+		// p可能是YAMLPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\yaml.go
+		// p可能是OmitManagedFieldsPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\omitmanagedfields.go
+		// 其中TypeSetterPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\printers.go
 		return flags.PrintFlags.ToPrinter()
 	}
 
@@ -279,9 +287,9 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 	}
 
 	// 访问"/openapi/v2"，获得openapi_v2.Document
-	// 从openapi_v2.Document解析出document包含models字段和resources（key为GroupVersionKind，value为modelName）
+	// 从openapi_v2.Document解析出document包含models字段（apiserver中所有类型的定义）和resources（key为GroupVersionKind，value为modelName）
 	openAPISchema, _ := flags.Factory.OpenAPISchema()
-	// 返回validation.ConjunctiveSchema，包含验证各个字段的openapivalidation.SchemaValidation和validation.NoDoubleKeySchema（检查.metadata.labels和metadata.annotations是否有重复的key）
+	// 返回validation.ConjunctiveSchema，包含验证各个字段的openapivalidation.SchemaValidation和validation.NoDoubleKeySchema（检查metadata.labels和metadata.annotations是否有重复的key）
 	validator, err := flags.Factory.Validator(cmdutil.GetFlagBool(cmd, "validate"))
 	if err != nil {
 		return nil, err
@@ -299,6 +307,7 @@ func (flags *ApplyFlags) ToOptions(cmd *cobra.Command, baseName string, args []s
 		return nil, err
 	}
 
+	// 命令行指定了--prune
 	if flags.Prune {
 		// gvks支持的格式为"{group}/{version}/{kind}"，并从apiserver中（meta.RESTMapper）进行获取（验证）相关的信息，返回[]pruneResource（group、version、kind、scope）
 		flags.PruneResources, err = parsePruneResources(mapper, flags.PruneWhitelist)
@@ -403,7 +412,7 @@ func isIncompatibleServerError(err error) bool {
 // the ApplyOptions is filled in and valid.
 func (o *ApplyOptions) GetObjects() ([]*resource.Info, error) {
 	var err error = nil
-	// 从apiserver中获取资源
+	// o.objectsCached为false（说明还未从文件读取对象），则从文件或url中读取对象
 	if !o.objectsCached {
 		r := o.Builder.
 			// 添加o.Builder.objectTyper（解析unstructured的group version kind和是否是认识的）和o.Builder.mapper
@@ -426,7 +435,7 @@ func (o *ApplyOptions) GetObjects() ([]*resource.Info, error) {
 			Flatten().
 			// 先执行b.visitorResult()，生成Result（其中visitor包装好多层）
 			// 然后再进行一系列的包装visitor
-			// visitors执行顺序，是从上到下
+			// visitors执行顺序，是从上到下（fn执行顺序是从下往上）
 			Do()
 		// 执行r.visitor.Visit，层层的visitor执行后，筛选出的info集合，设置为r.info
 		// 返回r.info
@@ -462,7 +471,7 @@ func (o *ApplyOptions) Run() error {
 	// already been stored by calling "SetObjects()" in the pre-processor.
 	errs := []error{}
 	// 使用visitor机制获取[]*resource.Info
-	// 从apiserver获取资源
+	// 从文件中解析出对象，并转成[]*resource.Info
 	infos, err := o.GetObjects()
 	if err != nil {
 		errs = append(errs, err)
@@ -472,6 +481,7 @@ func (o *ApplyOptions) Run() error {
 	}
 	// Iterate through all objects, applying each one.
 	for _, info := range infos {
+		// 执行真正的apply动作（进行patch或create请求）
 		if err := o.applyOneObject(info); err != nil {
 			errs = append(errs, err)
 		}
@@ -487,6 +497,10 @@ func (o *ApplyOptions) Run() error {
 
 	if o.PostProcessorFn != nil {
 		klog.V(4).Infof("Running apply post-processor function")
+		// 如果设置了--output或-o命令行，且参数值不为"name"，则返回nil，不做任何事情
+		// 否则，执行apply对象（apiserver返回）的打印
+		// 命令行指定了--prune且--dry-run不为client，则执行删除所有apply操作资源命名空间下的、不在文件里（非当前apply操作）的对象、且为kubectl apply创建
+		// 打印删除对象
 		if err := o.PostProcessorFn(); err != nil {
 			return err
 		}
@@ -573,14 +587,21 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 			return err
 		}
 
+		// 忽略所有错误
+		// 更新info.Name为obj的name，更新info.Namespace为obj的namespace
+		// 更新info.ResourceVersion为obj的ResourceVersion
+		// 更新info.Object为obj
 		info.Refresh(obj, true)
 
+		// 如果object被删除，则打印出"Warning: Detected changes to resource %[1]s which is currently being deleted.\n"
 		WarnIfDeleting(info.Object, o.ErrOut)
 
+		// 将info.Object的uid添加到o.VisitedUids
 		if err := o.MarkObjectVisited(info); err != nil {
 			return err
 		}
 
+		// 设置了--output或-o命令行，且参数值不为"name"，则返回true
 		if o.shouldPrintObject() {
 			return nil
 		}
@@ -590,6 +611,8 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 			return err
 		}
 
+		// 默认打印出
+		// {resource}.{group}/{name} serverside-applied
 		if err = printer.PrintObj(info.Object, o.Out); err != nil {
 			return err
 		}
@@ -602,6 +625,7 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 	// as an annotation in the modified configuration, so that it will appear
 	// in the patch sent to the server.
 	// 返回更新annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj的encode byte，annotation["kubectl.kubernetes.io/last-applied-configuration"]为移除了annotation["kubectl.kubernetes.io/last-applied-configuration"]的obj
+	// 这里是apply -f xxx.yaml时，xxx.yaml中的obj的annotation["kubectl.kubernetes.io/last-applied-configuration"]为xxx.yaml中的obj的encode byte，（文件中或http的内容）
 	modified, err := util.GetModifiedConfiguration(info.Object, true, unstructured.UnstructuredJSONScheme)
 	if err != nil {
 		return cmdutil.AddSourceToErr(fmt.Sprintf("retrieving modified configuration from:\n%s\nfor:", info.String()), info.Source, err)
@@ -647,29 +671,44 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 			return err
 		}
 
-		// 设置了--output或-o命令行参数为"name"，则返回true
+		// 设置了--output或-o命令行，且参数值不为"name"，则返回true
 		if o.shouldPrintObject() {
 			return nil
 		}
 
 		// flag ToOptions
+		// 根据--output or --template，返回最终的实现了ResourcePrinter接口的对象TypeSetterPrinter{delegate: p, Typer: scheme}
+		// p可能是JSONPathPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\jsonpath.go
+		// p可能是GoTemplatePrinter在staging\src\k8s.io\cli-runtime\pkg\printers\gotemplate.go
+		// p可能是NamePrinter在staging\src\k8s.io\cli-runtime\pkg\printers\name.go
+		// p可能是JSONPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\json.go
+		// p可能是YAMLPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\yaml.go
+		// p可能是OmitManagedFieldsPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\omitmanagedfields.go
+		// 其中TypeSetterPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\printers.go
 		printer, err := o.ToPrinter("created")
 		if err != nil {
 			return err
 		}
+		// 默认打印出
+		// {resource}.{group}/{name} created
 		if err = printer.PrintObj(info.Object, o.Out); err != nil {
 			return err
 		}
 		return nil
 	}
 
+	// info.Object已经在apiserver中
+
+	// 将info.Object的uid添加到o.VisitedUids
 	if err := o.MarkObjectVisited(info); err != nil {
 		return err
 	}
 
+	// --dry-run=server或--dry-run=none
 	if o.DryRunStrategy != cmdutil.DryRunClient {
 		metadata, _ := meta.Accessor(info.Object)
 		annotationMap := metadata.GetAnnotations()
+		// 如果没有annotation["kubectl.kubernetes.io/last-applied-configuration"]，则打印警告
 		if _, ok := annotationMap[corev1.LastAppliedConfigAnnotation]; !ok {
 			fmt.Fprintf(o.ErrOut, warningNoLastAppliedConfigAnnotation, info.ObjectName(), corev1.LastAppliedConfigAnnotation, o.cmdBaseName)
 		}
@@ -678,20 +717,39 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 		if err != nil {
 			return err
 		}
+		// info.Object是apiserver中的（annotation["kubectl.kubernetes.io/last-applied-configuration"]是老的）。modified是文件中内容，annotation["kubectl.kubernetes.io/last-applied-configuration"]是新的（移除了annotation["kubectl.kubernetes.io/last-applied-configuration"]的文件内容）
+		// crd资源和aggregate apiserver资源，使用json merge patch
+		// 内置资源使用strategic merge patch
+		// 移除的字段（值为null），只看以前文件和当文件内容的patch
+		// 增加和更新字段，只看apiserver和当前的文件内容的patch（明确字段值设置为nil，让服务器端移除字段）
+		// crd资源和aggregate apiservewr资源，同时会判断是否满足preconditions，即不能对"apiVersion"、"kind"、"metadata.name"进行修改
+		// 如果存在openapi接口（"/openapi/v2"），内置资源会使用进行strategic merge patch（使用openapi信息查找merge path策略），否则使用结构体里字段的json tag信息获取字段，并从tag获取"patchStrategy"和"patchMergeKey"值，查找merge path策略，进行strategic merge patch
+		// 进行patch，如果成功直接返回。如果遇到冲突错误，则进行重试，重试次数为p.Retries（如果为0，则为5）
+		// 重试次数用完后，还是冲突错误或IsInvalid错误，且命令行设置了--force，则进行删除然后创建
+		// 先执行删除，然后再执行创建modified，如果执行modified创建失败，则创建original
+		// 返回modified和创建完后返回的资源
 		patchBytes, patchedObject, err := patcher.Patch(info.Object, modified, info.Source, info.Namespace, info.Name, o.ErrOut)
 		if err != nil {
 			return cmdutil.AddSourceToErr(fmt.Sprintf("applying patch:\n%s\nto:\n%v\nfor:", patchBytes, info), info.Source, err)
 		}
 
+		// ignoreError为true，则忽略所有错误
+		// 更新info.Name为obj的name，更新info.Namespace为obj的namespace
+		// 更新info.ResourceVersion为obj的ResourceVersion
+		// 更新info.Object为obj
 		info.Refresh(patchedObject, true)
 
+		// 如果object被删除，则打印出"Warning: Detected changes to resource %[1]s which is currently being deleted.\n"
 		WarnIfDeleting(info.Object, o.ErrOut)
 
+		// patch为空，且没有设置--output或-o命令行，或设置了--output或-o命令行且参数值为"name"
 		if string(patchBytes) == "{}" && !o.shouldPrintObject() {
 			printer, err := o.ToPrinter("unchanged")
 			if err != nil {
 				return err
 			}
+			// 默认打印出
+			// {resource}.{group}/{name} unchanged
 			if err = printer.PrintObj(info.Object, o.Out); err != nil {
 				return err
 			}
@@ -699,6 +757,7 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 		}
 	}
 
+	// 设置了--output或-o命令行，且参数值不为"name"，则返回true
 	if o.shouldPrintObject() {
 		return nil
 	}
@@ -707,6 +766,8 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 	if err != nil {
 		return err
 	}
+	// 默认打印出
+	// {resource}.{group}/{name} configured
 	if err = printer.PrintObj(info.Object, o.Out); err != nil {
 		return err
 	}
@@ -714,7 +775,7 @@ See https://kubernetes.io/docs/reference/using-api/server-side-apply/#conflicts`
 	return nil
 }
 
-// 设置了--output或-o命令行参数包括值为"name"，则返回true
+// 设置了--output或-o命令行，且参数值不为"name"，则返回true
 func (o *ApplyOptions) shouldPrintObject() bool {
 	// Print object only if output format other than "name" is specified
 	shouldPrint := false
@@ -726,25 +787,39 @@ func (o *ApplyOptions) shouldPrintObject() bool {
 	return shouldPrint
 }
 
+// 如果设置了--output或-o命令行，且参数值不为"name"，则返回nil，不做任何事情
+// 获得apiserver返回的[]*resource.Info（可能create或patch）
+// 如果超过一个对象，将所有info.Object组装成corev1.List，进行打印
+// 如果只有一个对象，直接打印
 func (o *ApplyOptions) printObjects() error {
 
-	// 设置了--output或-o命令行参数包括值为"name""，则返回true
+	// 设置了--output或-o命令行，且参数值不为"name"，则返回true
 	if !o.shouldPrintObject() {
 		return nil
 	}
 
+	// 由于o.objectsCached为true，所以返回的[]*resource.Info是从apiserver返回的（可能create或patch）
 	infos, err := o.GetObjects()
 	if err != nil {
 		return err
 	}
 
 	if len(infos) > 0 {
+		// 根据--output or --template，返回最终的实现了ResourcePrinter接口的对象TypeSetterPrinter{delegate: p, Typer: scheme}
+		// p可能是JSONPathPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\jsonpath.go
+		// p可能是GoTemplatePrinter在staging\src\k8s.io\cli-runtime\pkg\printers\gotemplate.go
+		// p可能是NamePrinter在staging\src\k8s.io\cli-runtime\pkg\printers\name.go
+		// p可能是JSONPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\json.go
+		// p可能是YAMLPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\yaml.go
+		// p可能是OmitManagedFieldsPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\omitmanagedfields.go
+		// 其中TypeSetterPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\printers.go
 		printer, err := o.ToPrinter("")
 		if err != nil {
 			return err
 		}
 
 		objToPrint := infos[0].Object
+		// 超过一个对象，将所有info.Object组装成corev1.List
 		if len(infos) > 1 {
 			objs := []runtime.Object{}
 			for _, info := range infos {
@@ -763,6 +838,7 @@ func (o *ApplyOptions) printObjects() error {
 
 			objToPrint = list
 		}
+		// 打印对象
 		if err := printer.PrintObj(objToPrint, o.Out); err != nil {
 			return err
 		}
@@ -798,15 +874,30 @@ func (o *ApplyOptions) MarkObjectVisited(info *resource.Info) error {
 // objects as a list (if configured for that), and prunes the
 // objects not applied. The returned function is the standard
 // apply post processor.
+// 如果设置了--output或-o命令行，且参数值不为"name"，则返回nil，不做任何事情
+// 否则，执行apply对象（apiserver返回）的打印
+// 命令行指定了--prune且--dry-run不为client，则执行删除所有apply操作资源命名空间下的、不在文件里（非当前apply操作）的对象、且为kubectl apply创建
 func (o *ApplyOptions) PrintAndPrunePostProcessor() func() error {
 
 	return func() error {
+		// 如果设置了--output或-o命令行，且参数值不为"name"，则返回nil，不做任何事情
+		// 获得apiserver返回的[]*resource.Info（可能create或patch）
+		// 如果超过一个对象，将所有info.Object组装成corev1.List，进行打印
+		// 如果只有一个对象，直接打印
 		if err := o.printObjects(); err != nil {
 			return err
 		}
 
+		// 命令行指定了--prune
 		if o.Prune {
 			p := newPruner(o)
+			// 默认的o.PruneResources（--prune-whitelist）为空
+			// 如果pruneResources为空，则pruneResources使用默认的资源类型列表（ConfigMap、Endpoints、Namespace、PersistentVolumeClaim、PersistentVolume、Pod、ReplicationController、Secret、Service、Job、CronJob、Ingress、DaemonSet、Deployment、ReplicaSet、StatefulSet）
+			// 遍历需要apply的namespaced资源（文件中的命名空间下的对象）的所有命名空间和命名空间下的pruneResources类型的所有资源
+			// 资源不存在annotations["kubectl.kubernetes.io/last-applied-configuration"]，说明不是kubectl apply创建的资源，则跳过
+			// 如果资源uid是kubectl apply操作的资源的uid，则跳过
+			// 如果--dry-run不为client，则执行删除这个资源。否则，不做删除
+			// 打印出删除资源（默认输出{resource}.{group}/{name} pruned）
 			return p.pruneAll(o)
 		}
 
@@ -849,6 +940,7 @@ func GetApplyFieldManagerFlag(cmd *cobra.Command, serverSide bool) string {
 }
 
 // WarnIfDeleting prints a warning if a resource is being deleted
+// 如果object被删除，则打印出"Warning: Detected changes to resource %[1]s which is currently being deleted.\n"
 func WarnIfDeleting(obj runtime.Object, stderr io.Writer) {
 	metadata, _ := meta.Accessor(obj)
 	if metadata != nil && metadata.GetDeletionTimestamp() != nil {

@@ -106,7 +106,7 @@ func (f *JSONPathPrintFlags) ToPrinter(templateFormat string) (printers.Resource
 		templateValue = string(data)
 	}
 
-	// 
+	// 创建JSONPathPrinter
 	p, err := printers.NewJSONPathPrinter(templateValue)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing jsonpath %s, %v", templateValue, err)
@@ -114,11 +114,14 @@ func (f *JSONPathPrintFlags) ToPrinter(templateFormat string) (printers.Resource
 
 	allowMissingKeys := true
 	if f.AllowMissingKeys != nil {
+		// 如果为--allow-missing-template-keys=false，则设置为false
 		allowMissingKeys = *f.AllowMissingKeys
 	}
 
+	// 设置p.allowMissingKeys为allowMissingKeys
 	p.AllowMissingKeys(allowMissingKeys)
 
+	// 如果为--output=jsonpath-as-json，则设置p.outputJSON为true
 	if templateFormat == "jsonpath-as-json" {
 		p.EnableJSONOutput(true)
 	}

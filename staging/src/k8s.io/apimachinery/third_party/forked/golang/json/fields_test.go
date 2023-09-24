@@ -10,8 +10,12 @@ func TestLookupPtrToStruct(t *testing.T) {
 		Key   string
 		Value string
 	}
+	type Anonymous struct {
+		Key string
+	}
 	type Outer struct {
 		Inner []Elem `json:"inner" patchStrategy:"merge" patchMergeKey:"key"`
+		Anonymous
 	}
 	outer := &Outer{}
 	elemType, patchStrategies, patchMergeKey, err := LookupPatchMetadataForStruct(reflect.TypeOf(outer), "inner")

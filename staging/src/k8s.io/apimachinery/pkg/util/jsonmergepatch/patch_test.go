@@ -22,7 +22,7 @@ import (
 	"testing"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/evanphx/json-patch"
+	jsonpatch "github.com/evanphx/json-patch"
 	"k8s.io/apimachinery/pkg/util/json"
 	"sigs.k8s.io/yaml"
 )
@@ -671,11 +671,31 @@ func TestCreateThreeWayJSONMergePatch(t *testing.T) {
 func testThreeWayPatch(t *testing.T, c JSONMergePatchTestCase) {
 	original, modified, current, expected, result := threeWayTestCaseToJSONOrFail(t, c)
 	actual, err := CreateThreeWayJSONMergePatch(original, modified, current)
+	t.Logf("original %s, modified %s, current %s, expected %s, result %s, merger path %s\n", original, modified, current, expected, result, actual)
 	if err != nil {
 		t.Fatalf("error: %s", err)
 	}
 	testPatchCreation(t, expected, actual, c.Description)
 	testPatchApplication(t, current, actual, result, c.Description)
+}
+
+func TestCreateMergePatchDeleteKey(t *testing.T) {
+	doc := `{ "title": "hello", "nested": {"one": 1, "two": 2} }`
+	pat := `{ "title": "hello", "nested": {"one": 1, "three": null}}`
+
+	exp := `{"nested":{"three":null,"two":null}}`
+
+	res, err := jsonpatch.CreateMergePatch([]byte(doc), []byte(pat))
+
+	if err != nil {
+		t.Errorf("Unexpected error: %s, %s", err, string(res))
+	}
+
+	// We cannot use "compareJSON", since Equals does not report a difference if the value is null
+  t.Logf("exp is %s, res is %s", exp, string(res))
+	if exp != string(res) {
+		t.Fatalf("Key was not removed")
+	}
 }
 
 func testPatchCreation(t *testing.T, expected, actual []byte, description string) {

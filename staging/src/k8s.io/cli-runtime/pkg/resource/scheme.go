@@ -35,6 +35,9 @@ import (
 // Deprecated only used by test code and its wrong
 type dynamicCodec struct{}
 
+// 将obj decode为unstructured，获得unstructured的obj和groupVersionKind
+// 如果obj的groupVersionKind为GroupVersionKind{Group: "", Version: "v1", Kind: "status"}或GroupVersionKind{Group: "meta.k8s.io", Version: "v1", Kind: "status"}，则将obj进行json.Unmarshal为metav1.Status
+// 返回obj和groupVersionKind
 func (dynamicCodec) Decode(data []byte, gvk *schema.GroupVersionKind, obj runtime.Object) (runtime.Object, *schema.GroupVersionKind, error) {
 	obj, gvk, err := unstructured.UnstructuredJSONScheme.Decode(data, gvk, obj)
 	if err != nil {

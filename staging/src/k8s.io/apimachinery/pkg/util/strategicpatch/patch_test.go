@@ -24,13 +24,12 @@ import (
 	"testing"
 
 	"github.com/davecgh/go-spew/spew"
-	"sigs.k8s.io/yaml"
-
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/json"
 	"k8s.io/apimachinery/pkg/util/mergepatch"
 	"k8s.io/apimachinery/pkg/util/sets"
 	sptest "k8s.io/apimachinery/pkg/util/strategicpatch/testing"
+	"sigs.k8s.io/yaml"
 )
 
 var (
@@ -6074,6 +6073,109 @@ mergeItemPtr:
 	},
 }
 
+var testCase = []StrategicMergePatchRawTestCase{
+	{
+		Description: "merge lists of scalars",
+		StrategicMergePatchRawTestCaseData: StrategicMergePatchRawTestCaseData{
+			Original: []byte(`
+mergingIntList:
+- 1
+- 2
+`),
+			TwoWay: []byte(`
+$setElementOrder/mergingIntList:
+- 1
+- 2
+- 3
+mergingIntList:
+- 3
+`),
+			Modified: []byte(`
+mergingIntList:
+- 1
+- 2
+- 3
+`),
+			Current: []byte(`
+mergingIntList:
+- 1
+- 2
+- 4
+`),
+			ThreeWay: []byte(`
+$setElementOrder/mergingIntList:
+- 1
+- 2
+- 3
+mergingIntList:
+- 3
+`),
+			Result: []byte(`
+mergingIntList:
+- 1
+- 2
+- 3
+- 4
+`),
+		},
+	},
+	{
+		Description: "merge lists of proposals",
+		StrategicMergePatchRawTestCaseData: StrategicMergePatchRawTestCaseData{
+			Original: []byte(`
+mergingIntList:
+- B
+- A
+`),
+			Modified: []byte(`
+mergingIntList:
+- A
+- B
+`),
+			Current: []byte(`
+mergingIntList:
+- C
+- B
+- D
+- A
+- E
+`),
+			ThreeWay: []byte(`
+$setElementOrder/mergingIntList:
+- A
+- B
+mergingIntList:
+- A
+- B
+  `),
+			Result: []byte(`
+mergingIntList:
+- C
+- D
+- E
+- A
+- B
+  `),
+		},
+	},
+}
+
+func TestRetainOrder(t *testing.T) {
+	mergeItemOpenapiSchema := PatchMetaFromOpenAPI{
+		Schema: sptest.GetSchemaOrDie(&fakeMergeItemSchema, "mergeItem"),
+	}
+	schemas := []LookupPatchMeta{
+		mergeItemStructSchema,
+		mergeItemOpenapiSchema,
+	}
+
+	for _, schema := range schemas {
+		for _, c := range testCase {
+			testThreeWayPatchForRawTestCase(t, c, schema)
+		}
+	}
+}
+
 func TestStrategicMergePatch(t *testing.T) {
 	testStrategicMergePatchWithCustomArgumentsUsingStruct(t, "bad struct",
 		"{}", "{}", []byte("<THIS IS NOT A STRUCT>"), mergepatch.ErrBadArgKind(struct{}{}, []byte{}))
@@ -6809,5 +6911,247 @@ func TestUnknownField(t *testing.T) {
 				}
 			}()
 		}
+	}
+}
+
+func Test_mergePatchIntoOriginal(t *testing.T) {
+	mergeItemOpenapiSchema := PatchMetaFromOpenAPI{
+		Schema: sptest.GetSchemaOrDie(&fakeMergeItemSchema, "mergeItem"),
+	}
+	type args struct {
+		original     map[string]interface{}
+		patch        map[string]interface{}
+		schema       LookupPatchMeta
+		mergeOptions MergeOptions
+	}
+	tests := []struct {
+		name    string
+		args    args
+		wantErr bool
+	}{
+		// TODO: Add test cases.
+		{
+			name: "mergeItem",
+			args: args{
+				original: map[string]interface{}{
+					"mergingIntList": []interface{}{
+						"C",
+						"B",
+						"D",
+						"A",
+						"E",
+					},
+				},
+				patch: map[string]interface{}{
+					"mergingIntList": []interface{}{
+						"A",
+						"B",
+					},
+					"$setElementOrder/mergingIntList": []interface{}{
+						"A",
+						"B",
+					},
+				},
+				schema: mergeItemOpenapiSchema,
+				mergeOptions: MergeOptions{
+					MergeParallelList:    true,
+					IgnoreUnmatchedNulls: true,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "only order change",
+			args: args{
+				original: map[string]interface{}{
+					"mergingIntList": []interface{}{
+						"B",
+						"A",
+					},
+				},
+				patch: map[string]interface{}{
+					"$setElementOrder/mergingIntList": []interface{}{
+						"A",
+						"B",
+					},
+				},
+				schema: mergeItemOpenapiSchema,
+				mergeOptions: MergeOptions{
+					MergeParallelList:    true,
+					IgnoreUnmatchedNulls: true,
+				},
+			},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := mergePatchIntoOriginal(tt.args.original, tt.args.patch, tt.args.schema, tt.args.mergeOptions); (err != nil) != tt.wantErr {
+				t.Errorf("mergePatchIntoOriginal() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+var daemonsetsCase = []StrategicMergePatchRawTestCase{
+	{
+		Description: "merge daemonsets",
+		StrategicMergePatchRawTestCaseData: StrategicMergePatchRawTestCaseData{
+			Original: []byte(`
+      spec:
+        template:
+          metadata:
+`),
+			Modified: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              a: b
+`),
+			Current: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "2022-07-26T11:44:32+08:00"
+`),
+			ThreeWay: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              a: b
+`),
+			Result: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "2022-07-26T11:44:32+08:00"
+              a: b
+`),
+		},
+	},
+	{
+		Description: "merge daemonsets type change has conflict",
+		StrategicMergePatchRawTestCaseData: StrategicMergePatchRawTestCaseData{
+			Original: []byte(`
+      spec:
+        template:
+          metadata:
+`),
+			Modified: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: null
+`),
+			Current: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "2022-07-26T11:44:32+08:00"
+`),
+			ThreeWay: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: null
+`),
+			Result: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations: {}
+`),
+		},
+	},
+	{
+		Description: "remove spec annotation",
+		StrategicMergePatchRawTestCaseData: StrategicMergePatchRawTestCaseData{
+			Original: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "2022-07-26T11:44:32+08:00"
+`),
+			Modified: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations: null
+`),
+			Current: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              kubectl.kubernetes.io/restartedAt: "2022-07-26T11:44:32+08:00"
+`),
+			ThreeWay: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations: null
+`),
+			Result: []byte(`
+      spec:
+        template:
+          metadata: {}
+`),
+		},
+	},
+	{
+		Description: "remove spec annotation has conflict",
+		StrategicMergePatchRawTestCaseData: StrategicMergePatchRawTestCaseData{
+			Original: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              a: b
+`),
+			Modified: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations: null
+`),
+			Current: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations:
+              a: b
+              kubectl.kubernetes.io/restartedAt: "2022-07-26T11:44:32+08:00"
+`),
+			ThreeWay: []byte(`
+      spec:
+        template:
+          metadata:
+            annotations: null
+`),
+			Result: []byte(`
+      spec:
+        template:
+          metadata: {}
+`),
+		},
+	},
+}
+
+func TestAnnotation(t *testing.T) {
+	schema := sptest.Fake{Path: "d:\\工作\\openapi.json"}
+	openapiSchema := PatchMetaFromOpenAPI{
+		Schema: sptest.GetSchemaOrDie(&schema, "io.k8s.api.apps.v1.DaemonSet"),
+	}
+	for _, c := range daemonsetsCase {
+		testThreeWayPatchForRawTestCase(t, c, openapiSchema)
 	}
 }

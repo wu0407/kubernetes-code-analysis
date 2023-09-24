@@ -60,6 +60,7 @@ func (p *GoTemplatePrinter) AllowMissingKeys(allow bool) {
 
 // PrintObj formats the obj with the Go Template.
 func (p *GoTemplatePrinter) PrintObj(obj runtime.Object, w io.Writer) error {
+	// pkgPath是否包含前缀"k8s.io/kubernetes/pkg/apis/"或包含"/vendor/k8s.io/kubernetes/pkg/apis/"
 	if InternalObjectPreventer.IsForbidden(reflect.Indirect(reflect.ValueOf(obj)).Type().PkgPath()) {
 		return fmt.Errorf(InternalObjectPrinterErr)
 	}

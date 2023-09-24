@@ -92,7 +92,14 @@ func (f *PrintFlags) AllowedFormats() []string {
 // handling --output or --template printing.
 // Returns false if the specified outputFormat does not match a supported format.
 // Supported format types can be found in pkg/printers/printers.go
-// 根据--output or --template，返回
+// 根据--output or --template，返回最终的实现了ResourcePrinter接口的对象TypeSetterPrinter{delegate: p, Typer: scheme}
+// p可能是JSONPathPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\jsonpath.go
+// p可能是GoTemplatePrinter在staging\src\k8s.io\cli-runtime\pkg\printers\gotemplate.go
+// p可能是NamePrinter在staging\src\k8s.io\cli-runtime\pkg\printers\name.go
+// p可能是JSONPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\json.go
+// p可能是YAMLPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\yaml.go
+// p可能是OmitManagedFieldsPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\omitmanagedfields.go
+// 其中TypeSetterPrinter在staging\src\k8s.io\cli-runtime\pkg\printers\printers.go
 func (f *PrintFlags) ToPrinter() (printers.ResourcePrinter, error) {
 	outputFormat := ""
 	// 命令行指定了--output或-o，或者默认NewPrintFlags初始化为空（不为nil）
@@ -138,8 +145,9 @@ func (f *PrintFlags) ToPrinter() (printers.ResourcePrinter, error) {
 	// 从NewPrintFlags初始化就不为nil
 	if f.TemplatePrinterFlags != nil {
 		// --output=jsonpath="{xxx}", --output=jsonpath-file="{xxx}", --output=jsonpath-as-json="{xxx}"
-		// --output=template="{xxx}", --output=go-template="{xxx}", --output=go-template-file="{xxx}", --output=templatefile="{xxx}"
+		// --output=template="{xxx}", --output=go-template="{xxx}", --output=go-template-file="{xxx}", --output=templatefile="{xxx}"，--template="{xxx}"
 		if p, err := f.TemplatePrinterFlags.ToPrinter(outputFormat); !IsNoCompatiblePrinterError(err) {
+			// 返回包装了p的TypeSetterPrinter{delegate: p, Typer: scheme}
 			return f.TypeSetterPrinter.WrapToPrinter(p, err)
 		}
 	}

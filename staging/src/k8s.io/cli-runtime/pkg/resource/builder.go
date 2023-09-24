@@ -315,6 +315,7 @@ func (b *Builder) Unstructured() *Builder {
 		restMapperFn: b.restMapperFn,
 		clientFn:     b.getClient,
 		// 验证对象包含metav1.ObjectMeta和metav1.TypeMeta（且能decode够解析成unstructured）
+		// 将对象decode为只包含metav1.ObjectMeta和metav1.TypeMeta的metadataOnlyObject，在staging\src\k8s.io\cli-runtime\pkg\resource\metadata_decoder.go
 		decoder:      &metadataValidatingDecoder{unstructured.UnstructuredJSONScheme},
 	}
 
@@ -773,7 +774,14 @@ func (b *Builder) SingleResourceType() *Builder {
 // mappingFor returns the RESTMapping for the Kind given, or the Kind referenced by the resource.
 // Prefers a fully specified GroupVersionResource match. If one is not found, we match on a fully
 // specified GroupVersionKind, or fallback to a match on GroupKind.
+// 首先解析resourceOrKindArg为GroupVersionResource和GroupResource，然后通过restMapper查找对应的group version kind，如果根据group version kind执行restMapper.RESTMapping成功，则返回*meta.RESTMapping
+// 执行不成功，则解析resourceOrKindArg为GroupVersionKind和GroupKind，
+// 先使用GroupVersionKind来执行restMapper.RESTMapping，如果成功，则返回*meta.RESTMapping
+// 否则使用GroupKind和空的version，组成group version kind，执行restMapper.RESTMapping，返回*meta.RESTMapping，err
 func (b *Builder) mappingFor(resourceOrKindArg string) (*meta.RESTMapping, error) {
+	// arg不包含"."，格式为"resource"，返回nil，GroupResource{Resource: arg}
+	// arg包含一个"."，格式为"resource.group"，返回nil，GroupResource{Resource: {resource}, Group: {group}}
+	// arg包含2以上个"."，格式为"resource.version.group"，返回&GroupVersionResource{Group: {group}, Version: version, Resource: resource}，GroupResource{Resource: {resource}, Group: {version.group}}
 	fullySpecifiedGVR, groupResource := schema.ParseResourceArg(resourceOrKindArg)
 	gvk := schema.GroupVersionKind{}
 	// b.restMapperFn实现在staging\src\k8s.io\kubectl\pkg\cmd\util\kubectl_match_version.go MatchVersionFlags.ToRESTMapper()
@@ -782,28 +790,42 @@ func (b *Builder) mappingFor(resourceOrKindArg string) (*meta.RESTMapping, error
 		return nil, err
 	}
 
+	// 解析出GroupVersionResource
 	if fullySpecifiedGVR != nil {
+		// group version resource查找group version kind
 		gvk, _ = restMapper.KindFor(*fullySpecifiedGVR)
 	}
+	// 空的group version kind（未解析出GroupVersionResource，或解析出GroupVersionResource但未找到GroupVersionKind），则使用groupResource和空的version组成的group version resource来查找group version kind
 	if gvk.Empty() {
 		gvk, _ = restMapper.KindFor(groupResource.WithVersion(""))
 	}
+	// group version kind不为空，则执行restMapper.RESTMapping返回meta.RESTMapping
 	if !gvk.Empty() {
 		return restMapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	}
 
+	// 还是未找到group version kind（group version kind为空）
+
+	// arg不包含"."，格式为"kind"，返回nil，GroupKind{Kind: kind}
+	// arg包含一个"."，格式为"kind.group"，返回nil，GroupKind{Kind: {kind}, Group: {group}}
+	// arg包含2以上个"."，格式为"kind.version.group"，返回GroupVersionKind{Group: {group}, Version: version, Kind: kind}，GroupKind{Kind: {kind}, Group: {version.group}}
 	fullySpecifiedGVK, groupKind := schema.ParseKindArg(resourceOrKindArg)
+	// 未解析出GroupVersionKind，则使用groupKind和空的version组成group version kind
 	if fullySpecifiedGVK == nil {
 		gvk := groupKind.WithVersion("")
 		fullySpecifiedGVK = &gvk
 	}
 
+	// group version kind不为空，则执行restMapper.RESTMapping，如果没有错误，则返回meta.RESTMapping
 	if !fullySpecifiedGVK.Empty() {
 		if mapping, err := restMapper.RESTMapping(fullySpecifiedGVK.GroupKind(), fullySpecifiedGVK.Version); err == nil {
 			return mapping, nil
 		}
 	}
 
+	// group version kind为空，则再次尝试使用groupKind和空的version，执行restMapper.RESTMapping
+	// 可能是fullySpecifiedGVK不为nil，但是执行restMapper.RESTMapping出现错误
+	// 当然也有可能是fullySpecifiedGVK为nil，然后使用groupKind和空的version组成group version kind，执行restMapper.RESTMapping出现错误
 	mapping, err := restMapper.RESTMapping(groupKind, gvk.Version)
 	if err != nil {
 		// if we error out here, it is because we could not match a resource or a kind
@@ -865,7 +887,7 @@ func (b *Builder) resourceTupleMappings() (map[string]*meta.RESTMapping, error) 
 
 // 如果b.errs不为空，则返回Result{err: utilerrors.NewAggregate(b.errs)}
 // 如果b.selectAll为true，则设置b.labelSelector为labels.Everything().String()
-// 如果b.paths不为空，则返回
+// 如果b.paths不为空，则根据路径和Builder各个属性，生成Result，返回Result
 func (b *Builder) visitorResult() *Result {
 	if len(b.errs) > 0 {
 		return &Result{err: utilerrors.NewAggregate(b.errs)}
@@ -896,15 +918,23 @@ func (b *Builder) visitorResult() *Result {
 		return b.visitByName()
 	}
 
+	// b.names为空，且b.resources不为空
 	if len(b.resources) != 0 {
 		for _, r := range b.resources {
+			// 首先解析resourceOrKindArg为GroupVersionResource和GroupResource，然后通过restMapper查找对应的group version kind，如果根据group version kind执行restMapper.RESTMapping成功，则返回*meta.RESTMapping
+			// 执行不成功，则解析resourceOrKindArg为GroupVersionKind和GroupKind，
+			// 先使用GroupVersionKind来执行restMapper.RESTMapping，如果成功，则返回*meta.RESTMapping
+			// 否则使用GroupKind和空的version，组成group version kind，执行restMapper.RESTMapping，返回*meta.RESTMapping，err
 			_, err := b.mappingFor(r)
 			if err != nil {
 				return &Result{err: err}
 			}
 		}
+		// 所有resources都是合法的，则返回错误
 		return &Result{err: fmt.Errorf("resource(s) were provided, but no name was specified")}
 	}
+
+	// 命令行没有提供任何的 -f，--filename，-l，--selector，'<resource> <name>'，<resource>， --field-selector，返回错误
 	return &Result{err: missingResourceError}
 }
 
@@ -1168,7 +1198,7 @@ func (b *Builder) visitByName() *Result {
 //   使用selector匹配的info.Object的label，成功返回true和nil，否则返回false和nil
 // 设置result.visitor为visitors
 // 设置result.sources为b.paths
-// visitors执行顺序，是从上到下
+// visitors执行顺序，是从上到下（fn执行顺序是从下往上）
 func (b *Builder) visitByPaths() *Result {
 	result := &Result{
 		// 不为目录，且不为从标准输入读取、且文件就一个，则设置singleItemImplied为true
@@ -1191,10 +1221,10 @@ func (b *Builder) visitByPaths() *Result {
 
 	var visitors Visitor
 	if b.continueOnError {
-		// EagerVisitorList的Visit(fn VisitorFunc) error，调用各个b.paths里的visitor的Visit，所有出现的错误进行聚合
+		// EagerVisitorList的Visit(fn VisitorFunc) error方法，调用各个b.paths里的visitor的Visit，所有出现的错误进行聚合
 		visitors = EagerVisitorList(b.paths)
 	} else {
-		// VisitorList的Visit(fn VisitorFunc) error，调用各个b.paths里的visitor的Visit，一有错误就返回
+		// VisitorList的Visit(fn VisitorFunc) error方法，调用各个b.paths里的visitor的Visit，一有错误就返回
 		visitors = VisitorList(b.paths)
 	}
 
@@ -1202,7 +1232,7 @@ func (b *Builder) visitByPaths() *Result {
 		// 对visitors进行包装
 		// FlattenListVisitor
 		// FlattenListVisitor的Visit方法
-		// 如果info.Object是List，则进行解压，解压出非List的[]runtime.Object，使用v.mapper.infoForObject方法依此获得各个runtime.Object的Info，并调用fn
+		// 如果info.Object是List，则进行解压，解压出非List的[]runtime.Object，使用v.mapper.infoForObject方法依次获得各个runtime.Object的Info，并调用fn
 		// 其他情况直接调用fn
 		visitors = NewFlattenListVisitor(visitors, b.objectTyper, b.mapper)
 	}
@@ -1247,7 +1277,7 @@ func (b *Builder) visitByPaths() *Result {
 // visitors执行顺序，是从上到下
 func (b *Builder) Do() *Result {
 	// 根据Builder各个属性，生成Result
-	// visitors执行顺序，是从上到下
+	// visitors执行顺序，是从上到下（fn执行顺序是从下往上）
 	r := b.visitorResult()
 	r.mapper = b.Mapper()
 	if r.err != nil {
