@@ -116,6 +116,7 @@ func supportsDryRun(doc *openapi_v2.Document, gvk schema.GroupVersionKind) (bool
 		if !hasGVKExtension(path.GetValue().GetPatch().GetVendorExtension(), gvk) {
 			continue
 		}
+		// 遍历path下的patch方法下parameters，parameters里有{name": "dryRun", "in": "query"}元素
 		for _, param := range path.GetValue().GetPatch().GetParameters() {
 			if param.GetParameter().GetNonBodyParameter().GetQueryParameterSubSchema().GetName() == "dryRun" {
 				return true, nil

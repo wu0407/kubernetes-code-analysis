@@ -252,7 +252,7 @@ func diffMaps(original, modified map[string]interface{}, schema LookupPatchMeta,
 		if err != nil {
 			return nil, err
 		}
-		// 当key是"$patch"，且originalValue和modifiedValue都是string，且originalValue和modifiedValue不相等，则继续下一个key
+		// 当key是"$patch"，则继续下一个key
 		if foundDirectiveMarker {
 			continue
 		}
@@ -1098,6 +1098,7 @@ func diffListsOfMaps(original, modified []interface{}, schema LookupPatchMeta, m
 	//          如果value类型为map[string]interface{}，则继续对嵌套的内部map做排序处理
 	//          value类型为[]interface{}，则继续进行对元素递归排序
 	//          value是其他类型，则不变
+	//        key是剩下情况（"$patch"），则不变
 	//    如果不是递归调用过来的（recurse为true），则map的每个value不进行排序
 	// 根据map的key为mergeKey的值，进行map排序
 	originalSorted, err := sortMergeListsByNameArray(original, schema, mergeKey, false)
@@ -2694,6 +2695,7 @@ func sortMergeListsByName(mapJSON []byte, schema LookupPatchMeta) ([]byte, error
 //   如果value类型为map[string]interface{}，则继续对嵌套的内部map做排序处理
 //   value类型为[]interface{}，则继续内部元素进行排序
 //   value是其他类型，则不变
+// key是剩下情况（"$patch"），则不变
 func sortMergeListsByNameMap(s map[string]interface{}, schema LookupPatchMeta) (map[string]interface{}, error) {
 	newS := map[string]interface{}{}
 	for k, v := range s {
@@ -2828,6 +2830,7 @@ func sortMergeListsByNameArray(s []interface{}, schema LookupPatchMeta, mergeKey
 			//   如果value类型为map[string]interface{}，则继续对嵌套的内部map做排序处理
 			//   value类型为[]interface{}，则继续进行对元素递归排序
 			//   value是其他类型，则不变
+			// key是剩下情况（"$patch"），则不变
 			newElem, err := sortMergeListsByNameMap(typedElem, schema)
 			if err != nil {
 				return nil, err

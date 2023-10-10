@@ -618,6 +618,8 @@ func (v *StreamVisitor) Visit(fn VisitorFunc) error {
 			continue
 		}
 		// v.Schema为validation.ConjunctiveSchema，包含验证各个字段的openapivalidation.SchemaValidation和validation.NoDoubleKeySchema（检查.metadata.labels和metadata.annotations是否有重复的key）
+		// 检查.metadata.labels和metadata.annotations是否有重复的key，这里不会有任何问题重复key，因为在d.Decode（NewYAMLOrJSONDecoder）自动会将重复的key进行合并（最后的那个生效）
+		// https://github.com/kubernetes/kubernetes/issues/14791
 		if err := ValidateSchema(ext.Raw, v.Schema); err != nil {
 			return fmt.Errorf("error validating %q: %v", v.Source, err)
 		}

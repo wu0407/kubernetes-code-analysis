@@ -77,7 +77,7 @@ func CreateThreeWayJSONMergePatch(original, modified, current []byte, fns ...mer
 	}
 
 	// 返回false的条件（或的关系）
-	// 1. addAndChangePatchObj和deletePatchObj是相同类型，且如果是map[string]interface{}类型，则存在相同key的value必须不存在冲突（即满足这里的所有个条件）。
+	// 1. addAndChangePatchObj和deletePatchObj是相同类型，且如果是map[string]interface{}类型，则存在相同key的value必须不存在冲突（即满足下面的所有个条件）。
 	// 2. addAndChangePatchObj和deletePatchObj是相同类型，且如果是[]interface{}，则必须两边的长度大小不一样，且两边相同index的每一项都不存在冲突
 	// 3. addAndChangePatchObj和deletePatchObj是相同类型，且如果是其他简单类型（string, float64, bool, int64, nil），则值必须相等
 	// 同一字段同时进行更新和移除，或同时增加和移除，就会出现冲突，比如'{"a": null}'和'{"a": "b"}'就存在冲突

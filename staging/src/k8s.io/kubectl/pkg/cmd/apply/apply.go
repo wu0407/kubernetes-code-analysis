@@ -513,6 +513,7 @@ func (o *ApplyOptions) applyOneObject(info *resource.Info) error {
 	// 如果info.Mapping.Scope为"namespace"，或info.Namespace有值，则将info.Namespace添加到o.VisitedNamespaces
 	o.MarkNamespaceVisited(info)
 
+	// --record=true
 	// 添加info.Object的annotations["kubernetes.io/change-cause"]为{命令行路径}+{non-flag arguments...}+{flag arguments (--xxx=xxx,-xxx=xxx)}
 	if err := o.Recorder.Record(info.Object); err != nil {
 		klog.V(4).Infof("error recording current command: %v", err)
@@ -787,7 +788,7 @@ func (o *ApplyOptions) shouldPrintObject() bool {
 	return shouldPrint
 }
 
-// 如果设置了--output或-o命令行，且参数值不为"name"，则返回nil，不做任何事情
+// 如果没有设置--output或-o命令行，或设置了--output或-o命令行且参数值"name"，则返回nil，不做任何事情
 // 获得apiserver返回的[]*resource.Info（可能create或patch）
 // 如果超过一个对象，将所有info.Object组装成corev1.List，进行打印
 // 如果只有一个对象，直接打印
@@ -874,13 +875,13 @@ func (o *ApplyOptions) MarkObjectVisited(info *resource.Info) error {
 // objects as a list (if configured for that), and prunes the
 // objects not applied. The returned function is the standard
 // apply post processor.
-// 如果设置了--output或-o命令行，且参数值不为"name"，则返回nil，不做任何事情
+// 如果没有设置--output或-o命令行，或设置了--output或-o命令行且参数值"name"，则返回nil，不做任何事情
 // 否则，执行apply对象（apiserver返回）的打印
 // 命令行指定了--prune且--dry-run不为client，则执行删除所有apply操作资源命名空间下的、不在文件里（非当前apply操作）的对象、且为kubectl apply创建
 func (o *ApplyOptions) PrintAndPrunePostProcessor() func() error {
 
 	return func() error {
-		// 如果设置了--output或-o命令行，且参数值不为"name"，则返回nil，不做任何事情
+		// 如果没有设置--output或-o命令行，或设置了--output或-o命令行且参数值"name"，则返回nil，不做任何事情
 		// 获得apiserver返回的[]*resource.Info（可能create或patch）
 		// 如果超过一个对象，将所有info.Object组装成corev1.List，进行打印
 		// 如果只有一个对象，直接打印
