@@ -151,7 +151,7 @@ type customMetricsClient struct {
 
 // GetRawMetric gets the given metric (and an associated oldest timestamp)
 // for all pods matching the specified selector in the given namespace
-// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{m.namespace}/pod/{name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]，第一个metric的timestamp
+// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{m.namespace}/pod/{name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList转成PodMetricsInfo，第一个metric的timestamp
 func (c *customMetricsClient) GetRawMetric(metricName string, namespace string, selector labels.Selector, metricSelector labels.Selector) (PodMetricsInfo, time.Time, error) {
 	// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/pod/*/{metricName}?labelSelector={selector}&metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList
 	metrics, err := c.client.NamespacedMetrics(namespace).GetForObjects(schema.GroupKind{Kind: "Pod"}, selector, metricName, metricSelector)

@@ -464,10 +464,10 @@ func (a *HorizontalController) computeStatusForObjectMetric(specReplicas, status
 		// 从apiVersion解析出group version, 如果解析成功，则返回group version kind。否则，返回GroupVersionKind{Kind: kind}
 		// 当objectRef为autoscaling.CrossVersionObjectReference{Kind:"Namespace", Name: "xxx", APIVersion: "v1"}，则访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/metrics/{metricName}?metricLabelSelector={metricSelector}"，获得v1beta2.MetricValueList[0].Value.MilliValue()和v1beta2.MetricValueList[0].Timestamp.Time
 		// 否则访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/{objectRef对应的resource}/{objectRef.Name}/{metricName}?metricLabelSelector={metricSelector}"，获得v1beta2.MetricValueList[0].Value.MilliValue()和v1beta2.MetricValueList[0].Timestamp.Time
-		// usageRatio是聚合值（所有pod的总值）/(目标平均利用率*副本数)
-		// 如果usageRatio不在[usageRatio-c.tolerance, usageRatio+c.tolerance]范围内，则最终副本数为副本数为总使用的值/目标平均利用率，然后向上取整。否则，为现在副本数（不进行扩缩容）
+		// usageRatio是聚合值（所有pod的总值）/(目标平均利用值*副本数)
+		// 如果usageRatio不在[usageRatio-c.tolerance, usageRatio+c.tolerance]范围内，则最终副本数为副本数为总使用的值/目标平均利用值，然后向上取整。否则，为现在副本数（不进行扩缩容）
 		// 现在的平均利用率是总使用的值/当前副本数
-		// 返回最终副本数、现在的平均利用率、metric的时间戳
+		// 返回最终副本数、现在的平均利用值、metric的时间戳
 		replicaCountProposal, utilizationProposal, timestampProposal, err := a.replicaCalc.GetObjectPerPodMetricReplicas(statusReplicas, metricSpec.Object.Target.AverageValue.MilliValue(), metricSpec.Object.Metric.Name, hpa.Namespace, &metricSpec.Object.DescribedObject, metricSelector)
 		if err != nil {
 			// 返回Type为"ScalingActive"，Status为false，Reason为reason，Message为"the HPA was unable to compute the replica count: {Error()}"
@@ -713,7 +713,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 	// 最终实现在staging\src\k8s.io\apimachinery\pkg\api\meta\restmapper.go里的DefaultRESTMapper
 	// 
 	// 如果没有提供versions，或者version没有在DefaultRESTMapper.kindToPluralResource里，或version为"__internal"
-	// 则使用DefaultRESTMapper.defaultGroupVersions查找group与gk的group一样，将所有version与gk组成group version kind
+	// 则使用DefaultRESTMapper.defaultGroupVersions查找group与targetGK的group一样，将所有version与targetGK组成group version kind
 	// 根据这个group version kind，从DefaultRESTMapper.kindToPluralResource查找GroupVersionResource，从DefaultRESTMapper.kindToScope查找scope。最后组成RESTMapping
 	mappings, err := a.mapper.RESTMappings(targetGK)
 	if err != nil {
@@ -847,7 +847,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 			//     如果policy.Type为"Percent"，则最终副本数为周期开始时候的副本数*(1-policy.Value/100)然后向上取整
 			//     根据SelectPolicy为"Min"或"Max"，策略最终副本数限制scaleUpLimit最大值或最小值
 			//     策略最终副本数限制scaleUpLimit大于当前副本数，不需要进行缩容（已经比要缩的值还小了）
-			//   maximumAllowedReplicas为max(scaleUpLimit, args.MinReplicas)
+			//   minimumAllowedReplicas为max(scaleUpLimit, args.MinReplicas)
 			//   如果期望的副本数小于最小副本数限制minimumAllowedReplicas，则返回最小副本数限制minimumAllowedReplicas
 			//   否则，期望副本数大于等于最小副本数限制minimumAllowedReplicas，返回期望副本数
 			desiredReplicas = a.normalizeDesiredReplicasWithBehaviors(hpa, key, currentReplicas, desiredReplicas, minReplicas)
@@ -871,7 +871,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 		}
 		setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionTrue, "SucceededRescale", "the HPA controller was able to update the target scale to %d", desiredReplicas)
 		a.eventRecorder.Eventf(hpa, v1.EventTypeNormal, "SuccessfulRescale", "New size: %d; reason: %s", desiredReplicas, rescaleReason)
-		// 遍历所有scalingRules.Policies，找到最长的policy.PeriodSeconds
+		// 遍历所有scalingRules.Policies（扩容为behavior.ScaleUp，缩容为behavior.ScaleDown），找到最长的policy.PeriodSeconds
 		// 遍历所有scaleEvents []timestampedScaleEvent，不在longestPolicyPeriod周期内的timestampedScaleEvent，设置timestampedScaleEvent.outdated为true
 		// 找到最后一个过期的timestampedScaleEvent的index
 		// 如果newReplicas > prevReplicas（扩容），则replicaChange为newReplicas - prevReplicas。否则replicaChange为prevReplicas-newReplicas
@@ -896,7 +896,7 @@ func (a *HorizontalController) reconcileAutoscaler(ctx context.Context, hpaShare
 // - returns max of recommendations that are not older than downscaleStabilisationWindow.
 // 跟prenormalizedDesiredReplicas比较，重新从a.recommendations[key]查找最大副本数maxRecommendation，和查找不在a.downscaleStabilisationWindow稳定窗口里的timestampedRecommendation
 // 如果发现不在a.downscaleStabilisationWindow稳定窗口里timestampedRecommendation，最后一个不在的index，替换成timestampedRecommendation{prenormalizedDesiredReplicas, time.Now()}
-// 如果没有发现a.downscaleStabilisationWindow稳定窗口里timestampedRecommendation，则将timestampedRecommendation{prenormalizedDesiredReplicas, time.Now()} append到a.recommendations[key]
+// 如果没有发现不在a.downscaleStabilisationWindow稳定窗口里timestampedRecommendation，则将timestampedRecommendation{prenormalizedDesiredReplicas, time.Now()} append到a.recommendations[key]
 func (a *HorizontalController) stabilizeRecommendation(key string, prenormalizedDesiredReplicas int32) int32 {
 	maxRecommendation := prenormalizedDesiredReplicas
 	foundOldSample := false
@@ -919,7 +919,7 @@ func (a *HorizontalController) stabilizeRecommendation(key string, prenormalized
 	if foundOldSample {
 		a.recommendations[key][oldSampleIndex] = timestampedRecommendation{prenormalizedDesiredReplicas, time.Now()}
 	} else {
-		// 如果没有发现a.downscaleStabilisationWindow稳定窗口里timestampedRecommendation，则将timestampedRecommendation{prenormalizedDesiredReplicas, time.Now()} append到a.recommendations[key]
+		// 如果没有发现不在a.downscaleStabilisationWindow稳定窗口里timestampedRecommendation，则将timestampedRecommendation{prenormalizedDesiredReplicas, time.Now()} append到a.recommendations[key]
 		a.recommendations[key] = append(a.recommendations[key], timestampedRecommendation{prenormalizedDesiredReplicas, time.Now()})
 	}
 	return maxRecommendation
@@ -941,7 +941,7 @@ func (a *HorizontalController) stabilizeRecommendation(key string, prenormalized
 func (a *HorizontalController) normalizeDesiredReplicas(hpa *autoscalingv2.HorizontalPodAutoscaler, key string, currentReplicas int32, prenormalizedDesiredReplicas int32, minReplicas int32) int32 {
 	// 跟prenormalizedDesiredReplicas比较，重新从a.recommendations[key]查找最大副本数maxRecommendation，和查找不在a.downscaleStabilisationWindow稳定窗口里的timestampedRecommendation
 	// 如果发现不在a.downscaleStabilisationWindow稳定窗口里timestampedRecommendation，最后一个不在的index，替换成timestampedRecommendation{prenormalizedDesiredReplicas, time.Now()}
-	// 如果没有发现a.downscaleStabilisationWindow稳定窗口里timestampedRecommendation，则将timestampedRecommendation{prenormalizedDesiredReplicas, time.Now()} append到a.recommendations[key]
+	// 如果没有发现不在a.downscaleStabilisationWindow稳定窗口里timestampedRecommendation，则将timestampedRecommendation{prenormalizedDesiredReplicas, time.Now()} append到a.recommendations[key]
 	stabilizedRecommendation := a.stabilizeRecommendation(key, prenormalizedDesiredReplicas)
 	// 稳定窗口里的最大的副本数不是现在的最终副本数
 	if stabilizedRecommendation != prenormalizedDesiredReplicas {
@@ -957,6 +957,7 @@ func (a *HorizontalController) normalizeDesiredReplicas(hpa *autoscalingv2.Horiz
 	// 期望的副本数小于最小副本数，返回最终副本数为hpa最小副本数minimumAllowedReplicas
 	// 期望的副本数大于maximumAllowedReplicas扩容上限，则返回maximumAllowedReplicas
 	// 期望副本数大于最小副本数，小于等于maximumAllowedReplicas扩容上限，返回desiredReplicas
+	// 确保期望副本数在[minReplicas, min(max(2*spec.replicas, 4), hpa.Spec.MaxReplicas)]
 	desiredReplicas, condition, reason := convertDesiredReplicasWithRules(currentReplicas, stabilizedRecommendation, minReplicas, hpa.Spec.MaxReplicas)
 
 	// 期望副本数大于最小副本数，小于等于maximumAllowedReplicas扩容上限（没有触及上下限制）
@@ -1018,7 +1019,7 @@ type NormalizationArg struct {
 //     如果policy.Type为"Percent"，则最终副本数为周期开始时候的副本数*(1-policy.Value/100)然后向上取整
 //     根据SelectPolicy为"Min"或"Max"，策略最终副本数限制scaleUpLimit最大值或最小值
 //     策略最终副本数限制scaleUpLimit大于当前副本数，不需要进行缩容（已经比要缩的值还小了）
-//   maximumAllowedReplicas为max(scaleUpLimit, args.MinReplicas)
+//   minimumAllowedReplicas为max(scaleUpLimit, args.MinReplicas)
 //   如果期望的副本数小于最小副本数限制minimumAllowedReplicas，则返回最小副本数限制minimumAllowedReplicas
 //   否则，期望副本数大于等于最小副本数限制minimumAllowedReplicas，返回期望副本数
 func (a *HorizontalController) normalizeDesiredReplicasWithBehaviors(hpa *autoscalingv2.HorizontalPodAutoscaler, key string, currentReplicas, prenormalizedDesiredReplicas, minReplicas int32) int32 {
@@ -1041,18 +1042,19 @@ func (a *HorizontalController) normalizeDesiredReplicasWithBehaviors(hpa *autosc
 	// 当前副本数CurrentReplicas小于在ScaleUp稳定周期内期望副本的最小值（包括DesiredReplicas）（才会扩容），返回recommendation为ScaleUp稳定周期内期望副本的最小值。
 	// 当前副本数CurrentReplicas大于在ScaleDown稳定周期内期望副本的最大值（包括DesiredReplicas）（才会缩容），返回recommendation为ScaleDown稳定周期内期望副本的最大值。
 	// 否则，返回当前副本数CurrentReplicas
+	// 即返回的副本数在[ScaleUp稳定周期内最小值，ScaleDown稳定周期内最大值]
 	stabilizedRecommendation, reason, message := a.stabilizeRecommendationWithBehaviors(normalizationArg)
 	normalizationArg.DesiredReplicas = stabilizedRecommendation
 	if stabilizedRecommendation != prenormalizedDesiredReplicas {
-		// "ScaleUpStabilized" || "ScaleDownStabilized"
-		// （当前副本数CurrentReplicas小于在ScaleUp稳定周期内期望副本的最小值，或当前副本数CurrentReplicas大于在ScaleDown稳定周期内期望副本的最大值），且（prenormalizedDesiredReplicas不是在ScaleUp稳定周期内是最小值，或prenormalizedDesiredReplicas不是ScaleDown稳定周期内是最大值）
-		// 或（当前副本数CurrentReplicas大于等于ScaleUp稳定周期内是最小值，且当前副本数CurrentReplicas小于等于ScaleDown稳定周期内是最大值）
+		// reason为"ScaleUpStabilized" || "ScaleDownStabilized"
+		// （当前副本数CurrentReplicas小于在ScaleUp稳定周期内期望副本的最小值，且prenormalizedDesiredReplicas不是在ScaleUp稳定周期内是最小值。或当前副本数CurrentReplicas大于在ScaleDown稳定周期内期望副本的最大值，且prenormalizedDesiredReplicas不是ScaleDown稳定周期内是最大值）（进行扩缩容）
+		// 或（当前副本数CurrentReplicas大于等于ScaleUp稳定周期内是最小值，且当前副本数CurrentReplicas小于等于ScaleDown稳定周期内是最大值）（即stabilizedRecommendation为当前的副本数）
+		// 即需要扩容时候，prenormalizedDesiredReplicas大于ScaleUp稳定周期内是最小值。缩容时候，prenormalizedDesiredReplicas小于ScaleUp稳定周期内是最小值
 		setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionTrue, reason, message)
 	} else {
 		// 特殊情况：当期望副本数prenormalizedDesiredReplicas是在ScaleUp稳定周期内是最小值，当前副本数CurrentReplicas小于期望副本数prenormalizedDesiredReplicas，返回期望副本数prenormalizedDesiredReplicas
 		// 特殊情况：当期望副本数prenormalizedDesiredReplicas是在ScaleDown稳定周期内是最大值，当前副本数CurrentReplicas大于期望副本数prenormalizedDesiredReplicas，返回期望副本数prenormalizedDesiredReplicas
-		// 当前副本数CurrentReplicas等于当期望副本数prenormalizedDesiredReplicas
-		// 即不扩容也不缩容
+		// 当前副本数CurrentReplicas等于当期望副本数prenormalizedDesiredReplicas，且等于ScaleUp稳定周期内是最小值和ScaleDown稳定周期内是最大值，即不扩容也不缩容
 		setCondition(hpa, autoscalingv2.AbleToScale, v1.ConditionTrue, "ReadyForNewScale", "recommended size matches current size")
 	}
 	// 如果SelectPolicy为"Disabled"，则不进行扩缩容，返回当前副本数
@@ -1129,7 +1131,7 @@ func (a *HorizontalController) getUnableComputeReplicaCountCondition(hpa runtime
 
 // storeScaleEvent stores (adds or replaces outdated) scale event.
 // outdated events to be replaced were marked as outdated in the `markScaleEventsOutdated` function
-// 遍历所有scalingRules.Policies，找到最长的policy.PeriodSeconds
+// 遍历所有scalingRules.Policies（扩容为behavior.ScaleUp，缩容为behavior.ScaleDown），找到最长的policy.PeriodSeconds
 // 遍历所有scaleEvents []timestampedScaleEvent，不在longestPolicyPeriod周期内的timestampedScaleEvent，设置timestampedScaleEvent.outdated为true
 // 找到最后一个过期的timestampedScaleEvent的index
 // 如果newReplicas > prevReplicas（扩容），则replicaChange为newReplicas - prevReplicas。否则replicaChange为prevReplicas-newReplicas
@@ -1201,6 +1203,7 @@ func (a *HorizontalController) storeScaleEvent(behavior *autoscalingv2.Horizonta
 // 当前副本数CurrentReplicas大于在ScaleDown稳定周期内期望副本的最大值（才会缩容），返回recommendation为ScaleDown稳定周期内期望副本的最大值。
 // 特殊情况：当期望副本数DesiredReplicas是在ScaleDown稳定周期内是最大值，当前副本数CurrentReplicas大于期望副本数DesiredReplicas，返回期望副本数DesiredReplicas
 // 否则，返回当前副本数CurrentReplicas
+// 即返回的副本数在[ScaleUp稳定周期内最小值，ScaleDown稳定周期内最大值]
 func (a *HorizontalController) stabilizeRecommendationWithBehaviors(args NormalizationArg) (int32, string, string) {
 	now := time.Now()
 
@@ -1293,7 +1296,7 @@ func (a *HorizontalController) stabilizeRecommendationWithBehaviors(args Normali
 //     如果policy.Type为"Pods"，则最终副本数为周期开始时候的副本数-policy.Value
 //     如果policy.Type为"Percent"，则最终副本数为周期开始时候的副本数*(1-policy.Value/100)然后向上取整
 //     根据SelectPolicy为"Min"或"Max"，策略最终副本数限制scaleUpLimit最大值或最小值
-//     策略最终副本数限制scaleUpLimit大于当前副本数，不需要进行缩容（已经比要缩的值还小了）
+//     策略最终副本数限制scaleUpLimit大于当前副本数，不需要进行缩容（现在已经比要缩的限制值还小了）
 //   maximumAllowedReplicas为max(scaleUpLimit, args.MinReplicas)
 //   如果期望的副本数小于最小副本数限制minimumAllowedReplicas，则返回最小副本数限制minimumAllowedReplicas
 //   否则，期望副本数大于等于最小副本数限制minimumAllowedReplicas，返回期望副本数
@@ -1325,7 +1328,7 @@ func (a *HorizontalController) convertDesiredReplicasWithBehaviorRate(args Norma
 			possibleLimitingMessage = "the desired replica count is increasing faster than the maximum scale rate"
 		} else {
 			// 策略最终副本数限制scaleUpLimit大于等于hpa的最大副本数maximumAllowedReplicas
-			// maximumAllowedReplicas就是自己
+			// maximumAllowedReplicas就是args.MaxReplicas自己
 			possibleLimitingReason = "TooManyReplicas"
 			possibleLimitingMessage = "the desired replica count is more than the maximum replica count"
 		}
@@ -1344,7 +1347,7 @@ func (a *HorizontalController) convertDesiredReplicasWithBehaviorRate(args Norma
 		//   最终副本数为周期开始时候的副本数*(1-policy.Value/100)然后向上取整
 		// 根据SelectPolicy为"Min"或"Max"，筛选出最终副本数最大值或最小值
 		scaleDownLimit := calculateScaleDownLimitWithBehaviors(args.CurrentReplicas, a.scaleDownEvents[args.Key], args.ScaleDownBehavior)
-		// 策略最终副本数限制scaleUpLimit大于当前副本数，不需要进行缩容（已经比要缩的值还小了）
+		// 策略最终副本数限制scaleUpLimit大于当前副本数，不需要进行缩容（现在已经比要缩的限制值还小了）
 		if scaleDownLimit > args.CurrentReplicas {
 			// We shouldn't scale down further until the scaleDownEvents will be cleaned up
 			scaleDownLimit = args.CurrentReplicas

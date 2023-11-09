@@ -86,11 +86,13 @@ func (c *ReplicaCalculator) GetResourceReplicas(ctx context.Context, currentRepl
 
 	// c.cpuInitializationPeriod默认为5分钟，c.delayOfInitialReadinessStatus默认为30秒
 	// missingPods是没有监控数据的pod，ignorePods是被删除或phase为Failed的pod。
-	// pod为unready：
-	// 当resource为cpu时候，没有readyCondition或pod.Status.StartTime为nil
-	// 或有readyCondition或pod.Status.StartTime为nil 
-	//   pod启动时间在c.cpuInitializationPeriod内，readyCondition为False或metric是在readyCondition.LastTransitionTime加metric.Window之前（ready状态且metric计算周期在condition.LastTransitionTime之前）
-	//   或readyCondition为False且pod.Status.StartTime加c.delayOfInitialReadinessStatus在condition.LastTransitionTime之后(不在pod.Status.StartTime到pod.Status.StartTime+c.delayOfInitialReadinessStatus内），则认为pod为unready
+	// pod为unready：（或的关系）
+	//   pod的Phase为pending状态
+	//   当resource为cpu时候
+	//     没有readyCondition或pod.Status.StartTime为nil
+	//     有readyCondition且pod.Status.StartTime不为nil 
+	//       pod启动时间在c.cpuInitializationPeriod内，readyCondition为False或metric是在readyCondition.LastTransitionTime加metric.Window之前（ready状态且metric计算周期在condition.LastTransitionTime之前）
+	//       或readyCondition为False且readyCondition.LastTransitionTime在pod.Status.StartTime加c.delayOfInitialReadinessStatus时间内，则认为pod为unready
 	readyPodCount, unreadyPods, missingPods, ignoredPods := groupPods(podList, metrics, resource, c.cpuInitializationPeriod, c.delayOfInitialReadinessStatus)
 	// metrics移除ignoredPods和unreadyPods
 	removeMetricsForPods(metrics, ignoredPods)
@@ -225,7 +227,7 @@ func (c *ReplicaCalculator) GetRawResourceReplicas(ctx context.Context, currentR
 // (as a milli-value) for pods matching the given selector in the given namespace, and the
 // current replica count
 func (c *ReplicaCalculator) GetMetricReplicas(currentReplicas int32, targetUtilization int64, metricName string, namespace string, selector labels.Selector, metricSelector labels.Selector) (replicaCount int32, utilization int64, timestamp time.Time, err error) {
-	// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{m.namespace}/pod/{name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0]，第一个metric的timestamp
+	// 访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{m.namespace}/pod/{name}/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList转成PodMetricsInfo，第一个metric的timestamp
 	metrics, timestamp, err := c.metricsClient.GetRawMetric(metricName, namespace, selector, metricSelector)
 	if err != nil {
 		return 0, 0, time.Time{}, fmt.Errorf("unable to get metric %s: %v", metricName, err)
@@ -250,11 +252,13 @@ func (c *ReplicaCalculator) calcPlainMetricReplicas(metrics metricsclient.PodMet
 
 	// c.cpuInitializationPeriod默认为5分钟，c.delayOfInitialReadinessStatus默认为30秒
 	// missingPods是没有监控数据的pod，ignorePods是被删除或phase为Failed的pod。
-	// pod为unready：
-	// 当resource为cpu时候，没有readyCondition或pod.Status.StartTime为nil
-	// 或有readyCondition或pod.Status.StartTime为nil 
-	//   pod启动时间在c.cpuInitializationPeriod内，readyCondition为False或metric是在readyCondition.LastTransitionTime加metric.Window之前（ready状态且metric计算周期在condition.LastTransitionTime之前）
-	//   或readyCondition为False且pod.Status.StartTime加c.delayOfInitialReadinessStatus在condition.LastTransitionTime之后(不在pod.Status.StartTime到pod.Status.StartTime+c.delayOfInitialReadinessStatus内），则认为pod为unready
+	// pod为unready：（或的关系）
+	//   pod的Phase为pending状态
+	//   当resource为cpu时候
+	//     没有readyCondition或pod.Status.StartTime为nil
+	//     有readyCondition且pod.Status.StartTime不为nil 
+	//       pod启动时间在c.cpuInitializationPeriod内，readyCondition为False或metric是在readyCondition.LastTransitionTime加metric.Window之前（ready状态且metric计算起始时间（周期）在condition.LastTransitionTime之前（metric计算周期是从metrics.timestamp-window到metrics.timestamp））
+	//       或readyCondition为False且readyCondition.LastTransitionTime在pod.Status.StartTime加c.delayOfInitialReadinessStatus时间内，则认为pod为unready
 	readyPodCount, unreadyPods, missingPods, ignoredPods := groupPods(podList, metrics, resource, c.cpuInitializationPeriod, c.delayOfInitialReadinessStatus)
 	// metrics移除ignoredPods和unreadyPods
 	removeMetricsForPods(metrics, ignoredPods)
@@ -270,12 +274,13 @@ func (c *ReplicaCalculator) calcPlainMetricReplicas(metrics metricsclient.PodMet
 	usageRatio, utilization := metricsclient.GetMetricUtilizationRatio(metrics, targetUtilization)
 
 	// 是否（需要扩容且存在unreadyPods）
+	// 需要扩容且存在unreadyPods返回true
 	rebalanceIgnored := len(unreadyPods) > 0 && usageRatio > 1.0
 
 	// 存在没有metric监控数据的pod，都要进行数据修复。有unreadyPods，只在需要扩容时候需要数据修复
 
 	// 不存在没有metric监控数据的pod，除了（需要扩容且存在unreadyPods），都执行下面算法进行返回。
-	// 不是（扩容且存在unreadyPods）（比如不存在unready or missing pods，或缩容或不扩缩容，扩容且不存在unready or missing pods），且存在没有metric监控数据的pod
+	// 不是（扩容且存在unreadyPods）（比如不存在unready or missing pods，缩容或不扩缩容，扩容且不存在unready or missing pods），且存在没有metric监控数据的pod
 	// 比如需要缩容且有unreadyPods，且不存在无监控数据pod
 	if !rebalanceIgnored && len(missingPods) == 0 {
 		// usageRatio在[1-c.tolerance, 1+c.tolerance]之间，则不进行扩缩容
@@ -309,7 +314,7 @@ func (c *ReplicaCalculator) calcPlainMetricReplicas(metrics metricsclient.PodMet
 		}
 	}
 
-	// 需要扩容且存在unreadyPods，则认为unreadyPods的metric使用值为0，少扩容
+	// 需要扩容且存在unreadyPods（且不存在没有metric监控数据的pod），则认为unreadyPods的metric使用值为0，少扩容
 	if rebalanceIgnored {
 		// on a scale-up, treat unready pods as using 0% of the resource request
 		for podName := range unreadyPods {
@@ -338,8 +343,9 @@ func (c *ReplicaCalculator) calcPlainMetricReplicas(metrics metricsclient.PodMet
 	// 最终的副本数为newUsageRatio * len(metrics)（包含ready和apiserver中没有metric，原来需要扩容时候，包含unready pod），然后向上取整
 	newReplicas := int32(math.Ceil(newUsageRatio * float64(len(metrics))))
 	// 以下二种情况，不进行扩缩容 https://github.com/kubernetes/kubernetes/pull/89465 https://github.com/kubernetes/kubernetes/pull/85027
-	// 修复metrics数据之后，仍然需要缩容。且最终的副本数大于当前副本数（滚动更新时候，（进行list）当前的副本数为workload.replicas，等获取metric时候pod数量变多（多生出的pod））
-	// 修复metrics数据之后，仍然需要扩容。且最终的副本数小于当前副本数。（滚动更新时候，（进行list）当前的副本数，大于workload.replicas，等获取metric时候pod数量变为workload.replicas（变少））（scale.status.replicas跟workload.replicas什么关系？如果workload是deployment，则为deployment.Status.Replicas，在pkg\registry\apps\deployment\storage\storage.go scaleFromDeployment）
+	// 修复metrics数据之后，仍然需要缩容。且最终的副本数大于当前副本数（滚动更新时候，（进行list）当前的副本数为workload.replicas，等获取metric时候pod数量变多（多生出的pod，可能pod为unready修复为利用率百分百。也可能是ready pod使用率高于其他pod平均使用率））
+	// 修复metrics数据之后，仍然需要扩容。且最终的副本数小于当前副本数。（滚动更新时候，（进行list）当前的副本数，大于workload.replicas，等获取metric时候pod数量变为workload.replicas（变少），前提是pod利用率不变或变小），（滚动更新时候，（进行list）当前的副本数为workload.replicas，等获取metric时候pod数量变多（多生出的pod，可能pod为unready修复为利用率为0。也可能是ready pod使用率低于其他pod平均使用率），总结是pod数量增多、pod总平均使用率下降，这两个因素相乘变小）
+	// （scale.status.replicas跟workload.replicas什么关系？如果workload是deployment，则为deployment.Status.Replicas，在pkg\registry\apps\deployment\storage\storage.go scaleFromDeployment）
 	// 返回当前副本数，修复metrics数据之前（只计算有监控数据且移除ignorePods（被删除或phase为Failed的pod）和unreadyPods）平均使用值
 	if (newUsageRatio < 1.0 && newReplicas > currentReplicas) || (newUsageRatio > 1.0 && newReplicas < currentReplicas) {
 		// return the current replicas if the change of metrics length would cause a change in scale direction
@@ -417,10 +423,10 @@ func (c *ReplicaCalculator) getUsageRatioReplicaCount(currentReplicas int32, usa
 // 从apiVersion解析出group version, 如果解析成功，则返回group version kind。否则，返回GroupVersionKind{Kind: kind}
 // 当objectRef为autoscaling.CrossVersionObjectReference{Kind:"Namespace", Name: "xxx", APIVersion: "v1"}，则访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/metrics/{metricName}?metricLabelSelector={metricSelector}"，获得v1beta2.MetricValueList[0].Value.MilliValue()和v1beta2.MetricValueList[0].Timestamp.Time
 // 否则访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/{objectRef对应的resource}/{objectRef.Name}/{metricName}?metricLabelSelector={metricSelector}"，获得v1beta2.MetricValueList[0].Value.MilliValue()和v1beta2.MetricValueList[0].Timestamp.Time
-// usageRatio是聚合值（所有pod的总值）/(目标平均利用率*副本数)
-// 如果usageRatio不在[1-c.tolerance, 1+c.tolerance]范围内，则最终副本数为副本数为总使用的值/目标平均利用率，然后向上取整。否则，为现在副本数（不进行扩缩容）
+// usageRatio是聚合值（所有pod的总值）/(目标平均利用值*副本数)
+// 如果usageRatio不在[1-c.tolerance, 1+c.tolerance]范围内，则最终副本数为副本数为总使用的值/目标平均利用值，然后向上取整。否则，为现在副本数（不进行扩缩容）
 // 现在的平均利用率是总使用的值/当前副本数
-// 返回最终副本数、现在的平均利用率、metric的时间戳
+// 返回最终副本数、现在的平均利用值、metric的时间戳
 func (c *ReplicaCalculator) GetObjectPerPodMetricReplicas(statusReplicas int32, targetAverageUtilization int64, metricName string, namespace string, objectRef *autoscaling.CrossVersionObjectReference, metricSelector labels.Selector) (replicaCount int32, utilization int64, timestamp time.Time, err error) {
 	// 从apiVersion解析出group version, 如果解析成功，则返回group version kind。否则，返回GroupVersionKind{Kind: kind}
 	// 当objectRef为autoscaling.CrossVersionObjectReference{Kind:"Namespace", Name: "xxx", APIVersion: "v1"}，则访问"/apis/custom.metrics.k8s.io/v1beta2/namespaces/{namespace}/metrics/{metricName}?metricLabelSelector={metricSelector}"，返回v1beta2.MetricValueList[0].Value.MilliValue()和v1beta2.MetricValueList[0].Timestamp.Time
@@ -432,12 +438,12 @@ func (c *ReplicaCalculator) GetObjectPerPodMetricReplicas(statusReplicas int32, 
 
 	replicaCount = statusReplicas
 	// utilization是聚合值（所有pod的总值）
-	// usageRatio是聚合值/(目标平均利用率*副本数)
+	// usageRatio是聚合值/(目标平均利用值*副本数)
 	usageRatio := float64(utilization) / (float64(targetAverageUtilization) * float64(replicaCount))
 	// 不在[1-c.tolerance, 1+c.tolerance]范围内
 	if math.Abs(1.0-usageRatio) > c.tolerance {
 		// update number of replicas if change is large enough
-		// 副本数为总使用的值/目标平均利用率，然后向上取整
+		// 副本数为总使用的值/目标平均利用值，然后向上取整
 		replicaCount = int32(math.Ceil(float64(utilization) / float64(targetAverageUtilization)))
 	}
 	// 现在的平均利用率是总使用的值/当前副本数
@@ -578,16 +584,16 @@ func groupPods(pods []*v1.Pod, metrics metricsclient.PodMetricsInfo, resource v1
 			} else {
 				// Pod still within possible initialisation period.
 				// cpuInitializationPeriod默认为5分钟
-				// pod启动时间在cpuInitializationPeriod内
+				// 现在时间在pod启动时间加cpuInitializationPeriod内（现在时间还未超过pod启动时间加cpuInitializationPeriod）
 				if pod.Status.StartTime.Add(cpuInitializationPeriod).After(time.Now()) {
 					// Ignore sample if pod is unready or one window of metric wasn't collected since last state transition.
-					// ConditionFalse或metric是在readyCondition.LastTransitionTime加metric.Window之前（ready状态且metric计算周期在condition.LastTransitionTime之前）
+					// ConditionFalse或metric是在readyCondition.LastTransitionTime加metric.Window之前（ready Condition为true且这个metric在预期的metric时间（condition.LastTransitionTime加metric.Window）之前）
 					unready = condition.Status == v1.ConditionFalse || metric.Timestamp.Before(condition.LastTransitionTime.Time.Add(metric.Window))
 				} else {
 					// Ignore metric if pod is unready and it has never been ready.
 					// delayOfInitialReadinessStatus默认为30秒
 					// ConditionFalse且Status.StartTime加delayOfInitialReadinessStatus在condition.LastTransitionTime之后
-					// 在delayOfInitialReadinessStatus内（相对Status.StartTime）ConditionFalse，则认为pod为unready
+					// readyCondition.LastTransitionTime在delayOfInitialReadinessStatus内（相对Status.StartTime）ConditionFalse，则认为pod为unready
 					unready = condition.Status == v1.ConditionFalse && pod.Status.StartTime.Add(delayOfInitialReadinessStatus).After(condition.LastTransitionTime.Time)
 				}
 			}
