@@ -1847,7 +1847,7 @@ func (kl *Kubelet) syncPod(o syncPodOptions) error {
 		// expected to run only once and if the kubelet is restarted then
 		// they are not expected to run again.
 		// We don't create and apply updates to cgroup if its a run once pod and was killed above
-		// pod没有被停止（第一次执行，或不是第一次执行且cgroup至少一个存在），或pod的RestartPolicy不为"Never"
+		// pod没有被停止（第一次执行，或不是第一次执行且cgroup全都存在），或pod的RestartPolicy不为"Never"
 		// 且至少有一个cgroup子系统中，pod的cgroup路径不存在，则创建cgroup目录和设置cgroup属性
 		if !(podKilled && pod.Spec.RestartPolicy == v1.RestartPolicyNever) {
 			// 至少有一个cgroup子系统中，pod的cgroup路径不存在
@@ -2287,7 +2287,7 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 			// REMOVE和DELETE区别：REMOVE是pod资源已经不存在了，而DELETE是pod的DeletionTimestamp不为nil（pod资源是存在的）
 			klog.V(2).Infof("SyncLoop (DELETE, %q): %q", u.Source, format.Pods(u.Pods))
 			// DELETE is treated as a UPDATE because of graceful deletion.
-			// 只进行停止pod里所有container和sandbox，其他操作（比如从kl.podManager、处理mirror pod、从kl.probeManager和kl.podWorkers移除）在DELETE中操作
+			// 只进行停止pod里所有container和sandbox，其他操作（比如从kl.podManager、处理mirror pod、从kl.probeManager和kl.podWorkers移除）在REMOVE中操作
 			handler.HandlePodUpdates(u.Pods)
 		case kubetypes.RESTORE:
 			klog.V(2).Infof("SyncLoop (RESTORE, %q): %q", u.Source, format.Pods(u.Pods))
@@ -2707,6 +2707,7 @@ func (kl *Kubelet) HandlePodReconcile(pods []*v1.Pod) {
 func (kl *Kubelet) HandlePodSyncs(pods []*v1.Pod) {
 	start := kl.clock.Now()
 	for _, pod := range pods {
+		// 根据static pod获取mirror pod
 		mirrorPod, _ := kl.podManager.GetMirrorPodByPod(pod)
 		kl.dispatchWork(pod, kubetypes.SyncPodSync, mirrorPod, start)
 	}

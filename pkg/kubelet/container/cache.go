@@ -178,7 +178,7 @@ func (c *cache) getIfNewerThan(id types.UID, minTime time.Time) *data {
 	}
 	// The pod status is not ready.
 	// 其他情况，pod runtime status都是未知状态
-	// 缓存中不存在pod的runtime status且缓存生产时间在minTime的之前，或缓存中存在pod runtime status且pod runtime status生成时间在miniTime之前且在缓存生产时间在minTime的之前
+	// 缓存中不存在pod的runtime status且缓存生产时间在minTime的之前，或缓存中存在pod runtime status且pod runtime status生成时间在miniTime之前且缓存生产时间在minTime的之前
 	return nil
 }
 
@@ -231,7 +231,7 @@ func (c *cache) subscribe(id types.UID, timestamp time.Time) chan *data {
 		return ch
 	}
 	// Add the subscription record.
-	// 缓存中未找到且缓存中数据是过期的，或缓存中找到且是过期的
+	// 缓存中未找到且缓存生产时间在timestamp的之前，或缓存中找到且是过期的
 	c.subscribers[id] = append(c.subscribers[id], &subRecord{time: timestamp, ch: ch})
 	return ch
 }

@@ -80,9 +80,9 @@ type secretManager struct {
 	manager manager.Manager
 }
 
-// 如果是watch方式，从s.manager.items获取对象的objectCacheItem，在objectCacheItem的store中获取对象的资源（secret或configmap）。如果secret或configmap是不可修改的，则停止这个对象的reflector。
+// 如果是watch方式，从s.manager.items获取对象的objectCacheItem，在objectCacheItem的store中获取对象的资源（secret）。如果secret是不可修改的，则停止这个对象的reflector。
 func (s *secretManager) GetSecret(namespace, name string) (*v1.Secret, error) {
-	// 如果是watch方式，从s.manager.items获取对象的objectCacheItem，在objectCacheItem的store中获取对象的资源（secret或configmap）。如果secret或configmap是不可修改的，则停止这个对象的reflector。
+	// 如果是watch方式，从s.manager.items获取对象的objectCacheItem，在objectCacheItem的store中获取对象的资源（secret）。如果secret是不可修改的，则停止这个对象的reflector。
 	object, err := s.manager.GetObject(namespace, name)
 	if err != nil {
 		return nil, err
@@ -93,12 +93,12 @@ func (s *secretManager) GetSecret(namespace, name string) (*v1.Secret, error) {
 	return nil, fmt.Errorf("unexpected object type: %v", object)
 }
 
-// 将pod添加到s.manager.registeredPods字段中，在s.manager.objectStore里增加相关secret或configmap的引用计数，如果这个对象不存在，则创建一个新的reflector（只watch和list这个资源）
+// 将pod添加到s.manager.registeredPods字段中，在s.manager.objectStore里增加相关secret的引用计数，如果这个对象不存在，则创建一个新的reflector（只watch和list这个资源）
 func (s *secretManager) RegisterPod(pod *v1.Pod) {
 	s.manager.RegisterPod(pod)
 }
 
-// 在s.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
+// 在s.manager.objectCache减少pod相关secret的引用计数，相关的secret次数为0，则停止这secret的reflector
 func (s *secretManager) UnregisterPod(pod *v1.Pod) {
 	s.manager.UnregisterPod(pod)
 }

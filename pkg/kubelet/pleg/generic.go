@@ -130,6 +130,7 @@ func (g *GenericPLEG) Watch() chan *PodLifecycleEvent {
 
 // Start spawns a goroutine to relist periodically.
 func (g *GenericPLEG) Start() {
+	// 默认1秒钟执行一次
 	// 从runtime中获得所有运行和不在运行的pod
 	// 将pods更新到g.podRecords里每个uid的current
 	// 遍历g.podRecords里的pod，遍历pod里的普通container和sandbox，根据老的和新的container状态生成PodLifecycleEvent

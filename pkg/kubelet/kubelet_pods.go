@@ -1259,7 +1259,7 @@ func (kl *Kubelet) removeOrphanedPodStatuses(pods []*v1.Pod, mirrorPods []*v1.Po
 // should not contain any blocking calls.
 // 停止不存在的pod的pod worker，并停止周期性执行container的readniess、liveness、start probe的worker
 // 移除不存在pod的容器（容器还在运行，但是不在apiserver中）
-// 移除不存在pod的volume和pod目录，当"/var/lib/kubelet/pods/{podUID}/volume"或volume-subpaths目录都不存在
+// 移除不存在pod的volume和pod目录，当"/var/lib/kubelet/pods/{podUID}/volume"或volume-subpaths目录存在，则记录错误日志
 // 从apiserver中删除所有没有对应static pod的mirror pod
 // 启用cgroupsPerQOS，则处理cgroup路径下不存在的pod
 //   如果pod还存在volume，且不启用keepTerminatedPodVolumes，则pod的cpu cgroup里的cpu share的值为2
@@ -1368,7 +1368,7 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	}
 
 	// 清理开始回退时间离现在已经超过2倍最大回收周期的item（格式{pod name}_{pod namespace}_{pod uid}_{container name}_{container hash）
-	// 容器重启的回退周期清理
+	// 即超过最大回退周期2倍的容器，重启的回退周期重置
 	kl.backOff.GC()
 	return nil
 }

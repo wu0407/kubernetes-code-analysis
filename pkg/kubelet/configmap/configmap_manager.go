@@ -79,7 +79,7 @@ type configMapManager struct {
 	manager manager.Manager
 }
 
-// 如果是watch方式，从c.manager.items获取对象的objectCacheItem，在objectCacheItem的store中获取对象的资源（secret或configmap）。如果secret或configmap是不可修改的，则停止这个对象的reflector。
+// 如果是watch方式，从c.manager.items获取对象的objectCacheItem，在objectCacheItem的store中获取对象的资源（configmap）。如果configmap是不可修改的，则停止这个对象的reflector。
 func (c *configMapManager) GetConfigMap(namespace, name string) (*v1.ConfigMap, error) {
 	object, err := c.manager.GetObject(namespace, name)
 	if err != nil {
@@ -95,7 +95,7 @@ func (c *configMapManager) RegisterPod(pod *v1.Pod) {
 	c.manager.RegisterPod(pod)
 }
 
-// 在c.manager.objectCache减少pod相关secret或configmap的引用计数，相关的secret或configmap次数为0，则停止这secret或configmap的reflector
+// 在c.manager.objectCache减少pod相关configmap的引用计数，相关的secret或configmap次数为0，则停止这configmap的reflector
 func (c *configMapManager) UnregisterPod(pod *v1.Pod) {
 	c.manager.UnregisterPod(pod)
 }
