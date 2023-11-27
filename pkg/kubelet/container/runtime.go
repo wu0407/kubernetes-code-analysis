@@ -597,6 +597,7 @@ func (p *Pod) FindSandboxByID(id ContainerID) *Container {
 
 // ToAPIPod converts Pod to v1.Pod. Note that if a field in v1.Pod has no
 // corresponding field in Pod, the field would not be populated.
+// 内部Pod类型转成api的Pod
 func (p *Pod) ToAPIPod() *v1.Pod {
 	var pod v1.Pod
 	pod.UID = p.ID
@@ -618,6 +619,7 @@ func (p *Pod) IsEmpty() bool {
 }
 
 // GetPodFullName returns a name that uniquely identifies a pod.
+// {pod name}_{pod namespace}
 func GetPodFullName(pod *v1.Pod) string {
 	// Use underscore as the delimiter because it is not allowed in pod name
 	// (DNS subdomain format), while allowed in the container name format.

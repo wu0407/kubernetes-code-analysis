@@ -292,12 +292,19 @@ type podSyncStatus struct {
 	statusPostTerminating []PodStatusFunc
 }
 
+// 返回s.working的值
 func (s *podSyncStatus) IsWorking() bool              { return s.working }
+// s.terminatingAt不为0值返回true
 func (s *podSyncStatus) IsTerminationRequested() bool { return !s.terminatingAt.IsZero() }
+// 返回s.startedTerminating的值
 func (s *podSyncStatus) IsTerminationStarted() bool   { return s.startedTerminating }
+// s.terminatedAt不为0值返回true
 func (s *podSyncStatus) IsTerminated() bool           { return !s.terminatedAt.IsZero() }
+// 返回s.finished的值
 func (s *podSyncStatus) IsFinished() bool             { return s.finished }
+// 返回s.evicted的值
 func (s *podSyncStatus) IsEvicted() bool              { return s.evicted }
+// 返回s.deleted的值
 func (s *podSyncStatus) IsDeleted() bool              { return s.deleted }
 
 // podWorkers keeps track of operations on pods and ensures each pod is
@@ -460,6 +467,8 @@ func (p *podWorkers) IsPodKnownTerminated(uid types.UID) bool {
 	return false
 }
 
+// 如果uid在p.podSyncStatuses里，返回podWorker是否不处在terminated状态
+// 否则在"至少一个pod worker执行了syncPod，即已经有pod通过UpdatePod()启动"，返回false，否则返回true
 func (p *podWorkers) CouldHaveRunningContainers(uid types.UID) bool {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
@@ -470,6 +479,8 @@ func (p *podWorkers) CouldHaveRunningContainers(uid types.UID) bool {
 	return !p.podsSynced
 }
 
+// 如果uid在p.podSyncStatuses里，返回podWorker是否处在terminating状态
+// 否则，返回false
 func (p *podWorkers) IsPodTerminationRequested(uid types.UID) bool {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
@@ -495,6 +506,8 @@ func (p *podWorkers) ShouldPodContainersBeTerminating(uid types.UID) bool {
 	return p.podsSynced
 }
 
+// 如果uid在p.podSyncStatuses里，返回是否terminated状态
+// 否则在"至少一个pod worker执行了syncPod，即已经有pod通过UpdatePod()启动"，返回true，否则返回false
 func (p *podWorkers) ShouldPodRuntimeBeRemoved(uid types.UID) bool {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
@@ -506,6 +519,8 @@ func (p *podWorkers) ShouldPodRuntimeBeRemoved(uid types.UID) bool {
 	return p.podsSynced
 }
 
+// 如果uid在p.podSyncStatuses里，则当pod是被驱逐或"pod被删除且处于terminated状态"，返回true，否则返回false
+// 否则在"至少一个pod worker执行了syncPod，即已经有pod通过UpdatePod()启动"，返回true，否则返回false
 func (p *podWorkers) ShouldPodContentBeRemoved(uid types.UID) bool {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
@@ -517,6 +532,8 @@ func (p *podWorkers) ShouldPodContentBeRemoved(uid types.UID) bool {
 	return p.podsSynced
 }
 
+// podFullName在p.startedStaticPodsByFullname里且对应的uid在 p.podSyncStatuses，且状态为terminating，则返回true
+// 其他返回false
 func (p *podWorkers) IsPodForMirrorPodTerminatingByFullName(podFullName string) bool {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
@@ -535,6 +552,7 @@ func (p *podWorkers) IsPodForMirrorPodTerminatingByFullName(podFullName string) 
 	return true
 }
 
+// 运行的container数量为0，且Read状态的sandbox数量为0，返回true
 func isPodStatusCacheTerminal(status *kubecontainer.PodStatus) bool {
 	runningContainers := 0
 	runningSandboxes := 0
@@ -559,16 +577,25 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 	// the terminating part of the lifecycle
 	pod := options.Pod
 	var isRuntimePod bool
+	// options.RunningPod不为nil且options.Pod为nil
+	//   如果options.UpdateType不为SyncPodKill，则直接返回
+	//   否则重新设置options.Pod为options.RunningPod转成api的Pod
+	// options.RunningPod不为nil且options.Pod不为nil，则设置options.RunningPod为nil
 	if options.RunningPod != nil {
+		// options.RunningPod不为nil且options.Pod为nil
 		if options.Pod == nil {
+			// 内部Pod类型转成api的Pod
 			pod = options.RunningPod.ToAPIPod()
+			// options.UpdateType不为SyncPodKill，则直接返回
 			if options.UpdateType != kubetypes.SyncPodKill {
 				klog.InfoS("Pod update is ignored, runtime pods can only be killed", "pod", klog.KObj(pod), "podUID", pod.UID)
 				return
 			}
+			// 重新设置options.Pod
 			options.Pod = pod
 			isRuntimePod = true
 		} else {
+			// options.RunningPod不为nil且options.Pod不为nil，则设置options.RunningPod为nil
 			options.RunningPod = nil
 			klog.InfoS("Pod update included RunningPod which is only valid when Pod is not specified", "pod", klog.KObj(options.Pod), "podUID", options.Pod.UID)
 		}
@@ -581,18 +608,24 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 	// decide what to do with this pod - we are either setting it up, tearing it down, or ignoring it
 	now := time.Now()
 	status, ok := p.podSyncStatuses[uid]
+	// pod第一次被sync（在p.podSyncStatuses里没有记录）
 	if !ok {
 		klog.V(4).InfoS("Pod is being synced for the first time", "pod", klog.KObj(pod), "podUID", pod.UID)
 		status = &podSyncStatus{
 			syncedAt: now,
+			// {pod name}_{pod namespace}
 			fullname: kubecontainer.GetPodFullName(pod),
 		}
 		// if this pod is being synced for the first time, we need to make sure it is an active pod
+		// pod不是runtimePod（options.RunningPod不为nil且options.Pod为nil），且pod的phase为failed或succeed，则检查pod是否已经处于终止状态
 		if !isRuntimePod && (pod.Status.Phase == v1.PodFailed || pod.Status.Phase == v1.PodSucceeded) {
 			// check to see if the pod is not running and the pod is terminal.
 			// If this succeeds then record in the podWorker that it is terminated.
+			// 从缓存中获得pod的运行时状态（有运行时状态数据）
 			if statusCache, err := p.podCache.Get(pod.UID); err == nil {
+				// 运行的container数量为0，且Read状态的sandbox数量为0
 				if isPodStatusCacheTerminal(statusCache) {
+					// podWorker最终的状态（代表podWorkers已经处理完成）
 					status = &podSyncStatus{
 						terminatedAt:       now,
 						terminatingAt:      now,
@@ -612,6 +645,13 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 	// pod but it's possible for an apiserver to extremely rarely do something similar) - flag the sync status
 	// to indicate that after the pod terminates it should be reset to "not running" to allow a subsequent add/update
 	// to start the pod worker again
+	// status.terminatingAt不为0值，且options.UpdateType为kubetypes.SyncPodCreate（代表pod要生成容器），则设置status.restartRequested为true，然后返回
+	// 补充：
+	// (kl *Kubelet) syncLoopIteration里houseKeeping（每2秒执行一次）会调用kubelet.HandlePodCleanups--》SyncKnownPods里会判断status.restartRequested为true话，且pod worker已完成，则执行清理
+	// 从p.podSyncStatuses中删除uid
+	// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+	// 并从p.lastUndeliveredWorkUpdate移除uid
+	// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
 	if status.IsTerminationRequested() {
 		if options.UpdateType == kubetypes.SyncPodCreate {
 			status.restartRequested = true
@@ -621,6 +661,7 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 	}
 
 	// once a pod is terminated by UID, it cannot reenter the pod worker (until the UID is purged by housekeeping)
+	// podWorker已经处理完成，直接返回
 	if status.IsFinished() {
 		klog.V(4).InfoS("Pod is finished processing, no further updates", "pod", klog.KObj(pod), "podUID", pod.UID)
 		return
@@ -628,8 +669,15 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 
 	// check for a transition to terminating
 	var becameTerminating bool
+	// podWorker不处于正在terminating状态
+	// 下面这几种情况设置status.terminatingAt为now，代表即将开始关闭容器（进入terminating状态）
+	// 1. options.RunningPod不为nil且options.Pod为nil
+	// 2. pod.DeletionTimestamp不为nil
+	// 3. pod的phase为failed或succeed
+	// 4. options.UpdateType为kubetypes.SyncPodKill
 	if !status.IsTerminationRequested() {
 		switch {
+		// options.RunningPod不为nil且options.Pod为nil
 		case isRuntimePod:
 			klog.V(4).InfoS("Pod is orphaned and must be torn down", "pod", klog.KObj(pod), "podUID", pod.UID)
 			status.deleted = true
@@ -660,10 +708,12 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 	var workType PodWorkType
 	var wasGracePeriodShortened bool
 	switch {
+	// podWorker已经完成了terminating处于terminated状态
 	case status.IsTerminated():
 		// A terminated pod may still be waiting for cleanup - if we receive a runtime pod kill request
 		// due to housekeeping seeing an older cached version of the runtime pod simply ignore it until
 		// after the pod worker completes.
+		// options.RunningPod不为nil且options.Pod为nil，直接返回
 		if isRuntimePod {
 			klog.V(3).InfoS("Pod is waiting for termination, ignoring runtime-only kill until after pod worker is fully terminated", "pod", klog.KObj(pod), "podUID", pod.UID)
 			return
@@ -678,6 +728,7 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 		}
 		options.KillPodOptions = nil
 
+	// podWorker处于正在terminating状态
 	case status.IsTerminationRequested():
 		workType = TerminatingPodWork
 		if options.KillPodOptions == nil {
@@ -691,8 +742,13 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 			status.statusPostTerminating = append(status.statusPostTerminating, fn)
 		}
 
+		// 当status.gracePeriod（只计算不为0情况，为0认为没有设置）、pod.DeletionGracePeriodSeconds、options.PodTerminationGracePeriodSecondsOverride都设置了取最小的
+		// 上面的都没有设置，则gracePeriod为*pod.Spec.TerminationGracePeriodSeconds
+		// gracePeriod为0，则设置为1
+		// 返回最后的gracePeriod，和判断是否"status.gracePeriod不为0且最后的gracePeriod和status.gracePeriod不一样（返回true）"
 		gracePeriod, gracePeriodShortened := calculateEffectiveGracePeriod(status, pod, options.KillPodOptions)
 
+		// 是否“status.gracePeriod不为0，但是gracePeriod被其他设置覆盖（pod.DeletionGracePeriodSeconds、options.PodTerminationGracePeriodSecondsOverride）成更小的”
 		wasGracePeriodShortened = gracePeriodShortened
 		status.gracePeriod = gracePeriod
 		// always set the grace period for syncTerminatingPod so we don't have to recalculate,
@@ -718,6 +774,7 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 	}
 
 	// start the pod worker goroutine if it doesn't exist
+	// 判断pod uid对应的chan是否存在
 	podUpdates, exists := p.podUpdates[uid]
 	if !exists {
 		// We need to have a buffer here, because checkForUpdates() method that
@@ -728,6 +785,7 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 		p.podUpdates[uid] = podUpdates
 
 		// ensure that static pods start in the order they are received by UpdatePod
+		// pod是static pod
 		if kubetypes.IsStaticPod(pod) {
 			p.waitingToStartStaticPodsByFullname[status.fullname] =
 				append(p.waitingToStartStaticPodsByFullname[status.fullname], uid)
@@ -736,6 +794,7 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 		// allow testing of delays in the pod update channel
 		var outCh <-chan podWork
 		if p.workerChannelFn != nil {
+			// 包装一下chan，让它可以记录延迟
 			outCh = p.workerChannelFn(uid, podUpdates)
 		} else {
 			outCh = podUpdates
@@ -752,6 +811,7 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 	}
 
 	// dispatch a request to the pod worker if none are running
+	// podWorker不在工作状态，则设置为工作状态（status.working为true），然后发送podWork到chan，直接返回
 	if !status.IsWorking() {
 		status.working = true
 		podUpdates <- work
@@ -760,9 +820,11 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 
 	// capture the maximum latency between a requested update and when the pod
 	// worker observes it
+	// pod uid在p.lastUndeliveredWorkUpdate已经存在最后未处理的podWork
 	if undelivered, ok := p.lastUndeliveredWorkUpdate[pod.UID]; ok {
 		// track the max latency between when a config change is requested and when it is realized
 		// NOTE: this undercounts the latency when multiple requests are queued, but captures max latency
+		// 已经存在未处理的podWork的Options.StartTime早于现在的podWork.Options.StartTime，则现在的podWork.Options.StartTime更新为已经存在未处理的podWork的Options.StartTime（为了记录最长的delay时间）
 		if !undelivered.Options.StartTime.IsZero() && undelivered.Options.StartTime.Before(work.Options.StartTime) {
 			work.Options.StartTime = undelivered.Options.StartTime
 		}
@@ -771,6 +833,8 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 	// always sync the most recent data
 	p.lastUndeliveredWorkUpdate[pod.UID] = work
 
+	// podWorker从不是terminating状态转为terminating状态或者"status.gracePeriod不为0，但是gracePeriod被其他设置覆盖（pod.DeletionGracePeriodSeconds、options.PodTerminationGracePeriodSecondsOverride）成更小的"，且设置了status.cancelFn，则执行status.cancelFn
+	// 即podWorker在工作中导致现在的PodWork未处理，且如果podWorker从不是terminating状态转为terminating状态或者"status.gracePeriod不为0，但是gracePeriod被其他设置覆盖（pod.DeletionGracePeriodSeconds、options.PodTerminationGracePeriodSecondsOverride）成更小的"，则执行取消context操作
 	if (becameTerminating || wasGracePeriodShortened) && status.cancelFn != nil {
 		klog.V(3).InfoS("Cancelling current pod sync", "pod", klog.KObj(pod), "podUID", pod.UID, "updateType", work.WorkType)
 		status.cancelFn()
@@ -780,17 +844,23 @@ func (p *podWorkers) UpdatePod(options UpdatePodOptions) {
 
 // calculateEffectiveGracePeriod sets the initial grace period for a newly terminating pod or allows a
 // shorter grace period to be provided, returning the desired value.
+// 当status.gracePeriod（只计算不为0情况，为0认为没有设置）、pod.DeletionGracePeriodSeconds、options.PodTerminationGracePeriodSecondsOverride都设置了取最小的
+// 上面的都没有设置，则gracePeriod为*pod.Spec.TerminationGracePeriodSeconds
+// gracePeriod为0，则设置为1
+// 返回最后的gracePeriod，和判断是否"status.gracePeriod不为0且最后的gracePeriod和status.gracePeriod不一样（返回true）"
 func calculateEffectiveGracePeriod(status *podSyncStatus, pod *v1.Pod, options *KillPodOptions) (int64, bool) {
 	// enforce the restriction that a grace period can only decrease and track whatever our value is,
 	// then ensure a calculated value is passed down to lower levels
 	gracePeriod := status.gracePeriod
 	// this value is bedrock truth - the apiserver owns telling us this value calculated by apiserver
+	// pod设置了DeletionGracePeriodSeconds，且status.gracePeriod为0或DeletionGracePeriodSeconds小于status.gracePeriod，则gracePeriod为DeletionGracePeriodSeconds
 	if override := pod.DeletionGracePeriodSeconds; override != nil {
 		if gracePeriod == 0 || *override < gracePeriod {
 			gracePeriod = *override
 		}
 	}
 	// we allow other parts of the kubelet (namely eviction) to request this pod be terminated faster
+	// 当设置了options.PodTerminationGracePeriodSecondsOverride，且gracePeriod为0或options.PodTerminationGracePeriodSecondsOverride小于gracePeriod
 	if options != nil {
 		if override := options.PodTerminationGracePeriodSecondsOverride; override != nil {
 			if gracePeriod == 0 || *override < gracePeriod {
@@ -798,8 +868,13 @@ func calculateEffectiveGracePeriod(status *podSyncStatus, pod *v1.Pod, options *
 			}
 		}
 	}
+
+	// 上面简单总结为，当status.gracePeriod（只计算不为0情况，为0认为没有设置）、pod.DeletionGracePeriodSeconds、options.PodTerminationGracePeriodSecondsOverride都设置了取最小的
+	// 那个没有设置就忽略
+
 	// make a best effort to default this value to the pod's desired intent, in the event
 	// the kubelet provided no requested value (graceful termination?)
+	// 上面的都没有设置，则gracePeriod为*pod.Spec.TerminationGracePeriodSeconds
 	if gracePeriod == 0 && pod.Spec.TerminationGracePeriodSeconds != nil {
 		gracePeriod = *pod.Spec.TerminationGracePeriodSeconds
 	}
@@ -814,7 +889,14 @@ func calculateEffectiveGracePeriod(status *podSyncStatus, pod *v1.Pod, options *
 // it requeues the pod and returns false. If the pod will never be able to start
 // because data is missing, or the pod was terminated before start, canEverStart
 // is false.
+// pod不是staticPod，则返回true，true
+// pod是static pod
+//   pod不在p.podSyncStatuses里，则返回false，false
+//   podWorker处于Terminating状态，则返回false，false
+//   根据p.startedStaticPodsByFullname和waitingToStartStaticPodsByFullname，判断static pod不能启动，将uid加入p.workQueue，等待下次kl.syncLoopIteration里syncCh触发执行，同时设置status.working为false，返回false，true
+//   其他情况返回true，true
 func (p *podWorkers) allowPodStart(pod *v1.Pod) (canStart bool, canEverStart bool) {
+	// pod不是staticPod，则返回true，true
 	if !kubetypes.IsStaticPod(pod) {
 		// TODO: Do we want to allow non-static pods with the same full name?
 		// Note that it may disable the force deletion of pods.
@@ -822,14 +904,27 @@ func (p *podWorkers) allowPodStart(pod *v1.Pod) (canStart bool, canEverStart boo
 	}
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
+	// pod不在p.podSyncStatuses里，则返回false，false
 	status, ok := p.podSyncStatuses[pod.UID]
 	if !ok {
 		klog.ErrorS(nil, "Pod sync status does not exist, the worker should not be running", "pod", klog.KObj(pod), "podUID", pod.UID)
 		return false, false
 	}
+	// podWorker处于Terminating状态，则返回false，false
 	if status.IsTerminationRequested() {
 		return false, false
 	}
+	// 下面几种情况返回true
+	// 1. static pod的fullname已经在p.startedStaticPodsByFullname（已经启动的static pod）里，且保存的uid等于现在的uid
+	// 2. fullname对应p.waitingToStartStaticPodsByFullname里列表为空
+	// 3. 遍历waitingToStartStaticPodsByFullname列表中uid，第一个不是"等待启动的uid不在p.podSyncStatuses，或处于Terminating状态，或处于Terminated状态"等待启动的uid为现在的uid
+	// 如果遍历过程中第一个不是"等待启动的uid不在p.podSyncStatuses，或处于Terminating状态，或处于Terminated状态"等待启动的uid为现在的uid
+	//   如果剩余uid列表不为空，则将static的fullname从p.waitingToStartStaticPodsByFullname移除，否则更新p.waitingToStartStaticPodsByFullname[fullname]为剩余未遍历uid
+	//   将static的fullname和对应的uid保存到p.startedStaticPodsByFullname
+	// fullname对应p.waitingToStartStaticPodsByFullname里列表为空，将static的fullname和对应的uid保存到p.startedStaticPodsByFullname
+	// 如果遍历过程中第一个不是"等待启动的uid不在p.podSyncStatuses，或处于Terminating状态，或处于Terminated状态"等待启动的uid不为现在的uid，则则更新p.waitingToStartStaticPodsByFullname[fullname]为当前的等待的uid到最后未遍历的uid，然后返回false
+	//
+	// 如果不能启动，则将uid加入p.workQueue，等待下次kl.syncLoopIteration里syncCh触发执行，同时设置status.working为false，返回false，true
 	if !p.allowStaticPodStart(status.fullname, pod.UID) {
 		p.workQueue.Enqueue(pod.UID, wait.Jitter(p.backOffPeriod, workerBackOffPeriodJitterFactor))
 		status.working = false
@@ -841,8 +936,18 @@ func (p *podWorkers) allowPodStart(pod *v1.Pod) (canStart bool, canEverStart boo
 // allowStaticPodStart tries to start the static pod and returns true if
 // 1. there are no other started static pods with the same fullname
 // 2. the uid matches that of the first valid static pod waiting to start
+// 下面几种情况返回true
+// 1. static pod的fullname已经在p.startedStaticPodsByFullname（已经启动的static pod）里，且保存的uid等于现在的uid
+// 2. fullname对应p.waitingToStartStaticPodsByFullname里列表为空
+// 3. 遍历waitingToStartStaticPodsByFullname列表中uid，第一个不是"等待启动的uid不在p.podSyncStatuses，或处于Terminating状态，或处于Terminated状态"等待启动的uid为现在的uid
+// 如果遍历过程中第一个不是"等待启动的uid不在p.podSyncStatuses，或处于Terminating状态，或处于Terminated状态"等待启动的uid为现在的uid
+//   如果剩余uid列表不为空，则将static的fullname从p.waitingToStartStaticPodsByFullname移除，否则更新p.waitingToStartStaticPodsByFullname[fullname]为剩余未遍历uid
+//   将static的fullname和对应的uid保存到p.startedStaticPodsByFullname
+// fullname对应p.waitingToStartStaticPodsByFullname里列表为空，将static的fullname和对应的uid保存到p.startedStaticPodsByFullname
+// 如果遍历过程中第一个不是"等待启动的uid不在p.podSyncStatuses，或处于Terminating状态，或处于Terminated状态"等待启动的uid不为现在的uid，则则更新p.waitingToStartStaticPodsByFullname[fullname]为当前的等待的uid到最后未遍历的uid，然后返回false
 func (p *podWorkers) allowStaticPodStart(fullname string, uid types.UID) bool {
 	startedUID, started := p.startedStaticPodsByFullname[fullname]
+	// static pod的fullname已经在p.startedStaticPodsByFullname（已经启动的static pod）里，则返回保存的uid是否等于现在的uid
 	if started {
 		return startedUID == uid
 	}
@@ -850,26 +955,36 @@ func (p *podWorkers) allowStaticPodStart(fullname string, uid types.UID) bool {
 	waitingPods := p.waitingToStartStaticPodsByFullname[fullname]
 	// TODO: This is O(N) with respect to the number of updates to static pods
 	// with overlapping full names, and ideally would be O(1).
+	// 遍历waitingToStartStaticPodsByFullname列表中uid
+	// 如果是"等待启动的uid不在p.podSyncStatuses，或处于Terminating状态，或处于Terminated状态"，则跳过
+	// 如果遇到启动的uid不为现在的uid，则更新p.waitingToStartStaticPodsByFullname[fullname]为移除了前面的uid，然后返回false
+	// 遇到这个等待启动的uid为现在的uid，终止循环
 	for i, waitingUID := range waitingPods {
 		// has pod already terminated or been deleted?
 		status, ok := p.podSyncStatuses[waitingUID]
+		// 等待启动的uid不在p.podSyncStatuses，或处于Terminating状态，或处于Terminated状态，则跳过
 		if !ok || status.IsTerminationRequested() || status.IsTerminated() {
 			continue
 		}
 		// another pod is next in line
+		// 等待启动的uid不为现在的uid，则更新p.waitingToStartStaticPodsByFullname[fullname]为移除了前面的uid，然后返回false
 		if waitingUID != uid {
 			p.waitingToStartStaticPodsByFullname[fullname] = waitingPods[i:]
 			return false
 		}
 		// we are up next, remove ourselves
+		// 这个等待启动的uid为现在的uid，则waitingPods为剩余uid列表
 		waitingPods = waitingPods[i+1:]
 		break
 	}
+	// 剩余的uid列表不为空，则更新p.waitingToStartStaticPodsByFullname为剩余的uid列表
 	if len(waitingPods) != 0 {
 		p.waitingToStartStaticPodsByFullname[fullname] = waitingPods
 	} else {
+		// 剩余uid列表不为空，则将static的fullname从p.waitingToStartStaticPodsByFullname移除
 		delete(p.waitingToStartStaticPodsByFullname, fullname)
 	}
+	// 将static的fullname和对应的uid保存到p.startedStaticPodsByFullname
 	p.startedStaticPodsByFullname[fullname] = uid
 	return true
 }
@@ -882,9 +997,21 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan podWork) {
 
 		// Decide whether to start the pod. If the pod was terminated prior to the pod being allowed
 		// to start, we have to clean it up and then exit the pod worker loop.
+		// 一旦pod能启动，则podStarted为true，就不走这个逻辑
 		if !podStarted {
+			// pod不是staticPod，则返回true，true
+			// pod是static pod
+			//   pod不在p.podSyncStatuses里，则返回false，false
+			//   podWorker处于Terminating状态，则返回false，false
+			//   根据p.startedStaticPodsByFullname和waitingToStartStaticPodsByFullname，判断static pod不能启动，将uid加入p.workQueue，等待下次kl.syncLoopIteration里syncCh触发执行，同时设置status.working为false，返回false，true
+			//   其他情况返回true，true
 			canStart, canEverStart := p.allowPodStart(pod)
+			// pod永远不能启动，执行最后的状态设置动作，然后返回
 			if !canEverStart {
+				// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+				// 并从p.lastUndeliveredWorkUpdate移除uid
+				// 如果有p.podSyncStatuses里uid对应的status，则设置status.finished为true，status.working为false，status.terminatedAt为time.Now()
+				// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
 				p.completeUnstartedTerminated(pod)
 				if start := update.Options.StartTime; !start.IsZero() {
 					metrics.PodWorkerDuration.WithLabelValues("terminated").Observe(metrics.SinceInSeconds(start))
@@ -892,6 +1019,7 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan podWork) {
 				klog.V(4).InfoS("Processing pod event done", "pod", klog.KObj(pod), "podUID", pod.UID, "updateType", update.WorkType)
 				return
 			}
+			// pod暂时不能启动，则等待chan下一个podWork
 			if !canStart {
 				klog.V(4).InfoS("Pod cannot start yet", "pod", klog.KObj(pod), "podUID", pod.UID)
 				continue
@@ -930,23 +1058,35 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan podWork) {
 				return err
 			}
 
+			// uid不在p.podSyncStatuses中则返回nil
+			// 如果没有context或context已经取消，则创建一个新的context，返回这个context
+			// 否则，返回status.ctx
 			ctx := p.contextForWorker(pod.UID)
 
 			// Take the appropriate action (illegal phases are prevented by UpdatePod)
 			switch {
+			// work类型为TerminatedPodWork
 			case update.WorkType == TerminatedPodWork:
+				// p.syncTerminatedPodFn实现在pkg\kubelet\kubelet.go里(kl *Kubelet) syncTerminatedPod
 				err = p.syncTerminatedPodFn(ctx, pod, status)
 
+			// work类型为TerminatingPodWork
 			case update.WorkType == TerminatingPodWork:
 				var gracePeriod *int64
+				// (p *podWorkers)UpdatePod中保证update.Options.KillPodOptions不为nil
 				if opt := update.Options.KillPodOptions; opt != nil {
 					gracePeriod = opt.PodTerminationGracePeriodSecondsOverride
 				}
+				// uid不在p.podSyncStatuses，则返回nil
+				// 处于Terminating状态，但是status.startedTerminating为false，则status.startedTerminating设置为true（代表正在执行terminating）
+				// 如果有status.statusPostTerminating，则返回status.statusPostTerminating列表里最后一个，否则返回nil
 				podStatusFn := p.acknowledgeTerminating(pod)
 
+				// p.syncTerminatingPodFn实现在pkg\kubelet\kubelet.go里(kl *Kubelet) syncTerminatingPod
 				err = p.syncTerminatingPodFn(ctx, pod, status, update.Options.RunningPod, gracePeriod, podStatusFn)
 
 			default:
+				// p.syncPodFn实现在pkg\kubelet\kubelet.go里(kl *Kubelet) syncPod
 				isTerminal, err = p.syncPodFn(ctx, update.Options.UpdateType, pod, update.Options.MirrorPod, status)
 			}
 
@@ -966,6 +1106,11 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan podWork) {
 
 		case update.WorkType == TerminatedPodWork:
 			// we can shut down the worker
+			// 已经执行完syncTerminatedPodFn，则执行最后状态设置
+			// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+			// 并从p.lastUndeliveredWorkUpdate移除uid
+			// 如果pod.UID存在p.podSyncStatuses中，则设置status.finished为true，status.working为false
+			// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
 			p.completeTerminated(pod)
 			if start := update.Options.StartTime; !start.IsZero() {
 				metrics.PodWorkerDuration.WithLabelValues("terminated").Observe(metrics.SinceInSeconds(start))
@@ -975,7 +1120,12 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan podWork) {
 
 		case update.WorkType == TerminatingPodWork:
 			// pods that don't exist in config don't need to be terminated, garbage collection will cover them
+			// 存在update.Options.RunningPod（孤儿pod），则podWorker不需要切换到terminated状态
 			if update.Options.RunningPod != nil {
+				// 如果pod.UID存在p.podSyncStatuses中，则设置status.terminatedAt为time.Now()，status.finished为true，status.working为false
+				// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
+				// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+				// 并从p.lastUndeliveredWorkUpdate移除uid
 				p.completeTerminatingRuntimePod(pod)
 				if start := update.Options.StartTime; !start.IsZero() {
 					metrics.PodWorkerDuration.WithLabelValues(update.Options.UpdateType.String()).Observe(metrics.SinceInSeconds(start))
@@ -984,17 +1134,30 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan podWork) {
 				return
 			}
 			// otherwise we move to the terminating phase
+			// 如果pod.UID存在p.podSyncStatuses中，设置status.terminatedAt为time.Now()，关闭status.notifyPostTerminating里的所有chan，设置status.notifyPostTerminating为nil，设置status.statusPostTerminating为nil
+			// 向p.lastUndeliveredWorkUpdate里添加pod.UID和对应的podWork（WorkType为TerminatedPodWork），代表下一次循环执行Terminated
 			p.completeTerminating(pod)
 			phaseTransition = true
 
+		// syncPod返回pod为terminal
 		case isTerminal:
 			// if syncPod indicated we are now terminal, set the appropriate pod status to move to terminating
 			klog.V(4).InfoS("Pod is terminal", "pod", klog.KObj(pod), "podUID", pod.UID, "updateType", update.WorkType)
+			// 如果pod.UID存在p.podSyncStatuses中，如果status.terminatingAt为0值，则设置status.terminatingAt为time.Now()，同时设置status.startedTerminating为true（代表terminating正在执行，告诉其他组件pod不会生成新的container）
+			// 向p.lastUndeliveredWorkUpdate里添加pod.UID和对应的podWork（WorkType为TerminatingPodWork），代表下一次循环执行Terminating
 			p.completeSync(pod)
 			phaseTransition = true
 		}
 
 		// queue a retry if necessary, then put the next event in the channel if any
+		// 加入p.workQueue队列（让下次(kl *Kubelet) syncLoopIteration里syncCh触发执行（每1秒触发一次），从p.workQueue读取出过期的uid重新执行UpdatePod）
+		// 1. 阶段转换（terminating到terminated，sync到terminating），立即加入p.workQueue
+		// 2. 没有错误，加入队列但是等待[60s, 90s]
+		// 3. 错误包含"network is not ready"，加入队列但是等待[1s, 1.5s]
+		// 4. 发生其他错误，加入队列并等待[10s, 15s]
+		// 消费并清空p.lastUndeliveredWorkUpdate[uid]，或直接设置设置uid在p.podSyncStatuses里的status.working为false
+		// 存在还未投递的podWork（uid在p.lastUndeliveredWorkUpdate中），则将未投递的podWork发生到uid对应的chan，然后从p.lastUndeliveredWorkUpdate中移除这个uid
+		// 否则设置uid在p.podSyncStatuses里的status.working为false（下次执行UpdatePod，直接将podWork发送到chan中，而不是添加到p.lastUndeliveredWorkUpdate）
 		p.completeWork(pod, phaseTransition, err)
 		if start := update.Options.StartTime; !start.IsZero() {
 			metrics.PodWorkerDuration.WithLabelValues(update.Options.UpdateType.String()).Observe(metrics.SinceInSeconds(start))
@@ -1006,6 +1169,9 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan podWork) {
 // acknowledgeTerminating sets the terminating flag on the pod status once the pod worker sees
 // the termination state so that other components know no new containers will be started in this
 // pod. It then returns the status function, if any, that applies to this pod.
+// uid不在p.podSyncStatuses，则返回nil
+// 处于Terminating状态，但是status.startedTerminating为false，则status.startedTerminating设置为true（代表正在执行terminating，告诉其他组件pod不会生成新的container）
+// 如果有status.statusPostTerminating，则返回status.statusPostTerminating列表里最后一个，否则返回nil
 func (p *podWorkers) acknowledgeTerminating(pod *v1.Pod) PodStatusFunc {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
@@ -1015,11 +1181,13 @@ func (p *podWorkers) acknowledgeTerminating(pod *v1.Pod) PodStatusFunc {
 		return nil
 	}
 
+	// 处于Terminating状态，但是status.startedTerminating为false，则status.startedTerminating设置为true（代表正在执行terminating）
 	if !status.terminatingAt.IsZero() && !status.startedTerminating {
 		klog.V(4).InfoS("Pod worker has observed request to terminate", "pod", klog.KObj(pod), "podUID", pod.UID)
 		status.startedTerminating = true
 	}
 
+	// 返回status.statusPostTerminating列表里最后一个
 	if l := len(status.statusPostTerminating); l > 0 {
 		return status.statusPostTerminating[l-1]
 	}
@@ -1030,6 +1198,8 @@ func (p *podWorkers) acknowledgeTerminating(pod *v1.Pod) PodStatusFunc {
 // be terminated. This happens when the natural pod lifecycle completes - any pod which is not RestartAlways
 // exits. Unnatural completions, such as evictions, API driven deletion or phase transition, are handled by
 // UpdatePod.
+// 如果pod.UID存在p.podSyncStatuses中，如果status.terminatingAt为0值，则设置status.terminatingAt为time.Now()，同时设置status.startedTerminating为true（代表terminating正在执行，告诉其他组件pod不会生成新的container）
+// 向p.lastUndeliveredWorkUpdate里添加pod.UID和对应的podWork（WorkType为TerminatingPodWork），代表下一次循环执行Terminating
 func (p *podWorkers) completeSync(pod *v1.Pod) {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
@@ -1057,6 +1227,8 @@ func (p *podWorkers) completeSync(pod *v1.Pod) {
 // no container is running, no container will be started in the future, and we are ready for
 // cleanup.  This updates the termination state which prevents future syncs and will ensure
 // other kubelet loops know this pod is not running any containers.
+// 如果pod.UID存在p.podSyncStatuses中，设置status.terminatedAt为time.Now()，关闭status.notifyPostTerminating里的所有chan，设置status.notifyPostTerminating为nil，设置status.statusPostTerminating为nil
+// 向p.lastUndeliveredWorkUpdate里添加pod.UID和对应的podWork（WorkType为TerminatedPodWork），代表下一次循环执行Terminated
 func (p *podWorkers) completeTerminating(pod *v1.Pod) {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
@@ -1088,12 +1260,17 @@ func (p *podWorkers) completeTerminating(pod *v1.Pod) {
 // pods have no API representation, we want to exit the loop at this point
 // cleanup.  This updates the termination state which prevents future syncs and will ensure
 // other kubelet loops know this pod is not running any containers.
+// 如果pod.UID存在p.podSyncStatuses中，则设置status.terminatedAt为time.Now()，status.finished为true，status.working为false
+// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
+// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+// 并从p.lastUndeliveredWorkUpdate移除uid
 func (p *podWorkers) completeTerminatingRuntimePod(pod *v1.Pod) {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
 
 	klog.V(4).InfoS("Pod terminated all orphaned containers successfully and worker can now stop", "pod", klog.KObj(pod), "podUID", pod.UID)
 
+	// 如果pod.UID存在p.podSyncStatuses中，则设置status.terminatedAt为time.Now()，status.finished为true，status.working为false
 	if status, ok := p.podSyncStatuses[pod.UID]; ok {
 		if status.terminatingAt.IsZero() {
 			klog.V(4).InfoS("Pod worker was terminated but did not have terminatingAt set, likely programmer error", "pod", klog.KObj(pod), "podUID", pod.UID)
@@ -1112,14 +1289,22 @@ func (p *podWorkers) completeTerminatingRuntimePod(pod *v1.Pod) {
 
 // completeTerminated is invoked after syncTerminatedPod completes successfully and means we
 // can stop the pod worker. The pod is finalized at this point.
+// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+// 并从p.lastUndeliveredWorkUpdate移除uid
+// 如果pod.UID存在p.podSyncStatuses中，则设置status.finished为true，status.working为false
+// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
 func (p *podWorkers) completeTerminated(pod *v1.Pod) {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
 
 	klog.V(4).InfoS("Pod is complete and the worker can now stop", "pod", klog.KObj(pod), "podUID", pod.UID)
 
+	// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+	// 并从p.lastUndeliveredWorkUpdate移除uid
 	p.cleanupPodUpdates(pod.UID)
 
+	// 如果pod.UID存在p.podSyncStatuses中，则设置status.finished为true，status.working为false
+	// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
 	if status, ok := p.podSyncStatuses[pod.UID]; ok {
 		if status.terminatingAt.IsZero() {
 			klog.V(4).InfoS("Pod worker is complete but did not have terminatingAt set, likely programmer error", "pod", klog.KObj(pod), "podUID", pod.UID)
@@ -1138,18 +1323,26 @@ func (p *podWorkers) completeTerminated(pod *v1.Pod) {
 
 // completeUnstartedTerminated is invoked if a pod that has never been started receives a termination
 // signal before it can be started.
+// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+// 并从p.lastUndeliveredWorkUpdate移除uid
+// 如果有p.podSyncStatuses里uid对应的status，则设置status.finished为true，status.working为false，status.terminatedAt为time.Now()
+// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
 func (p *podWorkers) completeUnstartedTerminated(pod *v1.Pod) {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
 
 	klog.V(4).InfoS("Pod never started and the worker can now stop", "pod", klog.KObj(pod), "podUID", pod.UID)
 
+	// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+	// 并从p.lastUndeliveredWorkUpdate移除uid
 	p.cleanupPodUpdates(pod.UID)
 
 	if status, ok := p.podSyncStatuses[pod.UID]; ok {
+		// 没有设置terminatingAt
 		if status.terminatingAt.IsZero() {
 			klog.V(4).InfoS("Pod worker is complete but did not have terminatingAt set, likely programmer error", "pod", klog.KObj(pod), "podUID", pod.UID)
 		}
+		// 设置了terminatedAt
 		if !status.terminatedAt.IsZero() {
 			klog.V(4).InfoS("Pod worker is complete and had terminatedAt set, likely programmer error", "pod", klog.KObj(pod), "podUID", pod.UID)
 		}
@@ -1165,29 +1358,49 @@ func (p *podWorkers) completeUnstartedTerminated(pod *v1.Pod) {
 
 // completeWork requeues on error or the next sync interval and then immediately executes any pending
 // work.
+// 加入p.workQueue队列（让下次(kl *Kubelet) syncLoopIteration里syncCh触发执行，从p.workQueue读取出过期的uid重新执行UpdatePod）
+// 1. 阶段转换，立即加入p.workQueue
+// 2. 没有错误，加入队列但是等待[60s, 90s]
+// 3. 错误包含"network is not ready"，加入队列但是等待[1s, 1.5s]
+// 4. 发生其他错误，加入队列并等待[10s, 15s]
+// 消费并清空p.lastUndeliveredWorkUpdate[uid]，或直接设置设置uid在p.podSyncStatuses里的status.working为false
+// 存在还未投递的podWork（uid在p.lastUndeliveredWorkUpdate中），则将未投递的podWork发生到uid对应的chan，然后从p.lastUndeliveredWorkUpdate中移除这个uid
+// 否则设置uid在p.podSyncStatuses里的status.working为false（下次执行UpdatePod，直接将podWork发送到chan中，而不是添加到p.lastUndeliveredWorkUpdate）
 func (p *podWorkers) completeWork(pod *v1.Pod, phaseTransition bool, syncErr error) {
 	// Requeue the last update if the last sync returned error.
 	switch {
+	// 阶段转换，立即加入p.workQueue
 	case phaseTransition:
 		p.workQueue.Enqueue(pod.UID, 0)
+	// 没有错误，加入队列但是等待[60s, 90s]
 	case syncErr == nil:
 		// No error; requeue at the regular resync interval.
+		// p.resyncInterval默认为1分钟
 		p.workQueue.Enqueue(pod.UID, wait.Jitter(p.resyncInterval, workerResyncIntervalJitterFactor))
+	// 错误包含"network is not ready"，加入队列但是等待[1s, 1.5s]
 	case strings.Contains(syncErr.Error(), NetworkNotReadyErrorMsg):
 		// Network is not ready; back off for short period of time and retry as network might be ready soon.
 		p.workQueue.Enqueue(pod.UID, wait.Jitter(backOffOnTransientErrorPeriod, workerBackOffPeriodJitterFactor))
+	// 发生其他错误，加入队列并等待[10s, 15s]
 	default:
 		// Error occurred during the sync; back off and then retry.
+		// p.backOffPeriod为10s
 		p.workQueue.Enqueue(pod.UID, wait.Jitter(p.backOffPeriod, workerBackOffPeriodJitterFactor))
 	}
+	// 存在还未投递的podWork（uid在p.lastUndeliveredWorkUpdate中），则将未投递的podWork发生到uid对应的chan，然后从p.lastUndeliveredWorkUpdate中移除这个uid
+	// 否则设置uid在p.podSyncStatuses里的status.working为false（下次执行UpdatePod，直接将podWork发送到chan中，而不是添加到p.lastUndeliveredWorkUpdate）
 	p.completeWorkQueueNext(pod.UID)
 }
 
 // completeWorkQueueNext holds the lock and either queues the next work item for the worker or
 // clears the working status.
+// 存在还未投递的podWork（uid在p.lastUndeliveredWorkUpdate中），则将未投递的podWork发生到uid对应的chan，然后从p.lastUndeliveredWorkUpdate中移除这个uid
+// 否则设置uid在p.podSyncStatuses里的status.working为false（下次执行UpdatePod，直接将podWork发送到chan中，而不是添加到p.lastUndeliveredWorkUpdate）
 func (p *podWorkers) completeWorkQueueNext(uid types.UID) {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
+	// 存在还未投递的podWork，则将未投递的podWork发生到uid对应的chan，然后从p.lastUndeliveredWorkUpdate中移除这个uid
+	// 否则设置uid在p.podSyncStatuses里的status.working为false（下次执行UpdatePod，直接将podWork发送到chan中，而不是添加到p.lastUndeliveredWorkUpdate）
 	if workUpdate, exists := p.lastUndeliveredWorkUpdate[uid]; exists {
 		p.podUpdates[uid] <- workUpdate
 		delete(p.lastUndeliveredWorkUpdate, uid)
@@ -1199,6 +1412,9 @@ func (p *podWorkers) completeWorkQueueNext(uid types.UID) {
 // contextForWorker returns or initializes the appropriate context for a known
 // worker. If the current context is expired, it is reset. If no worker is
 // present, no context is returned.
+// uid不在p.podSyncStatuses中则返回nil
+// 如果没有context或context已经取消，则创建一个新的context，返回这个context
+// 否则，返回status.ctx
 func (p *podWorkers) contextForWorker(uid types.UID) context.Context {
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
@@ -1207,6 +1423,7 @@ func (p *podWorkers) contextForWorker(uid types.UID) context.Context {
 	if !ok {
 		return nil
 	}
+	// 没有context或context已经取消，则创建一个新的context
 	if status.ctx == nil || status.ctx.Err() == context.Canceled {
 		status.ctx, status.cancelFn = context.WithCancel(context.Background())
 	}
@@ -1218,6 +1435,14 @@ func (p *podWorkers) contextForWorker(uid types.UID) context.Context {
 // to UpdatePods for new pods. It returns a map of known workers that are not finished
 // with a value of SyncPodTerminated, SyncPodKill, or SyncPodSync depending on whether
 // the pod is terminated, terminating, or syncing.
+// 根据pod uid在p.podSyncStatuses里的status，返回所有uid和对应的PodWorkerState
+// 设置p.podsSynced为true
+// p.podSyncStatuses中的uid不在desiredPods中（pod被删除了），或需要重启（status状态为terminating，UpdatePods里收到UpdateType为kubetypes.SyncPodCreate请求）且pod worker已完成
+// 则执行下面
+// 从p.podSyncStatuses中删除uid
+// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+// 并从p.lastUndeliveredWorkUpdate移除uid
+// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
 func (p *podWorkers) SyncKnownPods(desiredPods []*v1.Pod) map[types.UID]PodWorkerState {
 	workers := make(map[types.UID]PodWorkerState)
 	known := make(map[types.UID]struct{})
@@ -1228,20 +1453,31 @@ func (p *podWorkers) SyncKnownPods(desiredPods []*v1.Pod) map[types.UID]PodWorke
 	p.podLock.Lock()
 	defer p.podLock.Unlock()
 
+	// 至少一个pod worker执行了syncPod，即已经有pod通过UpdatePod()启动
 	p.podsSynced = true
 	for uid, status := range p.podSyncStatuses {
+		// p.podSyncStatuses中的uid不在known中（pod被删除了），或需要重启（status状态为terminating，UpdatePods里收到UpdateType为kubetypes.SyncPodCreate请求）
 		if _, exists := known[uid]; !exists || status.restartRequested {
+			// uid不在p.podSyncStatuses里直接返回
+			// pod worker还未完成（完成了意味着podWorker需要被移除），直接返回
+			// 从p.podSyncStatuses中删除uid
+			// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+			// 并从p.lastUndeliveredWorkUpdate移除uid
+			// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
 			p.removeTerminatedWorker(uid)
 		}
 		switch {
+		// 处于Terminated状态
 		case !status.terminatedAt.IsZero():
 			if status.restartRequested {
 				workers[uid] = TerminatedAndRecreatedPod
 			} else {
 				workers[uid] = TerminatedPod
 			}
+		// 处于terminating
 		case !status.terminatingAt.IsZero():
 			workers[uid] = TerminatingPod
+		// sync状态
 		default:
 			workers[uid] = SyncPod
 		}
@@ -1253,14 +1489,22 @@ func (p *podWorkers) SyncKnownPods(desiredPods []*v1.Pod) map[types.UID]PodWorke
 // that has reached a terminal state of "finished" - has successfully exited
 // syncTerminatedPod. This "forgets" a pod by UID and allows another pod to be
 // recreated with the same UID.
+// uid不在p.podSyncStatuses里直接返回
+// pod worker还未完成（完成了意味着podWorker需要被移除），直接返回
+// 从p.podSyncStatuses中删除uid
+// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+// 并从p.lastUndeliveredWorkUpdate移除uid
+// 如果p.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从p.startedStaticPodsByFullname移除status.fullname
 func (p *podWorkers) removeTerminatedWorker(uid types.UID) {
 	status, ok := p.podSyncStatuses[uid]
+	// uid不在p.podSyncStatuses里直接返回
 	if !ok {
 		// already forgotten, or forgotten too early
 		klog.V(4).InfoS("Pod worker has been requested for removal but is not a known pod", "podUID", uid)
 		return
 	}
 
+	// pod worker还未完成（完成了意味着podWorker需要被移除）
 	if !status.finished {
 		klog.V(4).InfoS("Pod worker has been requested for removal but is still not fully terminated", "podUID", uid)
 		return
@@ -1271,7 +1515,10 @@ func (p *podWorkers) removeTerminatedWorker(uid types.UID) {
 	} else {
 		klog.V(4).InfoS("Pod has been terminated and is no longer known to the kubelet, remove all history", "podUID", uid)
 	}
+	// 从p.podSyncStatuses中删除uid
 	delete(p.podSyncStatuses, uid)
+	// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+	// 并从p.lastUndeliveredWorkUpdate移除uid
 	p.cleanupPodUpdates(uid)
 
 	if p.startedStaticPodsByFullname[status.fullname] == uid {
@@ -1284,6 +1531,8 @@ func (p *podWorkers) removeTerminatedWorker(uid types.UID) {
 func killPodNow(podWorkers PodWorkers, recorder record.EventRecorder) eviction.KillPodFunc {
 	return func(pod *v1.Pod, isEvicted bool, gracePeriodOverride *int64, statusFn func(*v1.PodStatus)) error {
 		// determine the grace period to use when killing the pod
+		// gracePeriod设置顺序是
+		// gracePeriodOverride、pod.Spec.TerminationGracePeriodSeconds、int64(0)
 		gracePeriod := int64(0)
 		if gracePeriodOverride != nil {
 			gracePeriod = *gracePeriodOverride
@@ -1293,6 +1542,7 @@ func killPodNow(podWorkers PodWorkers, recorder record.EventRecorder) eviction.K
 
 		// we timeout and return an error if we don't get a callback within a reasonable time.
 		// the default timeout is relative to the grace period (we settle on 10s to wait for kubelet->runtime traffic to complete in sigkill)
+		// timeout为1.5个gracePeriod，最小的timeout为10s
 		timeout := int64(gracePeriod + (gracePeriod / 2))
 		minTimeout := int64(10)
 		if timeout < minTimeout {
@@ -1302,6 +1552,7 @@ func killPodNow(podWorkers PodWorkers, recorder record.EventRecorder) eviction.K
 
 		// open a channel we block against until we get a result
 		ch := make(chan struct{}, 1)
+		// 重新执行kl.podWorkers.UpdatePod，触发重新执行podWork（event类型为SyncPodKill）（执行terminating）
 		podWorkers.UpdatePod(UpdatePodOptions{
 			Pod:        pod,
 			UpdateType: kubetypes.SyncPodKill,
@@ -1328,6 +1579,8 @@ func killPodNow(podWorkers PodWorkers, recorder record.EventRecorder) eviction.K
 // podUpdates map so that the corresponding pod worker can stop. It also
 // removes any undelivered work. This method must be called holding the
 // pod lock.
+// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
+// 并从p.lastUndeliveredWorkUpdate移除uid
 func (p *podWorkers) cleanupPodUpdates(uid types.UID) {
 	if ch, ok := p.podUpdates[uid]; ok {
 		close(ch)

@@ -153,6 +153,10 @@ func (t probeType) String() string {
 	}
 }
 
+// pod里所有有定义的probe的container，每个container添加一个worker到m.workers，
+// 并启动一个goroutine，周期性执行probe
+// 执行结果有变化，则写入worker.resultsManager.cache中，则发送Update消息到worker.resultsManager.updates通道
+// worker.resultsManager，是对应类型probe的manager，即m.readinessManager、m.livenessManager、m.startupManager
 func (m *manager) AddPod(pod *v1.Pod) {
 	m.workerLock.Lock()
 	defer m.workerLock.Unlock()
@@ -199,6 +203,7 @@ func (m *manager) AddPod(pod *v1.Pod) {
 	}
 }
 
+// 停止liveness, startup
 func (m *manager) StopLivenessAndStartup(pod *v1.Pod) {
 	m.workerLock.RLock()
 	defer m.workerLock.RUnlock()
@@ -215,6 +220,7 @@ func (m *manager) StopLivenessAndStartup(pod *v1.Pod) {
 	}
 }
 
+// 停止readiness, liveness, startup
 func (m *manager) RemovePod(pod *v1.Pod) {
 	m.workerLock.RLock()
 	defer m.workerLock.RUnlock()

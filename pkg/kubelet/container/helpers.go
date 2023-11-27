@@ -231,6 +231,7 @@ func IsHostNetworkPod(pod *v1.Pod) bool {
 
 // ConvertPodStatusToRunningPod returns Pod given PodStatus and container runtime string.
 // TODO(random-liu): Convert PodStatus to running Pod, should be deprecated soon
+// 从podStatus中返回pod正在运行的container和sandbox
 func ConvertPodStatusToRunningPod(runtimeName string, podStatus *PodStatus) Pod {
 	runningPod := Pod{
 		ID:        podStatus.ID,

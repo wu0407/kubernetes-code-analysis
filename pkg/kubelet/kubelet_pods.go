@@ -849,11 +849,21 @@ func containerResourceRuntimeValue(fs *v1.ResourceFieldSelector, pod *v1.Pod, co
 // killPod instructs the container runtime to kill the pod. This method requires that
 // the pod status contains the result of the last syncPod, otherwise it may fail to
 // terminate newly created containers and sandboxes.
+// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container）
+// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container
+// 3. 更新Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup目录属性值
 func (kl *Kubelet) killPod(pod *v1.Pod, p kubecontainer.Pod, gracePeriodOverride *int64) error {
 	// Call the container runtime KillPod method which stops all known running containers of the pod
+	// 1. 停止pod里所有的container，每个container都启动一个goroutine进行killContainer（执行prestop和stop container），返回所有killContainer结果
+	// 2. 调用网络插件释放容器的网卡，顺序停止pod里所有的sandbox container，添加执行结果到result
 	if err := kl.containerRuntime.KillPod(pod, p, gracePeriodOverride); err != nil {
 		return err
 	}
+	// 根据所有active pod来统计Burstable和BestEffort的cgroup属性
+	// 更新Burstable和BestEffort qos class的cpu、memory、hugepage的cgroup目录属性值
+	// cpu group设置cpu share值
+	// hugepage设置 hugepage.limit_in_bytes为int64最大值
+	// memory设置memory.limit_in_bytes
 	if err := kl.containerManager.UpdateQOSCgroups(); err != nil {
 		klog.V(2).InfoS("Failed to update QoS cgroups while killing pod", "err", err)
 	}
@@ -898,6 +908,7 @@ func (kl *Kubelet) getPullSecretsForPod(pod *v1.Pod) []v1.Secret {
 	return pullSecrets
 }
 
+// 返回所有运行的container和init container和EphemeralContainer数量
 func countRunningContainerStatus(status v1.PodStatus) int {
 	var runningContainers int
 	for _, c := range status.InitContainerStatuses {
@@ -927,11 +938,14 @@ func (kl *Kubelet) PodCouldHaveRunningContainers(pod *v1.Pod) bool {
 // PodResourcesAreReclaimed returns true if all required node-level resources that a pod was consuming have
 // been reclaimed by the kubelet.  Reclaiming resources is a prerequisite to deleting a pod from the API server.
 func (kl *Kubelet) PodResourcesAreReclaimed(pod *v1.Pod, status v1.PodStatus) bool {
+	// 如果uid在p.podSyncStatuses里，podWorker不在terminated状态返回true，否则返回false
+	// 否则在"至少一个pod worker执行了syncPod，即已经有pod通过UpdatePod()启动"，返回false，否则返回true
 	if kl.podWorkers.CouldHaveRunningContainers(pod.UID) {
 		// We shouldn't delete pods that still have running containers
 		klog.V(3).InfoS("Pod is terminated, but some containers are still running", "pod", klog.KObj(pod))
 		return false
 	}
+	// 返回所有运行的container和init container和EphemeralContainer数量
 	if count := countRunningContainerStatus(status); count > 0 {
 		// We shouldn't delete pods until the reported pod status contains no more running containers (the previous
 		// check ensures no more status can be generated, this check verifies we have seen enough of the status)
@@ -945,6 +959,7 @@ func (kl *Kubelet) PodResourcesAreReclaimed(pod *v1.Pod, status v1.PodStatus) bo
 	}
 	if kl.kubeletConfiguration.CgroupsPerQOS {
 		pcm := kl.containerManager.NewPodContainerManager()
+		// pod的所有cgroup子系统的路径都存在
 		if pcm.Exists(pod) {
 			klog.V(3).InfoS("Pod is terminated, but pod cgroup sandbox has not been cleaned up", "pod", klog.KObj(pod))
 			return false
@@ -996,15 +1011,21 @@ func (kl *Kubelet) filterOutInactivePods(pods []*v1.Pod) []*v1.Pod {
 // a terminal phase but the config source has not accepted it yet. This method
 // should only be used within the pod configuration loops that notify the pod
 // worker, other components should treat the pod worker as authoritative.
+// pod是否真的处于terminal（生命周期的最后阶段）状态
+// pod的phase处于"Succeeded"或"Failed"状态，返回true
+// 从kubelet中获取pod的status，如果成功且phase处于"Succeeded"和"Failed"状态，则返回true
+// 否则返回false
 func (kl *Kubelet) isAdmittedPodTerminal(pod *v1.Pod) bool {
 	// pods are considered inactive if the config source has observed a
 	// terminal phase (if the Kubelet recorded that the pod reached a terminal
 	// phase the pod should never be restarted)
+	// pod的phase处于"Succeeded"或"Failed"状态，返回true
 	if pod.Status.Phase == v1.PodSucceeded || pod.Status.Phase == v1.PodFailed {
 		return true
 	}
 	// a pod that has been marked terminal within the Kubelet is considered
 	// inactive (may have been rejected by Kubelet admision)
+	// 从kubelet中获取pod的status，如果成功且phase处于"Succeeded"和"Failed"状态，则返回true
 	if status, ok := kl.statusManager.GetPodStatus(pod.UID); ok {
 		if status.Phase == v1.PodSucceeded || status.Phase == v1.PodFailed {
 			return true
@@ -1015,6 +1036,7 @@ func (kl *Kubelet) isAdmittedPodTerminal(pod *v1.Pod) bool {
 
 // removeOrphanedPodStatuses removes obsolete entries in podStatus where
 // the pod is no longer considered bound to this node.
+// kl.statusManager.podStatuses里的uid不在podUIDs（所有mirrorPods（mirror pod）和pods（static pod和普通pod））里，则从kl.statusManager.podStatuses删除这个uid
 func (kl *Kubelet) removeOrphanedPodStatuses(pods []*v1.Pod, mirrorPods []*v1.Pod) {
 	podUIDs := make(map[types.UID]bool)
 	for _, pod := range pods {
@@ -1032,6 +1054,8 @@ func (kl *Kubelet) removeOrphanedPodStatuses(pods []*v1.Pod, mirrorPods []*v1.Po
 func (kl *Kubelet) deleteOrphanedMirrorPods() {
 	mirrorPods := kl.podManager.GetOrphanedMirrorPodNames()
 	for _, podFullname := range mirrorPods {
+		// podFullName在p.startedStaticPodsByFullname里且对应的uid在 p.podSyncStatuses，且状态为terminating，则返回true
+		// 其他返回false
 		if !kl.podWorkers.IsPodForMirrorPodTerminatingByFullName(podFullname) {
 			_, err := kl.podManager.DeleteMirrorPod(podFullname, nil)
 			if err != nil {
@@ -1049,6 +1073,16 @@ func (kl *Kubelet) deleteOrphanedMirrorPods() {
 // is executing which means no new pods can appear.
 // NOTE: This function is executed by the main sync loop, so it
 // should not contain any blocking calls.
+// 停止并移除不存在的pod的pod worker，并停止并删除周期性执行container的readniess、liveness、start probe的worker
+// 移除不存在pod的容器（容器还在运行，但是不在apiserver中）
+// 移除不存在pod的volume和pod目录
+// 从apiserver中删除所有没有对应static pod的mirror pod
+// 启用cgroupsPerQOS，则处理cgroup路径下不存在的pod
+//   如果pod还存在volume，且不启用keepTerminatedPodVolumes，则pod的cpu cgroup里的cpu share的值为2
+//   否则启动一个goroutine 移除所有cgroup子系统里的cgroup路径
+// 容器重启的回退周期清理，清理开始回退时间离现在已经超过2倍最大回收周期的item
+// 解决pod被删除后又被创建且相同uid问题
+//   如果pod不处于生命周期的最后阶段（phase处于"Succeeded"或"Failed"状态），则让podWorker启动pod
 func (kl *Kubelet) HandlePodCleanups() error {
 	// The kubelet lacks checkpointing, so we need to introspect the set of pods
 	// in the cgroup tree prior to inspecting the set of pods in our pod manager.
@@ -1058,14 +1092,18 @@ func (kl *Kubelet) HandlePodCleanups() error {
 		cgroupPods map[types.UID]cm.CgroupName
 		err        error
 	)
+	// kl.cgroupsPerQOS默认为true
 	if kl.cgroupsPerQOS {
 		pcm := kl.containerManager.NewPodContainerManager()
+		// 遍历所有pod的cgroup目录，获得pod uid与对应的CgroupName
+		// 比如"ec7bb47a-07ef-48ff-9201-687474994eab"对应["kubepods", "besteffort", "podec7bb47a-07ef-48ff-9201-687474994eab"]
 		cgroupPods, err = pcm.GetAllPodsFromCgroups()
 		if err != nil {
 			return fmt.Errorf("failed to get list of pods that still exist on cgroup mounts: %v", err)
 		}
 	}
 
+	// 返回普通pod和static pod、mirror pod
 	allPods, mirrorPods := kl.podManager.GetPodsAndMirrorPods()
 	// Pod phase progresses monotonically. Once a pod has reached a final state,
 	// it should never leave regardless of the restart policy. The statuses
@@ -1080,6 +1118,14 @@ func (kl *Kubelet) HandlePodCleanups() error {
 
 	// Stop the workers for terminated pods not in the config source
 	klog.V(3).InfoS("Clean up pod workers for terminated pods")
+	// 根据pod uid在p.podSyncStatuses里的status，返回所有uid和对应的PodWorkerState
+	// 设置kl.podWorkers.podsSynced为true
+	// kl.podWorkers.podSyncStatuses中的uid不在allPods中（pod被删除了），或需要重启（status状态为terminating，UpdatePods里收到UpdateType为kubetypes.SyncPodCreate请求）且pod worker已完成
+	// 则执行下面
+	// 从kl.podWorkers.podSyncStatuses中删除uid
+	// 关闭kl.podWorkers.podUpdates中uid对应的chan，并从kl.podWorkers.podUpdates中移除uid
+	// 并从kl.podWorkers.lastUndeliveredWorkUpdate移除uid
+	// 如果kl.podWorkers.startedStaticPodsByFullname[status.fullname]跟pod的uid一样，则从kl.podWorkers.startedStaticPodsByFullname移除status.fullname
 	workingPods := kl.podWorkers.SyncKnownPods(allPods)
 
 	allPodsByUID := make(map[types.UID]*v1.Pod)
@@ -1095,6 +1141,10 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	runningPods := make(map[types.UID]sets.Empty)
 	possiblyRunningPods := make(map[types.UID]sets.Empty)
 	restartablePods := make(map[types.UID]sets.Empty)
+	// 对podWorkers中pod进行分类（移除了不在kl.podManager的pod）
+	// runningPods包含在podWorkers中处于syncPod状态的pod
+	// possiblyRunningPods包含在podWorkers中处于syncPod状态的pod和TerminatingPod状态的pod
+	// restartablePods包含在podWorkers中处于TerminatedAndRecreatedPod的pod
 	for uid, sync := range workingPods {
 		switch sync {
 		case SyncPod:
@@ -1109,10 +1159,12 @@ func (kl *Kubelet) HandlePodCleanups() error {
 
 	// Stop probing pods that are not running
 	klog.V(3).InfoS("Clean up probes for terminated pods")
+	// kl.probeManager.workers中的key的pod uid不在possiblyRunningPods中，则发送信号给worker.stopCh，让周期执行的probe停止并删除
 	kl.probeManager.CleanupPods(possiblyRunningPods)
 
 	// Terminate any pods that are observed in the runtime but not
 	// present in the list of known running pods from config.
+	// 从runtime缓存中获取running pod列表
 	runningRuntimePods, err := kl.runtimeCache.GetPods()
 	if err != nil {
 		klog.ErrorS(err, "Error listing containers")
@@ -1120,6 +1172,7 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	}
 	for _, runningPod := range runningRuntimePods {
 		switch workerState, ok := workingPods[runningPod.ID]; {
+		// runtime中运行的pod也在podWorker中且"在podWorker中处于SyncPod状态"，或runtime中运行的pod也在podWorker中且"在podWorker中处于TerminatingPod状态"
 		case ok && workerState == SyncPod, ok && workerState == TerminatingPod:
 			// if the pod worker is already in charge of this pod, we don't need to do anything
 			continue
@@ -1130,6 +1183,7 @@ func (kl *Kubelet) HandlePodCleanups() error {
 			// orphaned due to kubelet restart or bugs. Since housekeeping blocks other config changes, we
 			// know that another pod wasn't started in the background so we are safe to terminate the
 			// unknown pods.
+			// runtime中运行的pod不在kl.podManager中（apiserver中），则执行kl.podWorkers.UpdatePod（UpdateType为kubetypes.SyncPodKill，让podWorker执行Terminating-->terminated）
 			if _, ok := allPodsByUID[runningPod.ID]; !ok {
 				klog.V(3).InfoS("Clean up orphaned pod containers", "podUID", runningPod.ID)
 				one := int64(1)
@@ -1146,11 +1200,13 @@ func (kl *Kubelet) HandlePodCleanups() error {
 
 	// Remove orphaned pod statuses not in the total list of known config pods
 	klog.V(3).InfoS("Clean up orphaned pod statuses")
+	// kl.statusManager.podStatuses里的uid不在allPods+mirrorPods（所有mirror pod和static pod和普通pod）里，则从kl.statusManager.podStatuses删除这个uid
 	kl.removeOrphanedPodStatuses(allPods, mirrorPods)
 	// Note that we just killed the unwanted pods. This may not have reflected
 	// in the cache. We need to bypass the cache to get the latest set of
 	// running pods to clean up the volumes.
 	// TODO: Evaluate the performance impact of bypassing the runtime cache.
+	// 直接通过runtime获取所有在运行的pods
 	runningRuntimePods, err = kl.containerRuntime.GetPods(false)
 	if err != nil {
 		klog.ErrorS(err, "Error listing containers")
@@ -1165,6 +1221,9 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	// in the future (volumes, mount dirs, logs, and containers could all be
 	// better separated)
 	klog.V(3).InfoS("Clean up orphaned pod directories")
+	// pod目录下的pod文件夹的pod（不在在运行的pod或apiserver中的普通pod和static pod）
+	// 如果"/var/lib/kubelet/pods/{podUID}/volume"或volume-subpaths目录存在，则记录错误日志，提示“pod不存在，但是pod目录下volume目录存在或还存在挂载”
+	// 否则，移除目录"/var/lib/kubelet/pods/{podUID}"
 	err = kl.cleanupOrphanedPodDirs(allPods, runningRuntimePods)
 	if err != nil {
 		// We want all cleanup tasks to be run even if one of them failed. So
@@ -1176,16 +1235,22 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	// Remove any orphaned mirror pods (mirror pods are tracked by name via the
 	// pod worker)
 	klog.V(3).InfoS("Clean up orphaned mirror pods")
+	// 从apiserver中删除所有没有对应static pod的mirror pod
 	kl.deleteOrphanedMirrorPods()
 
 	// Remove any cgroups in the hierarchy for pods that are definitely no longer
 	// running (not in the container runtime).
+	// 默认cgroupsPerQOS为true
 	if kl.cgroupsPerQOS {
 		pcm := kl.containerManager.NewPodContainerManager()
 		klog.V(3).InfoS("Clean up orphaned pod cgroups")
+		// cgroup路径下的pod不在activePods中
+		// 如果pod还存在volume，且不启用keepTerminatedPodVolumes，则pod的cpu cgroup里的cpu share的值为2
+		// 否则启动一个goroutine 移除所有cgroup子系统里的cgroup路径
 		kl.cleanupOrphanedPodCgroups(pcm, cgroupPods, possiblyRunningPods)
 	}
 
+	// 重置回退时间离现在已经超过2倍最大回收周期的item（格式{pod name}_{pod namespace}_{pod uid}_{container name}_{container hash）
 	kl.backOff.GC()
 
 	// If two pods with the same UID are observed in rapid succession, we need to
@@ -1195,18 +1260,30 @@ func (kl *Kubelet) HandlePodCleanups() error {
 	// container start are mitigated. In general only static pods will ever reuse UIDs
 	// since the apiserver uses randomly generated UUIDv4 UIDs with a very low
 	// probability of collision.
+	// 需要重启的pod（podWorker处于terminating，后面pod又需要创建--执行 (p *podWorkers) UpdatePod（UpdateType为kubetypes.SyncPodCreate））
+	// 如果pod不在kl.podManager中所有static pod和普通pod，则跳过
+	// 如果pod处于terminal（生命周期的最后阶段）状态，则跳过
+	//   pod的phase处于"Succeeded"或"Failed"状态
+	//   从kubelet中获取pod的status，如果成功且phase处于"Succeeded"和"Failed"状态
+	// 否则，获得pod的mirror pod（不是static pod，返回nil），重新执行kl.podWorkers.UpdatePod（UpdateType为kubetypes.SyncPodCreate），触发重新执行podWork（重新让pod生成）
 	for uid := range restartablePods {
 		pod, ok := allPodsByUID[uid]
 		if !ok {
 			continue
 		}
+		// pod是否真的处于terminal（生命周期的最后阶段）状态
+		// pod的phase处于"Succeeded"或"Failed"状态，返回true
+		// 从kubelet中获取pod的status，如果成功且phase处于"Succeeded"和"Failed"状态，则返回true
+		// 否则返回false
 		if kl.isAdmittedPodTerminal(pod) {
 			klog.V(3).InfoS("Pod is restartable after termination due to UID reuse, but pod phase is terminal", "pod", klog.KObj(pod), "podUID", pod.UID)
 			continue
 		}
 		start := kl.clock.Now()
+		// 获得pod的mirror pod（不是static pod，返回nil）
 		mirrorPod, _ := kl.podManager.GetMirrorPodByPod(pod)
 		klog.V(3).InfoS("Pod is restartable after termination due to UID reuse", "pod", klog.KObj(pod), "podUID", pod.UID)
+		// 重新执行kl.podWorkers.UpdatePod（UpdateType为kubetypes.SyncPodCreate），触发重新执行podWork
 		kl.dispatchWork(pod, kubetypes.SyncPodCreate, mirrorPod, start)
 	}
 
@@ -1437,6 +1514,7 @@ func getPhase(spec *v1.PodSpec, info []v1.ContainerStatus) v1.PodPhase {
 
 // generateAPIPodStatus creates the final API pod status for a pod, given the
 // internal pod status. This method should only be called from within sync*Pod methods.
+// 根据runtime的status生成pod status
 func (kl *Kubelet) generateAPIPodStatus(pod *v1.Pod, podStatus *kubecontainer.PodStatus) v1.PodStatus {
 	klog.V(3).InfoS("Generating pod status", "pod", klog.KObj(pod))
 
