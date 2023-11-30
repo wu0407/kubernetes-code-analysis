@@ -2537,7 +2537,7 @@ func (kl *Kubelet) HandlePodRemoves(pods []*v1.Pod) {
 		kl.podManager.DeletePod(pod)
 		// pod是mirror pod
 		if kubetypes.IsMirrorPod(pod) {
-			// 根据mirror pod获取static pod，如果获取成功（有static pod），则重新执行kl.podWorkers.UpdatePod，触发重新执行podWork（event类型为SyncPodUpdate）
+			// 根据mirror pod获取static pod，如果获取成功（有static pod，一般都能获取成功，即使上面从podManager中移除mirror pod（pm.podByFullName不受影响），但是kl.podManager.GetPodByMirrorPod是根据pod的full name来查找pod的（pm.podByFullName中查找）），则重新执行kl.podWorkers.UpdatePod，触发重新执行podWork（event类型为SyncPodUpdate）
 			// 否则不做任何事情
 			// 其实就是让podWorker执行kl.syncPod或不做任何事情
 			kl.handleMirrorPod(pod, start)
