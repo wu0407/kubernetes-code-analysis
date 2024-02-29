@@ -2269,7 +2269,7 @@ func (kl *Kubelet) syncLoopIteration(configCh <-chan kubetypes.PodUpdate, handle
 			//   其实就是让podWorker执行kl.syncPod或不做任何事情
 			// pod不是mirror pod
 			//   不是每种source至少有一个Pod（podUpdate事件）,返回错误
-			//   重新执行kl.podWorkers.UpdatePod，触发重新执行podWork（event类型为SyncPodKill）,让podWorker执行terminating（static pod文件被移除，生成Remove事件）或不做任何事情（podWorker已经finished）
+			//   重新执行kl.podWorkers.UpdatePod，触发重新执行podWork（event类型为SyncPodKill）,让podWorker执行terminating（static pod文件被移除，生成Remove事件，且podworker里的delete状态值为false）或不做任何事情（podWorker已经finished）
 			handler.HandlePodRemoves(u.Pods)
 		case kubetypes.RECONCILE:
 			klog.V(4).InfoS("SyncLoop RECONCILE", "source", u.Source, "pods", klog.KObjs(u.Pods))
@@ -2708,6 +2708,7 @@ func (kl *Kubelet) cleanUpContainersInPod(podID types.UID, exitedContainerID str
 		// When an evicted or deleted pod has already synced, all containers can be removed.
 		// 如果podID在p.podSyncStatuses里，则当pod是被驱逐或"pod被删除且处于terminated状态"，返回true，否则返回false
 		// 否则在"至少一个pod worker执行了syncPod，即已经有pod通过UpdatePod()启动"，返回true，否则返回false
+		// 如果static pod移除后，这里removeAll为false，因为调用UpdatePod的event类型为SyncPodKill，podSyncStatus的deleted为false
 		removeAll := kl.podWorkers.ShouldPodContentBeRemoved(podID)
 		// 找到podStatus里所有exitedContainerID的container status里的status为"exited"的container status
 		// 如果removeAll为true，则移除所有退出的container。否则保留最近kl.containerDeletor.containersToKeep个退出的容器

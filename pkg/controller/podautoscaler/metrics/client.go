@@ -69,6 +69,8 @@ type resourceMetricsClient struct {
 // 如果container为空，则遍历rawMetrics（[]metricsapi.podMetrics）里的所有Containers的resource之和，保存在PodMetricsInfo（pod名称对应的PodMetric）
 // 返回PodMetricsInfo和第一个metric的Timestamp
 func (c *resourceMetricsClient) GetResourceMetric(ctx context.Context, resource v1.ResourceName, namespace string, selector labels.Selector, container string) (PodMetricsInfo, time.Time, error) {
+	// 访问/apis/metrics.k8s.io/v1beta1/namespaces/{namespace}/pods
+	// 或namespace为空/apis/metrics.k8s.io/v1beta1/pods 
 	metrics, err := c.client.PodMetricses(namespace).List(ctx, metav1.ListOptions{LabelSelector: selector.String()})
 	if err != nil {
 		return nil, time.Time{}, fmt.Errorf("unable to fetch metrics from resource metrics API: %v", err)

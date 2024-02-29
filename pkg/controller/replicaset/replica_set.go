@@ -598,10 +598,12 @@ func (rsc *ReplicaSetController) manageReplicas(ctx context.Context, filteredPod
 		}
 		klog.V(2).InfoS("Too many replicas", "replicaSet", klog.KObj(rs), "need", *(rs.Spec.Replicas), "deleting", diff)
 
+		// 返回跟rs有相同的ownerReference的所有rs，match的所有pod
 		relatedPods, err := rsc.getIndirectlyRelatedPods(rs)
 		utilruntime.HandleError(err)
 
 		// Choose which Pods to delete, preferring those in earlier phases of startup.
+		// filteredPods是active的pod列表（匹配rs selector）
 		podsToDelete := getPodsToDelete(filteredPods, relatedPods, diff)
 
 		// Snapshot the UIDs (ns/name) of the pods we're expecting to see
@@ -770,9 +772,11 @@ func slowStartBatch(count int, initialBatchSize int, fn func() error) (int, erro
 
 // getIndirectlyRelatedPods returns all pods that are owned by any ReplicaSet
 // that is owned by the given ReplicaSet's owner.
+// 返回跟rs有相同的ownerReference的所有rs，match的所有pod
 func (rsc *ReplicaSetController) getIndirectlyRelatedPods(rs *apps.ReplicaSet) ([]*v1.Pod, error) {
 	var relatedPods []*v1.Pod
 	seen := make(map[types.UID]*apps.ReplicaSet)
+	// 跟rs有相同的ownerReference的所有rs
 	for _, relatedRS := range rsc.getReplicaSetsWithSameController(rs) {
 		selector, err := metav1.LabelSelectorAsSelector(relatedRS.Spec.Selector)
 		if err != nil {

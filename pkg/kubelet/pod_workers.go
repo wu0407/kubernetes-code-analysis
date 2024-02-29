@@ -1006,7 +1006,7 @@ func (p *podWorkers) managePodLoop(podUpdates <-chan podWork) {
 			//   根据p.startedStaticPodsByFullname和waitingToStartStaticPodsByFullname，判断static pod不能启动，将uid加入p.workQueue，等待下次kl.syncLoopIteration里syncCh触发执行，同时设置status.working为false，返回false，true
 			//   其他情况返回true，true
 			canStart, canEverStart := p.allowPodStart(pod)
-			// pod永远不能启动，执行最后的状态设置动作，然后返回
+			// pod不是永远不能启动，执行最后的状态设置动作，然后返回
 			if !canEverStart {
 				// 关闭p.podUpdates中uid对应的chan，并从p.podUpdates中移除uid
 				// 并从p.lastUndeliveredWorkUpdate移除uid
